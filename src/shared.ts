@@ -49,9 +49,29 @@ export function camelToKebab(s: string): string {
   return s.replace(/[A-Z]/g, m => "-" + m.toLowerCase())
 }
 
+/**
+ * Symbol marking a constant function created by ensureFn.
+ * The value is stored as fn[STATIC_VALUE], enabling template engines
+ * to bake static values into HTML strings at build time.
+ */
+export const STATIC_VALUE = Symbol("sdom.staticValue")
+
+/** Check if a function was created by ensureFn with a static value. */
+export function isStaticFn(fn: Function): boolean {
+  return STATIC_VALUE in fn
+}
+
+/** Get the static value from a function marked by ensureFn. */
+export function staticValueOf(fn: Function): any {
+  return (fn as any)[STATIC_VALUE]
+}
+
 /** Wrap a static value in a constant function. */
 export function ensureFn<T>(v: T | ((...args: any[]) => T)): (...args: any[]) => T {
-  return typeof v === "function" ? v as (...args: any[]) => T : () => v
+  if (typeof v === "function") return v as (...args: any[]) => T
+  const fn = () => v
+  ;(fn as any)[STATIC_VALUE] = v
+  return fn
 }
 
 export function isSDOMNode(x: unknown): x is SDOM<any, any> {

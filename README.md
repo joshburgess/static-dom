@@ -184,7 +184,7 @@ For large lists, SDOM provides a delta-based rendering system that skips the dis
 
 ## JSX Runtime
 
-SDOM supports JSX via the automatic runtime (`jsx: "automatic"`). The JSX transform classifies props and delegates to SDOM constructors — compilable subtrees are auto-optimized into `compiled()` nodes.
+SDOM supports JSX via the automatic runtime (`jsx: "automatic"`). The JSX transform classifies props and delegates to SDOM constructors — compilable subtrees use template cloning (`innerHTML` + `cloneNode`) with static attributes baked into the HTML string for zero-cost duplication.
 
 ```tsx
 // tsconfig.json or vite config: jsx: "automatic", jsxImportSource: "@sdom/core"

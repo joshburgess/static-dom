@@ -24,7 +24,7 @@ import {
   _TEMPLATE_SPEC,
   type JsxSpec,
 } from "./shared"
-import { compileSpec } from "./jsx-runtime"
+import { compileSpecCloned } from "./jsx-runtime"
 
 // ---------------------------------------------------------------------------
 // Child type
@@ -71,7 +71,7 @@ export function h(
   if (childSpecs !== null) {
     const classified = classifyProps(allProps)
     const spec: JsxSpec = { tag, classified, children: childSpecs }
-    const sdom = compileSpec(spec)
+    const sdom = compileSpecCloned(spec)
     ;(sdom as any)[_TEMPLATE_SPEC] = spec
     return sdom
   }

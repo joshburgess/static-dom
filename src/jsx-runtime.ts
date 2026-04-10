@@ -262,7 +262,7 @@ export function jsx(
   if (childSpecs !== null) {
     const classified = classifyProps(props)
     const spec: JsxSpec = { tag, classified, children: childSpecs }
-    const sdom = compileSpec(spec)
+    const sdom = compileSpecCloned(spec)
     ;(sdom as any)[_TEMPLATE_SPEC] = spec
     return sdom
   }

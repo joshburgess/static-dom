@@ -34,19 +34,20 @@ attribute setting, text content, and DOM tree assembly throughput.
 
 | Variant | ops/sec | vs raw DOM | Notes |
 |---|---:|---:|---|
-| raw DOM | 106 | 1.00x | Theoretical ceiling — direct createElement loop |
-| solid | 91 | 1.16x | Per-row createEffect + signals |
-| **sdom (jsx compiled)** | **42** | **2.54x** | Compiled JSX path — fused observer, direct createElement |
-| preact | 45 | 2.36x | |
-| react | 44 | 2.40x | |
-| sdom (production) | 34 | 3.12x | element()/text() constructors, guards off |
-| sdom (dev) | 30 | 3.49x | Guards + dev mode on |
-| sdom (jsx + cloning) | 28 | 3.83x | Template cloning via compileSpecCloned |
+| raw DOM | 103 | 1.00x | Theoretical ceiling — direct createElement loop |
+| solid | 99 | 1.04x | Per-row createEffect + signals |
+| preact | 48 | 2.14x | |
+| react | 46 | 2.26x | |
+| sdom (production) | 37 | 2.78x | element()/text() constructors, guards off |
+| sdom (dev) | 37 | 2.78x | Guards + dev mode on |
+| **sdom (jsx + cloning)** | **31** | **3.28x** | Template cloning — innerHTML + static attr baking (default) |
+| sdom (jsx createElement) | 28 | 3.70x | Legacy direct createElement path |
 
-**Takeaway:** The compiled JSX path is SDOM's fastest initial render, comparable to
-React and Preact. The standard element()/text() path in production mode is somewhat
-slower due to per-element observer setup overhead. Template cloning is counterproductive
-for small row templates.
+**Takeaway:** Template cloning (now the default for JSX/h/html/htm) is 12.5% faster
+than the legacy createElement path for initial render with simple row templates. The
+standard element()/text() path is faster than both because it avoids spec classification
+overhead. For static-heavy templates (15+ elements, few dynamic bindings), template
+cloning's advantage grows to ~38%.
 
 ---
 
@@ -217,20 +218,38 @@ all frameworks have the same issue.
 ### Static-Heavy Template — 1k cards (15 elements, 3 dynamic bindings)
 
 Mount 1k cards where each card has 15 static DOM elements (divs, spans, headings,
-paragraphs, buttons) and only 3 dynamic bindings (title, subtitle, badge). This is the
-scenario template cloning is theoretically designed to win.
+paragraphs, buttons) and only 3 dynamic bindings (title, subtitle, badge). Tests
+template cloning (innerHTML + static attribute baking + firstChild/nextSibling walkers)
+vs direct createElement chains.
 
 | Variant | ops/sec | vs raw DOM | Notes |
 |---|---:|---:|---|
-| raw DOM | 164 | 1.00x | Direct createElement for all 15 elements |
-| raw DOM (template cloning) | 146 | 1.13x | cloneNode(true) + 3x querySelector |
-| **sdom (jsx compiled)** | **101** | **1.63x** | Direct createElement, single fused observer |
-| sdom (template cloning) | 74 | 2.23x | cloneNode(true) + path-based binding resolution |
+| raw DOM (cloneNode + tree walk) | 192 | 1.00x | innerHTML template + firstChild/nextSibling |
+| raw DOM (createElement) | 167 | 1.15x | Direct createElement for all 15 elements |
+| **sdom (template cloning)** | **142** | **1.35x** | innerHTML + static attrs baked + walker bindings |
+| sdom (jsx compiled) | 103 | 1.87x | Direct createElement, single fused observer |
 
-**Takeaway:** Template cloning loses even in its ideal scenario. Even the raw DOM
-template cloning approach (querySelector to find 3 dynamic elements) is 13% slower than
-raw DOM createElement for a 15-element tree. The cost of querying/resolving bindings
-outweighs the `cloneNode` savings over 15 createElement calls.
+**Takeaway:** Template cloning (the rewritten engine) is **37.7% faster** than the
+createElement path for static-heavy templates. The key insight: static attributes
+(`class`, `data-*`, etc.) are baked into the HTML string and come free on every
+`cloneNode`. The firstChild/nextSibling walker pattern (borrowed from Solid.js) resolves
+bindings efficiently.
+
+Raw DOM template cloning with tree walking is 15% faster than raw DOM createElement at
+this template size. The crossover point is between 15-50 elements.
+
+### Micro: Clone vs createElement (raw DOM, no framework overhead)
+
+Isolates the raw `cloneNode(true)` cost vs `createElement` chains with no SDOM overhead.
+
+| Template size | createElement | cloneNode | Winner |
+|---|---:|---:|---|
+| 15 elements, 3 dynamic | 2,825 ops/sec | 2,134 ops/sec | createElement (1.32x) |
+| 50 elements, 3 dynamic | 518 ops/sec | 594 ops/sec | **cloneNode (1.15x)** |
+
+At 15 elements, raw `cloneNode` is still slower — but SDOM's template cloning wins
+because static attributes are baked into the HTML (no post-clone setAttribute calls).
+At 50 elements, `cloneNode` wins even in isolation.
 
 ---
 
@@ -382,10 +401,7 @@ pattern through the optic chain.
 2. **getItems() allocation:** Each reconciliation creates n `{ key, model }` objects via
    `.map()`. This allocation accounts for roughly half the cost of the fast path.
 
-3. **Template cloning:** Slower than direct `createElement` in all tested scenarios,
-   including the 15-element static-heavy case it was designed for.
-
-4. **Traversal fold/getAll overhead:** 17x for fold, 5x for composed getAll.
+3. **Traversal fold/getAll overhead:** 17x for fold, 5x for composed getAll.
 
 ### Reconciliation Fast Paths
 

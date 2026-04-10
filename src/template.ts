@@ -2,16 +2,24 @@
  * template.ts — Template cloning engine.
  *
  * Separates static DOM structure from dynamic bindings. On first attach,
- * builds a <template> element from a JsxSpec. On subsequent attaches,
- * cloneNode(true) copies the entire subtree in a single native call —
- * 3-5x faster than equivalent createElement chains.
+ * builds a <template> element via innerHTML (browser's native HTML parser)
+ * and compiles firstChild/nextSibling walker functions for each binding.
+ * On subsequent attaches, cloneNode(true) copies the entire subtree in a
+ * single native call — including all static attributes baked into the HTML.
  *
- * Used by compileSpec() in jsx-runtime.ts and by the lit-html style module.
+ * Key design choices:
+ * - innerHTML-based template construction (leverages native parser)
+ * - Static attributes/styles baked into the HTML string (free on clone)
+ * - Compiled walker functions using firstChild/nextSibling chains (O(1))
+ * - Comment placeholders for dynamic text (replaced with text nodes on clone)
+ *
+ * Used by compileSpecCloned() in jsx-runtime.ts and by the lit-html style module.
  */
 
 import { ATTR_TO_PROP, applyClassMap } from "./constructors"
 import type { Dispatcher } from "./observable"
 import type { JsxSpec } from "./shared"
+import { isStaticFn, staticValueOf } from "./shared"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,13 +32,77 @@ export interface TemplateCache {
   bindings: TemplateBinding[]
 }
 
+/**
+ * A compiled walker function that navigates from a root node to a target
+ * node using only firstChild/nextSibling — O(1) property accesses with
+ * no array indexing or childNodes lookups.
+ */
+type NodeWalker = (root: Node) => Node
+
 export type TemplateBinding =
-  | { kind: "prop"; path: number[]; name: string; fn: (m: any) => any }
-  | { kind: "rawAttr"; path: number[]; name: string; propName: string | undefined; fn: (m: any) => string }
-  | { kind: "style"; path: number[]; prop: string; fn: (m: any) => string }
-  | { kind: "classMap"; path: number[]; fn: (m: any) => Record<string, boolean> }
-  | { kind: "event"; path: number[]; eventName: string; handler: Function }
-  | { kind: "dynamicText"; path: number[]; fn: (m: any) => string }
+  | { kind: "prop"; walk: NodeWalker; name: string; fn: (m: any) => any }
+  | { kind: "rawAttr"; walk: NodeWalker; name: string; propName: string | undefined; fn: (m: any) => string }
+  | { kind: "style"; walk: NodeWalker; prop: string; fn: (m: any) => string }
+  | { kind: "classMap"; walk: NodeWalker; fn: (m: any) => Record<string, boolean> }
+  | { kind: "event"; walk: NodeWalker; eventName: string; handler: Function }
+  | { kind: "dynamicText"; walk: NodeWalker; fn: (m: any) => string }
+
+// ---------------------------------------------------------------------------
+// Walker compilation
+// ---------------------------------------------------------------------------
+
+const identityWalker: NodeWalker = (root) => root
+
+/**
+ * Compile a path (array of child indices) into a walker function that uses
+ * firstChild + nextSibling chains. Each path step means: enter firstChild,
+ * then skip N siblings.
+ *
+ * For path [0, 2, 1]:
+ *   root.firstChild                    → child 0
+ *       .firstChild.nextSibling×2      → child 2
+ *       .firstChild.nextSibling        → child 1
+ */
+function compileWalker(path: number[]): NodeWalker {
+  const n = path.length
+  if (n === 0) return identityWalker
+
+  // Copy path to prevent external mutation
+  const p = path.slice()
+
+  return (root: Node) => {
+    let node = root
+    for (let i = 0; i < n; i++) {
+      node = node.firstChild!
+      for (let j = p[i]!; j > 0; j--) {
+        node = node.nextSibling!
+      }
+    }
+    return node
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HTML escaping
+// ---------------------------------------------------------------------------
+
+const ESC_RE = /[&<>"]/g
+const ESC_MAP: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(ESC_RE, ch => ESC_MAP[ch]!)
+}
+
+// Void elements that must not have closing tags
+const VOID_ELEMENTS = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input",
+  "link", "meta", "param", "source", "track", "wbr",
+])
 
 // ---------------------------------------------------------------------------
 // Build template (runs once per spec)
@@ -38,97 +110,164 @@ export type TemplateBinding =
 
 /**
  * Build a TemplateCache from a JsxSpec.
- * Creates the static DOM structure inside a <template> element and
- * records bindings for all dynamic parts.
+ * Creates the static DOM structure via innerHTML (leveraging the browser's
+ * native HTML parser for optimal cloneNode performance) and compiles walker
+ * functions for all dynamic parts.
  */
 export function buildTemplate(spec: JsxSpec): TemplateCache {
-  const template = document.createElement("template")
   const bindings: TemplateBinding[] = []
-  buildTemplateElement(spec, template.content, [], bindings)
+  const html = buildHtml(spec, [0], bindings)
+  const template = document.createElement("template")
+  template.innerHTML = html
   return { template, bindings }
 }
 
-function buildTemplateElement(
+/**
+ * Recursively build an HTML string from a JsxSpec and record bindings.
+ *
+ * Static attributes and styles are baked directly into the HTML string —
+ * they become part of the template and are free on every subsequent clone.
+ * Dynamic parts record a walker function for post-clone wiring.
+ *
+ * Child index tracking accounts for text node merging in the HTML parser:
+ * adjacent static text segments produce a single text node, and comment
+ * placeholders (for dynamic text) break text runs.
+ */
+function buildHtml(
   spec: JsxSpec,
-  parent: Node,
-  parentPath: number[],
+  currentPath: number[],
   bindings: TemplateBinding[],
-): void {
-  const el = document.createElement(spec.tag)
-  const childIndex = parent.childNodes.length
-  parent.appendChild(el)
+): string {
+  const { tag, classified: c, children } = spec
+  const isVoid = VOID_ELEMENTS.has(tag)
 
-  const path = [...parentPath, childIndex]
-  const c = spec.classified
+  // ── Opening tag with static attributes ──────────────────────────────
 
-  // IDL properties
-  if (c.attrs) {
-    for (const [name, fn] of Object.entries(c.attrs as Record<string, (m: any) => any>)) {
-      bindings.push({ kind: "prop", path, name, fn })
-    }
-  }
+  let html = `<${tag}`
 
-  // Raw attributes
+  // Collect dynamic rawAttrs — static ones get baked into the HTML
+  let dynamicRawAttrs: Record<string, (m: any) => string> | null = null
   if (c.rawAttrs) {
     for (const [name, fn] of Object.entries(c.rawAttrs as Record<string, (m: any) => string>)) {
-      bindings.push({ kind: "rawAttr", path, name, propName: ATTR_TO_PROP[name], fn })
+      if (isStaticFn(fn)) {
+        html += ` ${name}="${escapeHtml(String(staticValueOf(fn)))}"`
+      } else {
+        if (!dynamicRawAttrs) dynamicRawAttrs = {}
+        dynamicRawAttrs[name] = fn
+      }
     }
   }
 
-  // Style
+  // Collect dynamic styles — static ones get baked into a style attribute
+  let dynamicStyles: Record<string, (m: any) => string> | null = null
   if (c.style) {
+    const staticParts: string[] = []
     for (const [prop, fn] of Object.entries(c.style as Record<string, (m: any) => string>)) {
-      bindings.push({ kind: "style", path, prop, fn })
+      if (isStaticFn(fn)) {
+        staticParts.push(`${prop}: ${staticValueOf(fn)}`)
+      } else {
+        if (!dynamicStyles) dynamicStyles = {}
+        dynamicStyles[prop] = fn
+      }
+    }
+    if (staticParts.length > 0) {
+      html += ` style="${escapeHtml(staticParts.join("; "))}"`
     }
   }
 
-  // Class map
-  if (c.classes) {
-    bindings.push({ kind: "classMap", path, fn: c.classes as (m: any) => Record<string, boolean> })
+  html += ">"
+
+  // ── Record bindings for dynamic parts on this element ───────────────
+
+  const walk = compileWalker(currentPath)
+
+  // IDL properties (always bindings — baking into HTML attrs is unreliable
+  // due to IDL/attribute divergence for boolean props, value, etc.)
+  if (c.attrs) {
+    for (const [name, fn] of Object.entries(c.attrs as Record<string, (m: any) => any>)) {
+      bindings.push({ kind: "prop", walk, name, fn })
+    }
   }
 
-  // Events
+  // Dynamic raw attributes
+  if (dynamicRawAttrs) {
+    for (const [name, fn] of Object.entries(dynamicRawAttrs)) {
+      bindings.push({ kind: "rawAttr", walk, name, propName: ATTR_TO_PROP[name], fn })
+    }
+  }
+
+  // Dynamic styles
+  if (dynamicStyles) {
+    for (const [prop, fn] of Object.entries(dynamicStyles)) {
+      bindings.push({ kind: "style", walk, prop, fn })
+    }
+  }
+
+  // Class map (always dynamic)
+  if (c.classes) {
+    bindings.push({ kind: "classMap", walk, fn: c.classes as (m: any) => Record<string, boolean> })
+  }
+
+  // Events (always bindings)
   if (c.on) {
     for (const [eventName, handler] of Object.entries(c.on as Record<string, Function>)) {
-      bindings.push({ kind: "event", path, eventName, handler })
+      bindings.push({ kind: "event", walk, eventName, handler })
     }
   }
 
-  // Children
-  for (const child of spec.children) {
-    switch (child.kind) {
-      case "static":
-        el.appendChild(document.createTextNode(child.text))
-        break
-      case "dynamic": {
-        // Placeholder text node — will be patched after clone
-        const textIdx = el.childNodes.length
-        el.appendChild(document.createTextNode(""))
-        bindings.push({ kind: "dynamicText", path: [...path, textIdx], fn: child.fn })
-        break
+  // ── Children ────────────────────────────────────────────────────────
+
+  if (!isVoid) {
+    // Track the actual DOM childIndex, accounting for text node merging.
+    // Adjacent static text produces a single text node in the browser's
+    // HTML parser. Comments and elements break text runs.
+    let childIndex = 0
+    let inTextRun = false
+
+    for (let ci = 0; ci < children.length; ci++) {
+      const child = children[ci]!
+      switch (child.kind) {
+        case "static":
+          html += escapeHtml(child.text)
+          inTextRun = true
+          break
+
+        case "dynamic":
+          // Close any active text run — it produced one text node
+          if (inTextRun) { childIndex++; inTextRun = false }
+          // Comment placeholder — creates a Comment node in the DOM
+          html += "<!---->"
+          bindings.push({
+            kind: "dynamicText",
+            walk: compileWalker([...currentPath, childIndex]),
+            fn: child.fn,
+          })
+          childIndex++
+          break
+
+        case "element":
+          if (inTextRun) { childIndex++; inTextRun = false }
+          html += buildHtml(child.spec, [...currentPath, childIndex], bindings)
+          childIndex++
+          break
       }
-      case "element":
-        buildTemplateElement(child.spec, el, path, bindings)
-        break
     }
+
+    html += `</${tag}>`
   }
+
+  return html
 }
 
 // ---------------------------------------------------------------------------
 // Instantiate template (runs per attach)
 // ---------------------------------------------------------------------------
 
-/** Resolve a child-index path to a node in a cloned tree. */
-function resolvePath(root: Node, path: number[]): Node {
-  let node = root
-  for (let i = 0; i < path.length; i++) {
-    node = node.childNodes[path[i]!]!
-  }
-  return node
-}
-
 /**
  * Clone a cached template and wire up all dynamic bindings.
+ *
+ * Walkers resolve target nodes via firstChild/nextSibling chains.
+ * Comment placeholders for dynamic text are replaced with real text nodes.
  * Returns the root element of the clone.
  */
 export function instantiateTemplate(
@@ -139,13 +278,10 @@ export function instantiateTemplate(
   eventCleanups: Array<() => void>,
 ): Element {
   const clone = cache.template.content.cloneNode(true) as DocumentFragment
-  // The root element is the first (and only) child of the fragment
-  const el = clone.firstChild as Element
 
   for (let i = 0; i < cache.bindings.length; i++) {
     const binding = cache.bindings[i]!
-    // Resolve path relative to the root element's parent (the fragment)
-    const node = resolvePath(clone, binding.path)
+    const node = binding.walk(clone)
 
     switch (binding.kind) {
       case "prop": {
@@ -214,15 +350,21 @@ export function instantiateTemplate(
       case "dynamicText": {
         const { fn } = binding
         let last = fn(model)
-        ;(node as Text).textContent = last
+        // Replace the comment placeholder with a real text node.
+        // insertBefore + removeChild preserves the sibling chain,
+        // so subsequent walkers still resolve correctly.
+        const textNode = document.createTextNode(last)
+        node.parentNode!.insertBefore(textNode, node)
+        node.parentNode!.removeChild(node)
         updaters.push((next) => {
           const v = fn(next)
-          if (v !== last) { last = v; (node as Text).textContent = v }
+          if (v !== last) { last = v; textNode.textContent = v }
         })
         break
       }
     }
   }
 
-  return el
+  // The root element is the first (and only) child of the fragment
+  return clone.firstChild as Element
 }

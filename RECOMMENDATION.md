@@ -11,10 +11,12 @@ Chromium benchmarks against React, Preact, Solid, and Inferno. See
 `jsx()`, `h()`, `html()`, and `htm()` all feed into the same `compileSpec()`
 path. They produce identical runtime code. Pick whichever you prefer to write.
 
-**Skip template cloning** (`compileSpecCloned`). It is slower than direct
-`createElement` in every scenario tested, including a static-heavy case with
-15 elements and only 3 dynamic bindings. The path resolution overhead outweighs
-the `cloneNode` savings.
+**Template cloning is now the default.** All `jsx()`, `h()`, `html()`, and
+`htm()` calls automatically use `compileSpecCloned`, which builds a `<template>`
+via `innerHTML` with static attributes baked in, then clones it per instance.
+This is ~38% faster than `createElement` chains for static-heavy templates (15
+elements, 3 dynamic) and ~12% faster for typical templates. Static attributes
+(`class`, `data-*`, etc.) are free on every clone.
 
 ---
 
@@ -255,7 +257,6 @@ benchmarking.
 
 | Approach | Why |
 |---|---|
-| Template cloning (`compileSpecCloned`) | Slower than `createElement` in all tested scenarios |
 | `element()` chains for hot-path list rows | 4-6x slower than `compiled()` due to per-element observers |
 | Guards and dev mode in production | 23% overhead from try/catch + validation allocations |
 | `array()` with 10k+ items and single-item updates | O(n) key scan; use `incrementalArray` instead |
