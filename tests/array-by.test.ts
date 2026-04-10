@@ -1,0 +1,133 @@
+import { describe, it, expect, afterEach } from "vitest"
+import { arrayBy, element, text } from "../src/constructors"
+import type { SDOM } from "../src/types"
+import { mount, cleanup, type TestHarness } from "./helpers"
+
+interface Item { id: string; label: string }
+interface M { items: Item[] }
+type Msg = { type: "click"; id: string }
+
+const itemSdom: SDOM<Item, Msg> = element<"li", Item, Msg>("li", {
+  on: { click: (_e, m) => ({ type: "click", id: m.id }) },
+}, [text(m => m.label)])
+
+function makeArrayBy() {
+  return arrayBy<M, Item, Msg>(
+    "ul",
+    m => m.items,
+    i => i.id,
+    itemSdom,
+  )
+}
+
+let h: TestHarness<M, Msg>
+afterEach(() => { if (h) cleanup(h) })
+
+describe("arrayBy", () => {
+  it("renders initial items", () => {
+    h = mount(makeArrayBy(), { items: [
+      { id: "a", label: "A" },
+      { id: "b", label: "B" },
+    ]})
+    const lis = h.container.querySelectorAll("li")
+    expect(lis.length).toBe(2)
+    expect(lis[0]!.textContent).toBe("A")
+    expect(lis[1]!.textContent).toBe("B")
+  })
+
+  it("adds new items (append)", () => {
+    h = mount(makeArrayBy(), { items: [{ id: "a", label: "A" }] })
+    h.set({ items: [
+      { id: "a", label: "A" },
+      { id: "b", label: "B" },
+    ]})
+    const lis = h.container.querySelectorAll("li")
+    expect(lis.length).toBe(2)
+    expect(lis[1]!.textContent).toBe("B")
+  })
+
+  it("removes items", () => {
+    h = mount(makeArrayBy(), { items: [
+      { id: "a", label: "A" },
+      { id: "b", label: "B" },
+    ]})
+    h.set({ items: [{ id: "b", label: "B" }] })
+    const lis = h.container.querySelectorAll("li")
+    expect(lis.length).toBe(1)
+    expect(lis[0]!.textContent).toBe("B")
+  })
+
+  it("reuses DOM nodes by key", () => {
+    h = mount(makeArrayBy(), { items: [
+      { id: "a", label: "A" },
+      { id: "b", label: "B" },
+    ]})
+    const bLi = h.container.querySelectorAll("li")[1]!
+
+    h.set({ items: [
+      { id: "b", label: "B" },
+      { id: "a", label: "A" },
+    ]})
+    const reordered = h.container.querySelectorAll("li")
+    expect(reordered[0]).toBe(bLi)
+  })
+
+  it("updates item content when model changes", () => {
+    h = mount(makeArrayBy(), { items: [{ id: "a", label: "A" }] })
+    h.set({ items: [{ id: "a", label: "A updated" }] })
+    expect(h.container.querySelector("li")!.textContent).toBe("A updated")
+  })
+
+  it("dispatches events from items", () => {
+    h = mount(makeArrayBy(), { items: [{ id: "x", label: "X" }] })
+    h.container.querySelector("li")!.click()
+    expect(h.dispatched).toEqual([{ type: "click", id: "x" }])
+  })
+
+  it("handles empty list", () => {
+    h = mount(makeArrayBy(), { items: [] })
+    expect(h.container.querySelectorAll("li").length).toBe(0)
+  })
+
+  it("handles transition from items to empty", () => {
+    h = mount(makeArrayBy(), { items: [
+      { id: "a", label: "A" },
+      { id: "b", label: "B" },
+    ]})
+    h.set({ items: [] })
+    expect(h.container.querySelectorAll("li").length).toBe(0)
+  })
+
+  it("handles transition from empty to items", () => {
+    h = mount(makeArrayBy(), { items: [] })
+    h.set({ items: [{ id: "a", label: "A" }] })
+    expect(h.container.querySelectorAll("li").length).toBe(1)
+  })
+
+  it("handles full replacement (all new keys)", () => {
+    h = mount(makeArrayBy(), { items: [
+      { id: "a", label: "A" },
+      { id: "b", label: "B" },
+    ]})
+    h.set({ items: [
+      { id: "c", label: "C" },
+      { id: "d", label: "D" },
+    ]})
+    const lis = h.container.querySelectorAll("li")
+    expect(lis.length).toBe(2)
+    expect(lis[0]!.textContent).toBe("C")
+    expect(lis[1]!.textContent).toBe("D")
+  })
+
+  it("skips update when item reference unchanged", () => {
+    const a = { id: "a", label: "A" }
+    const b = { id: "b", label: "B" }
+    h = mount(makeArrayBy(), { items: [a, b] })
+
+    // Same references — no update dispatched
+    h.set({ items: [a, b] })
+    const lis = h.container.querySelectorAll("li")
+    expect(lis.length).toBe(2)
+    expect(lis[0]!.textContent).toBe("A")
+  })
+})

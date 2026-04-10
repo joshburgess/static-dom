@@ -398,16 +398,28 @@ pattern through the optic chain.
    compare all 10k keys to verify structure hasn't changed. At 10k rows: 1,858 ops/sec
    vs Solid's 370k ops/sec. Solid's O(1) signals avoid this entirely.
 
-2. **getItems() allocation:** Each reconciliation creates n `{ key, model }` objects via
-   `.map()`. This allocation accounts for roughly half the cost of the fast path.
+2. **getItems() allocation:** `array()` requires `.map()` to create n `{ key, model }`
+   wrapper objects per reconciliation. Use `arrayBy()` to avoid this — 19% faster at 10k.
 
 3. **Traversal fold/getAll overhead:** 17x for fold, 5x for composed getAll.
 
+### arrayBy() vs array() — Allocation Savings
+
+`arrayBy()` avoids the `.map(r => ({ key, model }))` allocation and adds an
+array-identity fast path (O(1) when the items array reference hasn't changed).
+
+| Operation | `array()` | `arrayBy()` | Improvement |
+|---|---:|---:|---|
+| Single row update (1k) | 27,784 | 28,982 | 4% |
+| Single row update (10k) | 1,509 | 1,801 | **19%** |
+| Bulk update (1k, all change) | 4,800 | 5,405 | 13% |
+
 ### Reconciliation Fast Paths
 
-The `array()` reconciler has four fast paths, tried in order:
+The `arrayBy()` reconciler has five fast paths, tried in order:
 
 ```
+0. Array identity: same reference → skip entirely, O(1)
 1. Same-structure: keys match in order → update-only, O(n) key comparison
 2. Append-only:    prefix keys match + new items at end → update + mount tail
 3. Full replace:   zero key overlap → bulk clear + fresh mount (no markers)
@@ -419,8 +431,8 @@ The `array()` reconciler has four fast paths, tried in order:
 From simplest API to fastest throughput (single row update, 1k rows, Chromium):
 
 ```
-Tier 0: array + element               ~27,000 ops/sec      (7.4x slower than Solid)
-         Same-structure fast path. Key comparison only.
+Tier 0: arrayBy + element             ~29,000 ops/sec      (6.9x slower than Solid)
+         Same-structure fast path. Zero wrapper allocation.
 
 Tier 1: incrementalArray + element    ~50,000 ops/sec      (4.0x slower than Solid)
          Keyed deltas skip reconciliation. O(1) per patch.
@@ -439,16 +451,15 @@ Tier 4: extractDelta + compiled       ~169,000 ops/sec     (1.19x slower than So
 Ceiling: Solid (signal-per-leaf)      ~201,000 ops/sec     (1.00x)
 ```
 
-### Remaining Optimization Opportunities
+### Completed Optimizations
 
-1. **Zero-allocation array API:** An `arrayBy(tag, getItems, getKey, itemSdom)` variant
-   that accepts separate key extractor, avoiding the `.map()` allocation that currently
-   creates n `{ key, model }` wrapper objects per reconciliation.
+1. **`arrayBy()` zero-allocation API** — avoids `.map()` wrapper objects,
+   19% faster at 10k rows. Includes array-identity O(1) fast path.
 
-2. **Automatic delta detection:** Diff old vs new item arrays by reference to produce
-   deltas automatically, bridging the gap between `array()` and `incrementalArray`
-   without requiring manual delta management.
+2. **Array-identity fast path** — added to both `array()` and `arrayBy()`.
+   When `getItems()` returns the same reference, reconciliation is skipped entirely.
 
-3. **Compiled row templates for array():** Automatically use `compiled()` row paths
-   (single observer, direct DOM ops) when the item SDOM is a simple element tree,
-   reducing per-item overhead.
+3. **Template cloning default** — JSX/h/html/htm now use `compileSpecCloned`
+   by default, giving 38% faster initial render for static-heavy templates.
+   JSX-created array items automatically get single-observer compiled templates
+   with shared template cache.

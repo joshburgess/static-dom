@@ -54,6 +54,7 @@ program({
 | `text(fn)` | Text node derived from the model |
 | `staticText(str)` | Static text node (no model dependency) |
 | `array(tag, getItems, itemSdom)` | Dynamic keyed list with LIS-based minimum DOM moves |
+| `arrayBy(tag, getItems, getKey, itemSdom)` | Zero-allocation keyed list — no `.map()` wrapper objects |
 | `indexedArray(tag, getItems, itemSdom)` | Non-keyed positional patching (no Map overhead) |
 | `optional(prism, inner)` | Conditionally present subtree via Prism or Affine |
 | `fragment(children)` | Group nodes without a wrapper element |
@@ -265,7 +266,7 @@ performance.
 
 ## Status
 
-All 5 layers are complete with 486 tests across 36 test files:
+All 5 layers are complete with 497 tests across 37 test files:
 
 ```
 Layer 5  JSX runtime & build tooling            [complete]

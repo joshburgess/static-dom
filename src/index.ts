@@ -137,7 +137,7 @@ export type { Observable, UpdateStream, Dispatcher, Update, Signal } from "./obs
 export { createSignal, toUpdateStream, mapUpdate, contramapDispatcher } from "./observable"
 
 // Constructors
-export { text, staticText, element, array, indexedArray, optional, component, compiled, fragment, wrapChannel, lis } from "./constructors"
+export { text, staticText, element, array, arrayBy, indexedArray, optional, component, compiled, fragment, wrapChannel, lis } from "./constructors"
 
 // Program runners
 export type { ProgramConfig, ProgramHandle, EffectProgramConfig, DeltaProgramConfig, SubProgramConfig, ElmProgramConfig, Cmd } from "./program"

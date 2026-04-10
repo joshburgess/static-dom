@@ -585,6 +585,10 @@ export function array<
     function reconcile(_prev: Model, next: Model): void {
       const nextItems = getItems(next)
 
+      // ── Fast path: array identity → skip everything ─────────────
+      // When getItems returns the same reference, nothing can have changed.
+      if (nextItems === prevItems) return
+
       if (__SDOM_DEV__) validateUniqueKeys(nextItems.map(i => i.key), "array")
 
       // ── Fast path: same keys, same order → update-only ──────────
@@ -757,6 +761,391 @@ export function array<
         mountItemInitial(item.key, item.model)
       }
       prevItems = initialItems
+    }
+
+    const unsub = updates.subscribe(({ prev, next }) => reconcile(prev, next))
+
+    return {
+      teardown() {
+        unsub()
+        for (const { teardown: td, startMarker, endMarker } of liveItems.values()) {
+          td.teardown()
+          startMarker?.remove()
+          endMarker?.remove()
+        }
+        container.remove()
+      },
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// arrayBy — zero-allocation keyed array
+// ---------------------------------------------------------------------------
+
+/**
+ * Like `array()`, but takes a key extractor function instead of requiring
+ * the user to `.map()` items into `{ key, model }` wrappers. This avoids
+ * n object allocations per reconciliation — the raw items array is used
+ * directly.
+ *
+ * ```typescript
+ * // Before (array): allocates n wrapper objects per render
+ * array("tbody", m => m.rows.map(r => ({ key: r.id, model: r })), rowView)
+ *
+ * // After (arrayBy): zero wrapper allocation
+ * arrayBy("tbody", m => m.rows, r => r.id, rowView)
+ * ```
+ *
+ * Internally maintains a flat `string[]` of previous keys for fast-path
+ * detection, which is much cheaper than n `{ key, model }` objects.
+ */
+export function arrayBy<
+  Model,
+  ItemModel,
+  Msg
+>(
+  containerTag: keyof HTMLElementTagNameMap,
+  getItems: (model: Model) => readonly ItemModel[],
+  getKey: (item: ItemModel) => string,
+  itemSdom: SDOM<ItemModel, Msg>,
+): SDOM<Model, Msg> {
+  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
+    const container = document.createElement(containerTag)
+    parent.appendChild(container)
+
+    type ItemEntry = {
+      startMarker: Comment | null
+      endMarker: Comment | null
+      teardown: Teardown
+      modelRef: { current: ItemModel }
+      observer: Observer<Update<ItemModel>> | null
+      observers: Set<Observer<Update<ItemModel>>> | null
+      update: { prev: ItemModel; next: ItemModel }
+    }
+    const liveItems = new Map<string, ItemEntry>()
+
+    let currentMountEntry: ItemEntry | null = null
+    const sharedUpdateStream: UpdateStream<ItemModel> = {
+      subscribe(observer) {
+        const entry = currentMountEntry!
+        if (entry.observer === null && entry.observers === null) {
+          entry.observer = observer
+        } else {
+          if (entry.observers === null) {
+            entry.observers = new Set()
+            if (entry.observer) {
+              entry.observers.add(entry.observer)
+              entry.observer = null
+            }
+          }
+          entry.observers.add(observer)
+        }
+        return () => {
+          if (entry.observer === observer) {
+            entry.observer = null
+          } else if (entry.observers) {
+            entry.observers.delete(observer)
+          }
+        }
+      },
+    }
+
+    function mountItemInitial(key: string, itemModel: ItemModel): void {
+      const modelRef = { current: itemModel }
+      const update = { prev: itemModel, next: itemModel }
+      const entry: ItemEntry = {
+        startMarker: null, endMarker: null,
+        teardown: { teardown() {} }, modelRef,
+        observer: null, observers: null, update,
+      }
+      liveItems.set(key, entry)
+
+      const lastBefore = container.lastChild
+      currentMountEntry = entry
+      entry.teardown = guard("attach", `arrayBy item "${key}"`, () =>
+        itemSdom.attach(container, itemModel, sharedUpdateStream, dispatch),
+        { teardown() {} }
+      )
+      currentMountEntry = null
+
+      const firstNode = lastBefore ? lastBefore.nextSibling : container.firstChild
+      if (firstNode) itemFirstNodes.set(key, firstNode)
+    }
+
+    function mountItemFull(key: string, itemModel: ItemModel): void {
+      const startMarker = document.createComment(`s:${key}`)
+      const endMarker = document.createComment(`e:${key}`)
+
+      const modelRef = { current: itemModel }
+      const update = { prev: itemModel, next: itemModel }
+      const entry: ItemEntry = {
+        startMarker, endMarker,
+        teardown: { teardown() {} }, modelRef,
+        observer: null, observers: null, update,
+      }
+      liveItems.set(key, entry)
+
+      const frag = document.createDocumentFragment()
+      frag.appendChild(startMarker)
+      currentMountEntry = entry
+      entry.teardown = guard("attach", `arrayBy item "${key}"`, () =>
+        itemSdom.attach(frag, itemModel, sharedUpdateStream, dispatch),
+        { teardown() {} }
+      )
+      currentMountEntry = null
+      frag.appendChild(endMarker)
+      container.appendChild(frag)
+    }
+
+    function pushItemUpdate(entry: ItemEntry, prevModel: ItemModel, itemModel: ItemModel): void {
+      entry.modelRef.current = itemModel
+      entry.update.prev = prevModel
+      entry.update.next = itemModel
+      if (entry.observer) {
+        entry.observer(entry.update)
+      } else if (entry.observers) {
+        entry.observers.forEach(obs => obs(entry.update))
+      }
+    }
+
+    let markersInserted = false
+    const itemFirstNodes = new Map<string, ChildNode>()
+
+    function ensureMarkers(): void {
+      if (markersInserted) return
+      markersInserted = true
+
+      const entries = Array.from(liveItems.entries())
+      for (const [key, entry] of entries) {
+        if (entry.startMarker !== null) continue
+        const firstNode = itemFirstNodes.get(key)
+        if (!firstNode) continue
+        const start = document.createComment(`s:${key}`)
+        entry.startMarker = start
+        container.insertBefore(start, firstNode)
+      }
+
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i]![1]
+        if (entry.endMarker !== null) continue
+        const end = document.createComment(`e:${entries[i]![0]}`)
+        entry.endMarker = end
+        const nextEntry = i + 1 < entries.length ? entries[i + 1]![1] : null
+        const ref = nextEntry?.startMarker ?? null
+        container.insertBefore(end, ref)
+      }
+
+      itemFirstNodes.clear()
+    }
+
+    function moveItemBefore(entry: ItemEntry, ref: ChildNode | null): void {
+      let node: ChildNode | null = entry.startMarker!
+      const end = entry.endMarker!
+      while (node !== null) {
+        const next: ChildNode | null = node.nextSibling
+        container.insertBefore(node, ref)
+        if (node === end) break
+        node = next
+      }
+    }
+
+    function removeItem(key: string): void {
+      const entry = liveItems.get(key)
+      if (!entry) return
+      entry.teardown.teardown()
+      entry.startMarker?.remove()
+      entry.endMarker?.remove()
+      liveItems.delete(key)
+    }
+
+    // Flat key cache — avoids n { key, model } wrapper objects per reconcile.
+    let prevKeys: string[] | null = null
+    // Array reference cache — enables O(1) identity check to skip reconciliation.
+    let prevItemsRef: readonly ItemModel[] | null = null
+
+    function reconcile(_prev: Model, next: Model): void {
+      const nextItems = getItems(next)
+      const n = nextItems.length
+
+      // ── Fast path: array identity → skip everything ─────────────
+      // When the items array is the same reference, nothing can have changed.
+      if (nextItems === prevItemsRef) return
+
+      if (__SDOM_DEV__) {
+        const devKeys = new Array<string>(n)
+        for (let i = 0; i < n; i++) devKeys[i] = getKey(nextItems[i]!)
+        validateUniqueKeys(devKeys, "arrayBy")
+      }
+
+      // ── Fast path: same keys, same order → update-only ──────────
+      if (prevKeys !== null && n === prevKeys.length) {
+        let sameStructure = true
+        for (let i = 0; i < n; i++) {
+          if (getKey(nextItems[i]!) !== prevKeys[i]!) {
+            sameStructure = false
+            break
+          }
+        }
+        if (sameStructure) {
+          for (let i = 0; i < n; i++) {
+            const entry = liveItems.get(prevKeys[i]!)!
+            const item = nextItems[i]!
+            if (entry.modelRef.current !== item) {
+              pushItemUpdate(entry, entry.modelRef.current, item)
+            }
+          }
+          // Keys unchanged — prevKeys still valid
+          prevItemsRef = nextItems
+          return
+        }
+      }
+
+      // ── Fast path: append-only ──────────────────────────────────
+      if (prevKeys !== null && n > prevKeys.length) {
+        let isAppend = true
+        for (let i = 0; i < prevKeys.length; i++) {
+          if (getKey(nextItems[i]!) !== prevKeys[i]!) {
+            isAppend = false
+            break
+          }
+        }
+        if (isAppend) {
+          for (let i = 0; i < prevKeys.length; i++) {
+            const entry = liveItems.get(prevKeys[i]!)!
+            const item = nextItems[i]!
+            if (entry.modelRef.current !== item) {
+              pushItemUpdate(entry, entry.modelRef.current, item)
+            }
+          }
+          ensureMarkers()
+          const newKeys = new Array<string>(n)
+          for (let i = 0; i < prevKeys.length; i++) newKeys[i] = prevKeys[i]!
+          for (let i = prevKeys.length; i < n; i++) {
+            const key = getKey(nextItems[i]!)
+            newKeys[i] = key
+            mountItemFull(key, nextItems[i]!)
+          }
+          prevKeys = newKeys
+          prevItemsRef = nextItems
+          return
+        }
+      }
+
+      // ── Fast path: clear all ────────────────────────────────────
+      if (n === 0 && liveItems.size > 0) {
+        for (const { teardown: td } of liveItems.values()) td.teardown()
+        container.textContent = ""
+        liveItems.clear()
+        markersInserted = false
+        itemFirstNodes.clear()
+        prevKeys = []
+        prevItemsRef = nextItems
+        return
+      }
+
+      // Build key→model map + ordered key array for full reconcile
+      const nextByKey = new Map<string, ItemModel>()
+      const nextKeyArr = new Array<string>(n)
+      for (let i = 0; i < n; i++) {
+        const key = getKey(nextItems[i]!)
+        nextKeyArr[i] = key
+        nextByKey.set(key, nextItems[i]!)
+      }
+
+      // ── Fast path: full replacement ─────────────────────────────
+      if (liveItems.size > 0 && n > 0) {
+        let noOverlap = true
+        for (const [key] of liveItems) {
+          if (nextByKey.has(key)) { noOverlap = false; break }
+        }
+        if (noOverlap) {
+          for (const { teardown: td } of liveItems.values()) td.teardown()
+          container.textContent = ""
+          liveItems.clear()
+          markersInserted = false
+          itemFirstNodes.clear()
+          for (let i = 0; i < n; i++) {
+            mountItemInitial(nextKeyArr[i]!, nextItems[i]!)
+          }
+          prevKeys = nextKeyArr
+          prevItemsRef = nextItems
+          return
+        }
+      }
+
+      ensureMarkers()
+
+      // Remove items no longer present
+      for (const [key] of liveItems) {
+        if (!nextByKey.has(key)) removeItem(key)
+      }
+
+      // Mount new + update existing
+      for (let i = 0; i < n; i++) {
+        const key = nextKeyArr[i]!
+        const item = nextItems[i]!
+        const entry = liveItems.get(key)
+        if (!entry) {
+          mountItemFull(key, item)
+        } else if (entry.modelRef.current !== item) {
+          pushItemUpdate(entry, entry.modelRef.current, item)
+        }
+      }
+
+      // Reorder using LIS for minimum DOM moves
+      const oldPos = new Map<string, number>()
+      let posIdx = 0
+      for (const [key] of liveItems) {
+        if (nextByKey.has(key)) oldPos.set(key, posIdx++)
+      }
+
+      const positions: number[] = []
+      const posKeys: string[] = []
+      for (let i = 0; i < n; i++) {
+        const p = oldPos.get(nextKeyArr[i]!)
+        if (p !== undefined) {
+          positions.push(p)
+          posKeys.push(nextKeyArr[i]!)
+        }
+      }
+
+      if (positions.length > 0) {
+        const lisResult = lis(positions)
+        const lisSet = new Set<number>()
+        for (const idx of lisResult) lisSet.add(idx)
+
+        let lastPlaced: ChildNode | null = null
+        let seqIdx = posKeys.length - 1
+        for (let i = n - 1; i >= 0; i--) {
+          const entry = liveItems.get(nextKeyArr[i]!)!
+          if (seqIdx >= 0 && nextKeyArr[i]! === posKeys[seqIdx]) {
+            if (!lisSet.has(seqIdx)) {
+              moveItemBefore(entry, lastPlaced)
+            }
+            seqIdx--
+          } else {
+            moveItemBefore(entry, lastPlaced)
+          }
+          lastPlaced = entry.startMarker
+        }
+      }
+
+      prevKeys = nextKeyArr
+      prevItemsRef = nextItems
+    }
+
+    // Initial mount
+    {
+      const initialItems = getItems(initialModel)
+      const initialKeys = new Array<string>(initialItems.length)
+      for (let i = 0; i < initialItems.length; i++) {
+        const key = getKey(initialItems[i]!)
+        initialKeys[i] = key
+        mountItemInitial(key, initialItems[i]!)
+      }
+      prevKeys = initialKeys
+      prevItemsRef = initialItems
     }
 
     const unsub = updates.subscribe(({ prev, next }) => reconcile(prev, next))

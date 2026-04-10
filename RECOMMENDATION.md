@@ -44,7 +44,47 @@ reconciliation.
 This is where the biggest performance decisions are. Choose based on your
 update pattern.
 
-### `array()` — the best default
+### `arrayBy()` — the best default
+
+```typescript
+import { arrayBy } from "@sdom/core"
+
+arrayBy("tbody",
+  (m) => m.rows,
+  (r) => r.id,
+  rowView,
+)
+```
+
+Zero-allocation keyed list — takes a key extractor function instead of
+requiring `.map(r => ({ key, model }))`. Avoids n wrapper object allocations
+per reconciliation. Also includes an array-identity fast path: when `getItems`
+returns the same reference, reconciliation is skipped entirely (O(1)).
+
+The reconciler has five fast paths:
+
+| Fast path | When it fires | What it skips |
+|---|---|---|
+| Array identity | Same array reference | Everything — O(1) |
+| Same-structure | Keys match in order | Map building, LIS, removal checks, reorder |
+| Append-only | Existing keys are a prefix | Full reconciliation — just mounts the tail |
+| Full replacement | Zero key overlap | Marker insertion — bulk clears + fast mount |
+| Clear-all | New list is empty | Marker insertion — bulk teardown |
+
+Performance vs `array()` (Chromium):
+
+| Operation | `array()` | `arrayBy()` | Improvement |
+|---|---:|---:|---|
+| Single row update (1k) | 27,784 | 28,982 | 4% faster |
+| Single row update (10k) | 1,509 | 1,801 | **19% faster** |
+| Bulk update (1k) | 4,800 | 5,405 | 13% faster |
+
+The savings scale with list size. At 10k rows, avoiding 10k wrapper object
+allocations + GC pressure gives a 19% improvement.
+
+**Use for:** Most lists. Prefer over `array()` for new code.
+
+### `array()` — legacy keyed list
 
 ```typescript
 import { array } from "@sdom/core"
@@ -55,33 +95,12 @@ array("tbody",
 )
 ```
 
-Good all-around performance with no extra complexity. The reconciler has four
-fast paths that handle common operations without full reconciliation:
+Same reconciliation engine as `arrayBy()` (including the array-identity fast
+path) but requires `.map()` to create `{ key, model }` wrappers. Still good
+performance — 60x faster than React, 22x faster than Preact on single-row
+updates. Beats Solid by 17% on bulk attribute updates.
 
-| Fast path | When it fires | What it skips |
-|---|---|---|
-| Same-structure | Keys match in order | Map building, LIS, removal checks, reorder |
-| Append-only | Existing keys are a prefix | Full reconciliation — just mounts the tail |
-| Full replacement | Zero key overlap | Marker insertion — bulk clears + fast mount |
-| Clear-all | New list is empty | Marker insertion — bulk teardown |
-
-Performance vs other frameworks (Chromium):
-
-| Operation | sdom `array()` | React | Preact | Solid |
-|---|---|---|---|---|
-| Single row update (1k) | 27,122 ops/sec | 448 | 1,215 | 201,158 |
-| Bulk attribute update (1k) | **2,976** | 969 | 1,674 | 2,539 |
-| Append 1k to 10k | **196** | 26 | 39 | — |
-
-SDOM's basic `array()` beats Solid by 17% on bulk attribute updates, and is
-60x faster than React and 22x faster than Preact on single-row updates.
-
-The weakness is **O(n) at large scale**: at 10k rows, updating 1 item costs
-~0.5ms (1,858 ops/sec) because the key comparison loop must verify all 10k
-keys. Solid's O(1) signals avoid this entirely.
-
-**Use for:** Most lists. Good enough unless you have 1k+ items with frequent
-single-item updates.
+**Use for:** Existing code. For new code, prefer `arrayBy()`.
 
 ### `incrementalArray()` — for large, frequently-updated lists
 
