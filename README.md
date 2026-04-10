@@ -95,9 +95,43 @@ SDOM uses `NoInfer` on `element`'s `attrInput` and `children` parameters so that
 - **Event handlers** return plain objects: `() => ({ type: "inc" })` — contextual typing narrows them to the correct Msg union member
 - **Method chains** (`.showIf()`, `.mapMsg()`) break the contextual chain, so those elements also need explicit type params
 
+## Performance
+
+SDOM is designed for fast updates, not fast initial renders. On targeted
+updates (single row change in a 1,000-row table), SDOM's incremental layer
+reaches **80% of Solid.js throughput in real Chromium** while using a simpler
+whole-model architecture (no signals, no dependency tracking).
+
+See [BENCHMARKS.md](./BENCHMARKS.md) for full results across React, Preact,
+Inferno, and Solid.js in both happy-dom and real Chromium. See
+[PERFORMANCE.md](./PERFORMANCE.md) for the optimization techniques and how
+they compose.
+
+### Optimization tiers
+
+| Tier | Technique | Single-row ops/s (Chromium) |
+|---|---|---:|
+| 0 | `array` + `element` | ~4,400 |
+| 1 | `incrementalArray` + keyed deltas | ~50,000 |
+| 2 | `programWithDelta` fast-path | ~52,000 |
+| 3 | `patchItem` + `compiled` + disabled guards | ~179,000 |
+| — | Solid.js (signal-per-leaf) | ~223,000 |
+
+## Advanced constructors
+
+| Function | Description |
+|---|---|
+| `indexedArray(tag, getItems, itemSdom)` | Non-keyed positional patching — no Map overhead |
+| `incrementalArray(tag, getItems, getDelta, itemSdom)` | Keyed delta consumption for O(1) updates |
+| `compiled(setup)` | Fused single-observer template — maximum control |
+| `programWithDelta(config)` | Delta-aware program runner with fast-path dispatch |
+
 ## Status
 
-Early development. Core constructors work, examples type-check and compile. See [ROADMAP.md](./ROADMAP.md) for planned layers (React adapter, Elm adapter, incremental rendering, JSX transform).
+Layer 1 (core library) is complete with 127 tests and benchmarks across
+happy-dom and real Chromium. Layer 4 (incremental/delta rendering) is
+substantially complete. Layer 2 (React adapter) is in progress. See
+[ROADMAP.md](./ROADMAP.md) for the full layer plan.
 
 ## License
 
