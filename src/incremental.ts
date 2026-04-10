@@ -55,6 +55,7 @@
 import { makeSDOM, type SDOM, type Teardown, type KeyedItem } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { KeyedArrayDelta, KeyedOp } from "./patch"
+import { lis } from "./constructors"
 
 // ---------------------------------------------------------------------------
 // Fast-patch handler — allows programWithDelta to bypass subscription chain
@@ -327,17 +328,43 @@ export function incrementalArray<
         }
       }
 
-      // Ensure DOM order — cursor-based walk
-      keyOrder = nextItems.map(i => i.key)
-      let cursor: ChildNode | null = container.firstChild
+      // Reorder using LIS for minimum DOM moves
+      const oldKeySet = new Set(keyOrder)
+      const newKeyOrder = nextItems.map(i => i.key)
+
+      // Build old-position map for surviving items
+      const oldPos = new Map<string, number>()
       for (let i = 0; i < keyOrder.length; i++) {
-        const entry = liveItems.get(keyOrder[i]!)!
-        if (entry.startMarker === cursor) {
-          cursor = entry.endMarker.nextSibling
-        } else {
-          moveItemBefore(entry, cursor)
+        if (nextByKey.has(keyOrder[i]!)) oldPos.set(keyOrder[i]!, i)
+      }
+
+      const positions: number[] = []
+      const posKeys: string[] = []
+      for (const key of newKeyOrder) {
+        const p = oldPos.get(key)
+        if (p !== undefined) { positions.push(p); posKeys.push(key) }
+      }
+
+      if (positions.length > 0) {
+        const lisResult = lis(positions)
+        const lisSet = new Set<number>()
+        for (const idx of lisResult) lisSet.add(idx)
+
+        let lastPlaced: ChildNode | null = null
+        let seqIdx = posKeys.length - 1
+        for (let i = newKeyOrder.length - 1; i >= 0; i--) {
+          const entry = liveItems.get(newKeyOrder[i]!)!
+          if (seqIdx >= 0 && newKeyOrder[i] === posKeys[seqIdx]) {
+            if (!lisSet.has(seqIdx)) moveItemBefore(entry, lastPlaced)
+            seqIdx--
+          } else {
+            moveItemBefore(entry, lastPlaced)
+          }
+          lastPlaced = entry.startMarker
         }
       }
+
+      keyOrder = newKeyOrder
     }
 
     // ─────────────────────────────────────────────────────────────────

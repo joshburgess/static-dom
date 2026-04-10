@@ -25,6 +25,132 @@ import { guard, guardFn, guardFn2, __SDOM_GUARD__ } from "./errors"
 import { __SDOM_DEV__, validateModelShape, validateUniqueKeys } from "./dev"
 
 // ---------------------------------------------------------------------------
+// Direct property assignment map (from Inferno)
+//
+// el.className = v is 2–5× faster than el.setAttribute("class", v)
+// because it bypasses the attribute→property reflection layer.
+// ---------------------------------------------------------------------------
+
+const ATTR_TO_PROP: Record<string, string> = {
+  class: "className",
+  for: "htmlFor",
+  tabindex: "tabIndex",
+  readonly: "readOnly",
+  maxlength: "maxLength",
+  cellspacing: "cellSpacing",
+  rowspan: "rowSpan",
+  colspan: "colSpan",
+  usemap: "useMap",
+  frameborder: "frameBorder",
+  contenteditable: "contentEditable",
+  crossorigin: "crossOrigin",
+  accesskey: "accessKey",
+}
+
+// ---------------------------------------------------------------------------
+// Prototype-based updaters (from Most.js)
+//
+// V8 optimizes method calls on objects with stable hidden classes via inline
+// caching. Each updater class has a fixed field layout and a prototype `run`
+// method, giving V8 monomorphic dispatch within each type. This replaces
+// ad-hoc closures whose unique captured-variable shapes cause megamorphic
+// call sites in the updater loop.
+// ---------------------------------------------------------------------------
+
+const EMPTY_CLASS_MAP: Record<string, boolean> = {}
+
+class PropUpdater<M> {
+  lastVal: any
+  constructor(
+    readonly el: any,
+    readonly name: string,
+    readonly label: string,
+    readonly derive: (m: M) => any,
+    readonly fallback: any,
+    initial: any,
+  ) { this.lastVal = initial; el[name] = initial }
+  run(_p: M, n: M): void {
+    const v = __SDOM_GUARD__
+      ? guard("update", this.label, () => this.derive(n), this.fallback)
+      : this.derive(n)
+    if (v !== this.lastVal) { this.lastVal = v; this.el[this.name] = v }
+  }
+}
+
+class StringAttrUpdater<M> {
+  lastVal: string
+  constructor(
+    readonly el: Element,
+    readonly name: string,
+    readonly label: string,
+    readonly derive: (m: M) => string,
+    initial: string,
+  ) { this.lastVal = initial; el.setAttribute(name, initial) }
+  run(_p: M, n: M): void {
+    const v = __SDOM_GUARD__
+      ? guard("update", this.label, () => this.derive(n), "")
+      : this.derive(n)
+    if (v !== this.lastVal) { this.lastVal = v; this.el.setAttribute(this.name, v) }
+  }
+}
+
+class BoolAttrUpdater<M> {
+  lastVal: boolean
+  constructor(
+    readonly el: Element,
+    readonly name: string,
+    readonly label: string,
+    readonly derive: (m: M) => boolean,
+    initial: boolean,
+  ) { this.lastVal = initial; el.toggleAttribute(name, initial) }
+  run(_p: M, n: M): void {
+    const v = __SDOM_GUARD__
+      ? guard("update", this.label, () => this.derive(n), false)
+      : this.derive(n)
+    if (v !== this.lastVal) { this.lastVal = v; this.el.toggleAttribute(this.name, v) }
+  }
+}
+
+class StyleUpdater<M> {
+  lastVal: string
+  constructor(
+    readonly el: HTMLElement,
+    readonly prop: string,
+    readonly label: string,
+    readonly derive: (m: M) => string,
+    initial: string,
+  ) { this.lastVal = initial; el.style.setProperty(prop, initial) }
+  run(_p: M, n: M): void {
+    const v = __SDOM_GUARD__
+      ? guard("update", this.label, () => this.derive(n), "")
+      : this.derive(n)
+    if (v !== this.lastVal) { this.lastVal = v; this.el.style.setProperty(this.prop, v) }
+  }
+}
+
+class ClassMapUpdater<M> {
+  lastMap: Record<string, boolean>
+  constructor(
+    readonly el: Element,
+    readonly derive: (m: M) => Record<string, boolean>,
+    initial: Record<string, boolean>,
+  ) { this.lastMap = initial; applyClassMap(el, initial) }
+  run(_p: M, n: M): void {
+    const nextMap = __SDOM_GUARD__
+      ? guard("update", "classMap", () => this.derive(n), EMPTY_CLASS_MAP)
+      : this.derive(n)
+    if (nextMap !== this.lastMap) { applyClassMap(this.el, nextMap, this.lastMap); this.lastMap = nextMap }
+  }
+}
+
+class EventRefUpdater<M> {
+  constructor(readonly ref: { current: M }) {}
+  run(_p: M, n: M): void { this.ref.current = n }
+}
+
+interface IUpdater<M> { run(prev: M, next: M): void }
+
+// ---------------------------------------------------------------------------
 // text
 // ---------------------------------------------------------------------------
 
@@ -108,85 +234,61 @@ export function element<
   // not on every attach. This avoids repeated object traversal at runtime.
   const attrList = buildAttrList(attrInput)
 
+  // Bitwise element flags (from Inferno) — precompute at construction time
+  // so the attach function can skip entire branches with a single & test.
+  const HAS_ATTRS = attrList.length > 0
+  const HAS_CHILDREN = children.length > 0
+
   return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
     const el = document.createElement(tag) as HTMLElementTagNameMap[Tag] & Element
 
-    const childTeardowns: Teardown[] = []
+    let childTeardowns: Teardown[] | null = null
     const checkShape = validateModelShape(`element<"${tag}">`, initialModel)
 
-    // ── Attr setup: initial values + build per-attr updaters ──
-    // Instead of one subscription per attr (N subscriptions), we build
-    // updater functions at mount time and call them from a single subscription.
-    const attrUpdaters: Array<(prev: Model, next: Model) => void> = []
-    const eventTeardowns: Array<() => void> = []
+    // ── Attr setup ──
+    // Prototype-based updater classes (from Most.js): each class has a stable
+    // hidden class and a prototype `run` method, giving V8 monomorphic dispatch
+    // within each updater type instead of megamorphic closure calls.
+    // Bitwise flag HAS_ATTRS gates the entire loop — skip for static elements.
+    let attrUpdaters: IUpdater<Model>[] | null = null
+    let eventTeardowns: Array<() => void> | null = null
+
+    if (HAS_ATTRS) {
+    attrUpdaters = []
+    eventTeardowns = []
 
     for (const rawAttr of attrList) {
       const attr = rawAttr as SDOMAttr<Model, Msg>
       switch (attr.kind) {
         case "string": {
-          // Cache last-written value in JS — avoids DOM read (getAttribute) on every tick
-          let lastVal = guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), "")
-          el.setAttribute(attr.name, lastVal)
-          const derive = attr.value
-          const name = attr.name
-          attrUpdaters.push((_prev, next) => {
-            const v = __SDOM_GUARD__
-              ? guard("update", `attr "${name}"`, () => derive(next), "")
-              : derive(next)
-            if (v !== lastVal) { lastVal = v; el.setAttribute(name, v) }
-          })
+          const initial = guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), "")
+          const propName = ATTR_TO_PROP[attr.name]
+          if (propName) {
+            // Direct property assignment — 2–5× faster than setAttribute
+            attrUpdaters.push(new PropUpdater<Model>(el, propName, `attr "${attr.name}"`, attr.value, "", initial))
+          } else {
+            attrUpdaters.push(new StringAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
+          }
           break
         }
         case "bool": {
-          let lastVal = guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), false)
-          el.toggleAttribute(attr.name, lastVal)
-          const derive = attr.value
-          const name = attr.name
-          attrUpdaters.push((_prev, next) => {
-            const v = __SDOM_GUARD__
-              ? guard("update", `attr "${name}"`, () => derive(next), false)
-              : derive(next)
-            if (v !== lastVal) { lastVal = v; el.toggleAttribute(name, v) }
-          })
+          const initial = guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), false)
+          attrUpdaters.push(new BoolAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
           break
         }
         case "prop": {
-          let lastVal: string | boolean | number = guard("attach", `prop "${attr.name}"`, () => attr.value(initialModel), "")
-          ;(el as any)[attr.name] = lastVal
-          const derive = attr.value
-          const name = attr.name
-          attrUpdaters.push((_prev, next) => {
-            const v = __SDOM_GUARD__
-              ? guard("update", `prop "${name}"`, () => derive(next), "")
-              : derive(next)
-            if (v !== lastVal) { lastVal = v; (el as any)[name] = v }
-          })
+          const initial = guard("attach", `prop "${attr.name}"`, () => attr.value(initialModel), "")
+          attrUpdaters.push(new PropUpdater<Model>(el, attr.name, `prop "${attr.name}"`, attr.value, "", initial))
           break
         }
         case "style": {
-          let lastVal = guard("attach", `style "${attr.property}"`, () => attr.value(initialModel), "")
-          ;(el as HTMLElement).style.setProperty(attr.property, lastVal)
-          const derive = attr.value
-          const prop = attr.property
-          attrUpdaters.push((_prev, next) => {
-            const v = __SDOM_GUARD__
-              ? guard("update", `style "${prop}"`, () => derive(next), "")
-              : derive(next)
-            if (v !== lastVal) { lastVal = v; (el as HTMLElement).style.setProperty(prop, v) }
-          })
+          const initial = guard("attach", `style "${attr.property}"`, () => attr.value(initialModel), "")
+          attrUpdaters.push(new StyleUpdater<Model>(el as HTMLElement, attr.property, `style "${attr.property}"`, attr.value, initial))
           break
         }
         case "classMap": {
-          const emptyMap: Record<string, boolean> = {}
-          let lastMap = guard("attach", "classMap", () => attr.map(initialModel), emptyMap)
-          applyClassMap(el, lastMap)
-          const derive = attr.map
-          attrUpdaters.push((_prev, next) => {
-            const nextMap = __SDOM_GUARD__
-              ? guard("update", "classMap", () => derive(next), emptyMap)
-              : derive(next)
-            if (nextMap !== lastMap) { applyClassMap(el, nextMap, lastMap); lastMap = nextMap }
-          })
+          const initial = guard("attach", "classMap", () => attr.map(initialModel), EMPTY_CLASS_MAP)
+          attrUpdaters.push(new ClassMapUpdater<Model>(el, attr.map, initial))
           break
         }
         case "event": {
@@ -200,36 +302,41 @@ export function element<
             if (msg !== null) dispatch(msg)
           }
           el.addEventListener(name, handler)
-          attrUpdaters.push((_prev, next) => { ref.current = next })
+          attrUpdaters.push(new EventRefUpdater<Model>(ref))
           eventTeardowns.push(() => el.removeEventListener(name, handler))
           break
         }
       }
     }
+    } // end if (HAS_ATTRS)
 
     // ── Single subscription for all attrs ──
-    // One observer callback that runs all updaters in a tight loop.
-    // This replaces N separate subscriptions (one per attr).
+    // One observer callback runs all updaters in a tight loop.
     let attrUnsub: (() => void) | null = null
-    const nUpdaters = attrUpdaters.length
-    if (nUpdaters > 0) {
-      attrUnsub = updates.subscribe(({ prev, next }) => {
-        if (__SDOM_DEV__) checkShape(next)
-        for (let i = 0; i < nUpdaters; i++) {
-          attrUpdaters[i]!(prev, next)
-        }
-      })
+    if (attrUpdaters !== null) {
+      const updaters = attrUpdaters
+      const nUpdaters = updaters.length
+      if (nUpdaters > 0) {
+        attrUnsub = updates.subscribe(({ prev, next }) => {
+          if (__SDOM_DEV__) checkShape(next)
+          for (let i = 0; i < nUpdaters; i++) {
+            updaters[i]!.run(prev, next)
+          }
+        })
+      }
     }
 
-    // ── Children: still get the full update stream ──
-    // Children are separate SDOM trees with their own subscriptions.
-    // They subscribe to `updates` directly (not through the attr subscription).
-    for (let i = 0; i < children.length; i++) {
-      const td = guard("attach", `element<${tag}> child[${i}]`, () =>
-        children[i]!.attach(el, initialModel, updates, dispatch),
-        { teardown() {} }
-      )
-      childTeardowns.push(td)
+    // ── Children ──
+    // Bitwise flag HAS_CHILDREN gates child mount — skip for leaf elements.
+    if (HAS_CHILDREN) {
+      childTeardowns = []
+      for (let i = 0; i < children.length; i++) {
+        const td = guard("attach", `element<${tag}> child[${i}]`, () =>
+          children[i]!.attach(el, initialModel, updates, dispatch),
+          { teardown() {} }
+        )
+        childTeardowns.push(td)
+      }
     }
 
     parent.appendChild(el)
@@ -237,8 +344,8 @@ export function element<
     return {
       teardown() {
         attrUnsub?.()
-        eventTeardowns.forEach(fn => fn())
-        childTeardowns.forEach(t => t.teardown())
+        if (eventTeardowns) eventTeardowns.forEach(fn => fn())
+        if (childTeardowns) childTeardowns.forEach(t => t.teardown())
         el.remove()
       },
     }
@@ -410,17 +517,52 @@ export function array<
         }
       }
 
-      // 3. Ensure DOM order — cursor-based walk over markers
-      let cursor: ChildNode | null = container.firstChild
-      for (let i = 0; i < nextItems.length; i++) {
-        const entry = liveItems.get(nextItems[i]!.key)!
-        if (entry.startMarker === cursor) {
-          // Already in position — skip past this item
-          cursor = entry.endMarker.nextSibling
-        } else {
-          // Out of position — move before cursor
-          moveItemBefore(entry, cursor)
+      // 3. Reorder using LIS (from Inferno) for minimum DOM moves.
+      // Build old-position sequence for surviving (non-new) items, then
+      // find the longest increasing subsequence — those items stay in place.
+      const oldPos = new Map<string, number>()
+      let posIdx = 0
+      for (const [key] of liveItems) {
+        if (nextByKey.has(key)) oldPos.set(key, posIdx++)
+      }
+
+      // Collect positions of surviving items in new order
+      const positions: number[] = []
+      const posKeys: string[] = []
+      for (const { key } of nextItems) {
+        const p = oldPos.get(key)
+        if (p !== undefined) {
+          positions.push(p)
+          posKeys.push(key)
         }
+      }
+
+      if (positions.length > 0) {
+        // LIS indices — items at these positions are already in correct order
+        const lisResult = lis(positions)
+        const lisSet = new Set<number>()
+        for (const idx of lisResult) lisSet.add(idx)
+
+        // Iterate backwards: move items not in LIS before the last placed item
+        let lastPlaced: ChildNode | null = null
+        let seqIdx = posKeys.length - 1
+        for (let i = nextItems.length - 1; i >= 0; i--) {
+          const entry = liveItems.get(nextItems[i]!.key)!
+          if (seqIdx >= 0 && nextItems[i]!.key === posKeys[seqIdx]) {
+            // Surviving item
+            if (!lisSet.has(seqIdx)) {
+              // Not in LIS — needs to move
+              moveItemBefore(entry, lastPlaced)
+            }
+            seqIdx--
+          } else {
+            // New item — move to correct position
+            moveItemBefore(entry, lastPlaced)
+          }
+          lastPlaced = entry.startMarker
+        }
+      } else {
+        // All items are new — already appended in order, nothing to move
       }
     }
 
@@ -437,6 +579,108 @@ export function array<
           startMarker.remove()
           endMarker.remove()
         }
+        container.remove()
+      },
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// indexedArray — non-keyed fast path (from Inferno)
+// ---------------------------------------------------------------------------
+
+/**
+ * A non-keyed array that patches items by index.
+ *
+ * Unlike `array` which uses string keys and a Map for O(1) lookup, this
+ * constructor uses pure positional indexing: slot N always shows item N.
+ * Items are added/removed only at the end.
+ *
+ * Trade-offs vs `array`:
+ *   + No Map allocation or key lookups — lower overhead per item
+ *   + No DOM reordering logic — items never move
+ *   - Removing from the middle re-patches all subsequent slots
+ *   - No identity preservation across reorderings
+ *
+ * Use for: logs, fixed grids, tables without sorting, append-only lists.
+ *
+ * @param containerTag  Wrapper element tag.
+ * @param getItems      Project model to item array (no keys needed).
+ * @param itemSdom      Template for each item.
+ */
+export function indexedArray<Model, ItemModel, Msg>(
+  containerTag: keyof HTMLElementTagNameMap,
+  getItems: (model: Model) => ItemModel[],
+  itemSdom: SDOM<ItemModel, Msg>
+): SDOM<Model, Msg> {
+  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
+    const container = document.createElement(containerTag)
+    parent.appendChild(container)
+
+    type Slot = {
+      teardown: Teardown
+      modelRef: { current: ItemModel }
+      observer: Observer<Update<ItemModel>> | null
+      update: { prev: ItemModel; next: ItemModel }
+    }
+
+    const slots: Slot[] = []
+
+    function mountSlot(itemModel: ItemModel): void {
+      const modelRef = { current: itemModel }
+      const update = { prev: itemModel, next: itemModel }
+      const slot: Slot = { teardown: { teardown() {} }, modelRef, observer: null, update }
+
+      const itemUpdates: UpdateStream<ItemModel> = {
+        subscribe(obs) {
+          slot.observer = obs
+          return () => { slot.observer = null }
+        },
+      }
+
+      slot.teardown = itemSdom.attach(container, itemModel, itemUpdates, dispatch)
+      slots.push(slot)
+    }
+
+    function unmountLast(): void {
+      const slot = slots.pop()!
+      slot.teardown.teardown()
+    }
+
+    // Initial mount
+    const initialItems = getItems(initialModel)
+    for (const item of initialItems) mountSlot(item)
+
+    const unsub = updates.subscribe(({ next }) => {
+      const nextItems = getItems(next)
+      const prevLen = slots.length
+      const nextLen = nextItems.length
+
+      // Patch existing slots (up to min of old/new length)
+      const patchLen = prevLen < nextLen ? prevLen : nextLen
+      for (let i = 0; i < patchLen; i++) {
+        const slot = slots[i]!
+        const newModel = nextItems[i]!
+        if (slot.modelRef.current !== newModel) {
+          const prev = slot.modelRef.current
+          slot.modelRef.current = newModel
+          slot.update.prev = prev
+          slot.update.next = newModel
+          slot.observer?.(slot.update as Update<ItemModel>)
+        }
+      }
+
+      // Shrink: unmount excess from end
+      for (let i = prevLen - 1; i >= nextLen; i--) unmountLast()
+
+      // Grow: mount new at end
+      for (let i = prevLen; i < nextLen; i++) mountSlot(nextItems[i]!)
+    })
+
+    return {
+      teardown() {
+        unsub()
+        for (const slot of slots) slot.teardown.teardown()
         container.remove()
       },
     }
@@ -580,6 +824,77 @@ export function component<Model, Msg = never>(
 }
 
 // ---------------------------------------------------------------------------
+// compiled — fused single-observer template (from Inferno/Most.js)
+// ---------------------------------------------------------------------------
+
+/**
+ * A hand-optimized SDOM component with a single observer.
+ *
+ * Unlike `element` (which creates N subscriptions for N attrs + children),
+ * `compiled` registers exactly ONE observer on the update stream. The user
+ * provides raw DOM creation and update logic — no guard overhead, no
+ * per-attr dispatch, no intermediate subscription layers.
+ *
+ * This is the SDOM equivalent of Inferno's compiled templates or Solid's
+ * compiled JSX output: maximum throughput by eliminating framework overhead.
+ *
+ * Use for performance-critical inner loops (e.g., list item templates in
+ * a 1000-row table). For most components, `element` is more ergonomic.
+ *
+ * @param setup  Called once during `attach`. Creates DOM nodes, appends them
+ *               to `parent`, and returns an update + teardown pair.
+ *
+ * @example
+ * ```typescript
+ * const fastRow = compiled<Row, Msg>((parent, model, dispatch) => {
+ *   const tr = document.createElement("tr")
+ *   const td1 = document.createElement("td")
+ *   const td2 = document.createElement("td")
+ *   td1.className = model.selected ? "selected" : ""
+ *   td1.textContent = model.id
+ *   td2.textContent = model.label
+ *   tr.appendChild(td1)
+ *   tr.appendChild(td2)
+ *   parent.appendChild(tr)
+ *
+ *   let lastCls = td1.className, lastLabel = model.label
+ *   return {
+ *     update(_prev, next) {
+ *       const cls = next.selected ? "selected" : ""
+ *       if (cls !== lastCls) { lastCls = cls; td1.className = cls }
+ *       const lbl = next.label
+ *       if (lbl !== lastLabel) { lastLabel = lbl; td2.textContent = lbl }
+ *     },
+ *     teardown() { tr.remove() },
+ *   }
+ * })
+ * ```
+ */
+export function compiled<Model, Msg>(
+  setup: (
+    parent: Element | DocumentFragment,
+    initialModel: Model,
+    dispatch: Dispatcher<Msg>
+  ) => {
+    update: (prev: Model, next: Model) => void
+    teardown: () => void
+  }
+): SDOM<Model, Msg> {
+  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
+    const instance = setup(parent, initialModel, dispatch)
+    const unsub = updates.subscribe(({ prev, next }) => {
+      instance.update(prev, next)
+    })
+    return {
+      teardown() {
+        unsub()
+        instance.teardown()
+      },
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
 // wrapChannel — lower SDOMWithChannel to SDOM
 // ---------------------------------------------------------------------------
 
@@ -678,6 +993,57 @@ export function fragment<Model, Msg>(
       },
     }
   })
+}
+
+// ---------------------------------------------------------------------------
+// LIS — Longest Increasing Subsequence (from Inferno)
+//
+// Used in array reconciliation to find the maximum set of items that are
+// already in correct relative order. Only items NOT in the LIS need DOM
+// moves, minimizing expensive insertBefore calls.
+//
+// Time: O(n log n)  Space: O(n)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the longest increasing subsequence of `arr`.
+ * Returns indices into `arr` that form the LIS, in order.
+ */
+export function lis(arr: number[]): number[] {
+  const n = arr.length
+  if (n === 0) return []
+
+  // tails[i] = smallest value ending an IS of length i+1
+  const tails: number[] = []
+  // tailIdx[i] = index in arr where tails[i] lives
+  const tailIdx: number[] = []
+  // prev[i] = predecessor index in the LIS chain for arr[i]
+  const prev = new Int32Array(n).fill(-1)
+
+  for (let i = 0; i < n; i++) {
+    const val = arr[i]!
+    // Binary search: leftmost position in tails >= val
+    let lo = 0, hi = tails.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (tails[mid]! < val) lo = mid + 1
+      else hi = mid
+    }
+
+    tails[lo] = val
+    tailIdx[lo] = i
+    prev[i] = lo > 0 ? tailIdx[lo - 1]! : -1
+  }
+
+  // Reconstruct: walk backwards from the tail of the longest chain
+  const result = new Array<number>(tails.length)
+  let k = tailIdx[tails.length - 1]!
+  for (let i = tails.length - 1; i >= 0; i--) {
+    result[i] = k
+    k = prev[k]!
+  }
+
+  return result
 }
 
 // ---------------------------------------------------------------------------

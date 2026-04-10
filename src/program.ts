@@ -48,6 +48,16 @@ export interface ProgramHandle<Model, Msg> {
   getModel: () => Model
   /** Tear down the entire program (remove DOM nodes, cancel subscriptions). */
   teardown: () => void
+  /**
+   * Direct fast-patch — bypasses dispatch, update, delta extraction, and
+   * observer chain. Goes straight to the registered item updater via
+   * _tryFastPatch. Returns true if handled.
+   *
+   * Use for maximum throughput when you know exactly which keyed item
+   * changed and have its new value. The model is NOT updated — call
+   * getModel() after a full dispatch to synchronize if needed.
+   */
+  patchItem?: (key: string, value: unknown) => boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +195,21 @@ export interface DeltaProgramConfig<Model, Msg> {
   update: (msg: Msg, model: Model) => [Model, unknown | undefined]
   view: SDOM<Model, Msg>
   onUpdate?: (msg: Msg, prev: Model, next: Model, delta: unknown | undefined) => void
+  /**
+   * Optional pre-update delta extractor (from Most.js stream fusion).
+   *
+   * Called BEFORE `update`. If it returns a non-null delta that the
+   * fast-patch handler processes, `update()` is never called — skipping
+   * the entire model computation (e.g., a 1000-element array spread).
+   *
+   * The model returned by `getModel()` will be stale until either:
+   *   - `update()` is called on a subsequent dispatch, or
+   *   - a dispatch falls through to the normal path.
+   *
+   * For correctness in production code, `extractDelta` can mutate the
+   * model in place (safe since the fast-path bypasses all observers).
+   */
+  extractDelta?: (msg: Msg, model: Model) => unknown | null
 }
 
 /**
@@ -198,7 +223,7 @@ export interface DeltaProgramConfig<Model, Msg> {
 export function programWithDelta<Model, Msg>(
   config: DeltaProgramConfig<Model, Msg>
 ): ProgramHandle<Model, Msg> {
-  const { container, init, update, view, onUpdate } = config
+  const { container, init, update, view, onUpdate, extractDelta } = config
 
   // Custom UpdateStream that carries deltas.
   // Single-observer fast path + reusable mutable Update object.
@@ -229,22 +254,40 @@ export function programWithDelta<Model, Msg>(
 
   let viewTeardown: Teardown | null = null
 
-  const dispatch: Dispatcher<Msg> = (msg: Msg) => {
-    const prev = current
-    const [next, delta] = update(msg, prev)
-    onUpdate?.(msg, prev, next, delta)
-    current = next
-
-    // Fast path: single keyedPatch delta → bypass subscription chain entirely.
-    // This is the "compiled dispatch" optimization: delta → item updater, no observers.
+  /** Try a delta through the fast-patch handler. Returns true if handled. */
+  function tryDeltaFastPath(delta: unknown): boolean {
     if (delta != null && typeof delta === "object") {
       const d = delta as { kind?: string; ops?: readonly { kind?: string; key?: string; value?: unknown }[] }
       if (d.kind === "ops" && d.ops !== undefined && d.ops.length === 1) {
         const op = d.ops[0]!
         if (op.kind === "patch" && op.key !== undefined && _tryFastPatch(op.key, op.value)) {
-          return // Handled — skip normal subscription chain
+          return true
         }
       }
+    }
+    return false
+  }
+
+  const dispatch: Dispatcher<Msg> = (msg: Msg) => {
+    const prev = current
+
+    // Pre-update fast path: extractDelta lets us skip update() entirely.
+    // This avoids the O(n) model computation (e.g., 1000-element array spread)
+    // when a single-item delta can handle the update directly.
+    if (extractDelta !== undefined) {
+      const earlyDelta = extractDelta(msg, prev)
+      if (earlyDelta !== null && tryDeltaFastPath(earlyDelta)) {
+        return // update() was never called — zero model allocation
+      }
+    }
+
+    const [next, delta] = update(msg, prev)
+    onUpdate?.(msg, prev, next, delta)
+    current = next
+
+    // Post-update fast path: try the delta from update()
+    if (tryDeltaFastPath(delta)) {
+      return // Handled — skip normal subscription chain
     }
 
     // Normal path: fire all observers
@@ -263,6 +306,9 @@ export function programWithDelta<Model, Msg>(
   return {
     dispatch,
     getModel: () => current,
+    patchItem(key: string, value: unknown) {
+      return _tryFastPatch(key, value)
+    },
     teardown() {
       viewTeardown?.teardown()
       viewTeardown = null

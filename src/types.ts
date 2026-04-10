@@ -249,6 +249,17 @@ export interface SDOM<Model, out Msg> {
 // the `attach` function wrapped in the SDOM interface.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Focus fusion symbols (from Most.js operator fusion)
+//
+// When consecutive .focus() calls are chained, we compose the lenses into
+// a single lens and eliminate the intermediate subscription layer.
+// This avoids O(depth) observer hops for deeply nested component trees.
+// ---------------------------------------------------------------------------
+
+const _FOCUS_TARGET: unique symbol = Symbol("sdom.focusTarget")
+const _FOCUS_LENS: unique symbol = Symbol("sdom.focusLens")
+
 /**
  * Internal helper: given an `attach` function, produce a full SDOM<M, Msg>
  * with all the combinator methods wired up.
@@ -263,7 +274,16 @@ export function makeSDOM<Model, Msg>(
     attach: attachFn,
 
     focus<Outer>(lensOuter: Lens<Outer, Model>): SDOM<Outer, Msg> {
-      return makeSDOM<Outer, Msg>((parent, initialOuter, outerUpdates, dispatch) => {
+      // Focus fusion: if this SDOM was itself created by .focus(), compose
+      // the lenses into one and eliminate the intermediate subscription layer.
+      // a.focus(L1).focus(L2) → a.focus(L2.compose(L1)) — one observer, not two.
+      const innerTarget = (sdom as any)[_FOCUS_TARGET] as SDOM<any, Msg> | undefined
+      const innerLens = (sdom as any)[_FOCUS_LENS] as Lens<Model, any> | undefined
+      if (innerTarget !== undefined && innerLens !== undefined) {
+        return innerTarget.focus(lensOuter.compose(innerLens))
+      }
+
+      const result = makeSDOM<Outer, Msg>((parent, initialOuter, outerUpdates, dispatch) => {
         // Project updates to only fire when the focused slice changes.
         // When a structured delta is available and the lens has getDelta,
         // we can check whether this field changed without calling get().
@@ -297,6 +317,11 @@ export function makeSDOM<Model, Msg>(
         }
         return sdom.attach(parent, lensOuter.get(initialOuter), innerUpdates, dispatch)
       })
+
+      // Tag the result for future fusion
+      ;(result as any)[_FOCUS_TARGET] = sdom
+      ;(result as any)[_FOCUS_LENS] = lensOuter
+      return result
     },
 
     mapMsg<Msg2>(f: (msg: Msg) => Msg2): SDOM<Model, Msg2> {

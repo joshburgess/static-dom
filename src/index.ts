@@ -131,7 +131,7 @@ export type { Observable, UpdateStream, Dispatcher, Update, Signal } from "./obs
 export { createSignal, toUpdateStream, mapUpdate, contramapDispatcher } from "./observable"
 
 // Constructors
-export { text, staticText, element, array, optional, component, fragment, wrapChannel } from "./constructors"
+export { text, staticText, element, array, indexedArray, optional, component, compiled, fragment, wrapChannel, lis } from "./constructors"
 
 // Program runners
 export type { ProgramConfig, ProgramHandle, EffectProgramConfig, DeltaProgramConfig, Cmd } from "./program"
@@ -152,3 +152,7 @@ export {
   ops, diffKeyed,
   fields, applyRecord, fieldDelta, produce,
 } from "./patch"
+
+// Event delegation (from Inferno)
+export type { EventDelegator } from "./delegation"
+export { createDelegator } from "./delegation"
