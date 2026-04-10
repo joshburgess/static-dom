@@ -196,22 +196,13 @@ export interface Traversal<S, A> {
 
 const enum OpticTag { Lens, Prism }
 
-/** Runtime mirror of ComposeKinds. */
-function computeComposeKind<K1 extends OpticKind, K2 extends OpticKind>(
-  k1: K1, k2: K2
-): ComposeKinds<K1, K2> {
-  if (k1 === "iso") return k2 as ComposeKinds<K1, K2>
-  if (k2 === "iso") return k1 as ComposeKinds<K1, K2>
-  if (k1 === "lens" && k2 === "lens") return "lens" as ComposeKinds<K1, K2>
-  if (k1 === "prism" && k2 === "prism") return "prism" as ComposeKinds<K1, K2>
-  return "affine" as ComposeKinds<K1, K2>
-}
-
 class OpticImpl<K extends OpticKind, S, A> {
+  /** Phantom — exists only at the type level for structural discrimination. */
+  declare readonly _kind: K
+
   readonly getDelta?: (parentDelta: unknown) => unknown | undefined
 
   constructor(
-    readonly _kind: K,
     readonly tag: OpticTag,
     readonly getOptic: (s: S) => Either<A, Error>,
     readonly setOptic: (a: A) => (s: S) => Either<S, Error>,
@@ -314,6 +305,7 @@ class OpticImpl<K extends OpticKind, S, A> {
 
     // Single-target optic composition
     const other = that as OpticBase<OpticKind, A, unknown>
+    const otherImpl = other as OpticImpl<OpticKind, A, unknown>
     const selfGet = this.getOptic
     const selfSet = this.setOptic
     const selfGetDelta = this.getDelta
@@ -331,19 +323,13 @@ class OpticImpl<K extends OpticKind, S, A> {
           ? selfGetDelta
           : undefined
 
-    // Derive composition style from the kind tag:
-    // Lens/Affine need the whole for set (lens-style), Iso/Prism don't (prism-style)
-    const selfNeedsWhole = this._kind === "lens" || this._kind === "affine"
-    const otherNeedsWhole = other._kind === "lens" || other._kind === "affine"
-    const resultTag = selfNeedsWhole || otherNeedsWhole
+    // Lens/Affine need the whole for set (tag=Lens), Iso/Prism don't (tag=Prism)
+    const resultTag = (this.tag === OpticTag.Lens || otherImpl.tag === OpticTag.Lens)
       ? OpticTag.Lens
       : OpticTag.Prism
 
-    const resultKind = computeComposeKind(this._kind, other._kind)
-
     if (resultTag === OpticTag.Lens) {
       return new OpticImpl<OpticKind, S, unknown>(
-        resultKind,
         OpticTag.Lens,
         (s: S): Either<unknown, Error> => {
           const outer = selfGet(s)
@@ -361,7 +347,6 @@ class OpticImpl<K extends OpticKind, S, A> {
       )
     } else {
       return new OpticImpl<OpticKind, S, unknown>(
-        resultKind,
         OpticTag.Prism,
         (s: S): Either<unknown, Error> => {
           const outer = selfGet(s)
@@ -392,7 +377,6 @@ class OpticImpl<K extends OpticKind, S, A> {
  */
 export function isoOf<S, A>(from: (s: S) => A, to: (a: A) => S): Iso<S, A> {
   return new OpticImpl<"iso", S, A>(
-    "iso",
     OpticTag.Prism, // Iso uses prism composition (set doesn't need whole)
     (s: S) => right(from(s)),
     (a: A) => (_s: S) => right(to(a)),
@@ -413,7 +397,6 @@ export function lensOf<S, A>(
   getDelta?: (parentDelta: unknown) => unknown | undefined,
 ): Lens<S, A> {
   return new OpticImpl<"lens", S, A>(
-    "lens",
     OpticTag.Lens,
     (s: S) => right(get(s)),
     (a: A) => (s: S) => right(set(a, s)),
@@ -433,7 +416,6 @@ export function prismOf<S, A>(
   getDelta?: (parentDelta: unknown) => unknown | undefined,
 ): Prism<S, A> {
   return new OpticImpl<"prism", S, A>(
-    "prism",
     OpticTag.Prism,
     (s: S): Either<A, Error> => {
       const a = preview(s)
@@ -455,7 +437,6 @@ export function affineOf<S, A>(
   getDelta?: (parentDelta: unknown) => unknown | undefined,
 ): Affine<S, A> {
   return new OpticImpl<"affine", S, A>(
-    "affine",
     OpticTag.Lens, // Affine uses lens composition (set needs whole)
     (s: S): Either<A, Error> => {
       const a = preview(s)
