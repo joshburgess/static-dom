@@ -20,7 +20,7 @@ import { makeSDOM, type SDOM, type Teardown, type AttrInput,
          type SDOMAttr, type KeyedItem, type ArrayContext,
          type ChannelEvent, type SDOMWithChannel } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
-import type { Prism } from "./optics"
+import type { Prism, Affine } from "./optics"
 import { guard, guardFn, guardFn2, __SDOM_GUARD__ } from "./errors"
 import { __SDOM_DEV__, validateModelShape, validateUniqueKeys } from "./dev"
 
@@ -705,7 +705,7 @@ export function indexedArray<Model, ItemModel, Msg>(
  * @param inner   Component to render when the sub-model exists.
  */
 export function optional<Model, SubModel, Msg>(
-  prism: Prism<Model, SubModel>,
+  prism: Prism<Model, SubModel> | Affine<Model, SubModel>,
   inner: SDOM<SubModel, Msg>
 ): SDOM<Model, Msg> {
   return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {

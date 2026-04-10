@@ -123,8 +123,13 @@ export { setDevMode, setDevWarningHandler, resetDevWarnings } from "./dev"
 export type { SDOM, Teardown, AttrInput, KeyedItem, ArrayContext } from "./types"
 
 // Optics
-export type { Lens, Prism, Iso } from "./optics"
-export { lens, prop, composeLenses, prism, unionMember, nullablePrism, iso, indexLens } from "./optics"
+export type { Optic, Iso, Lens, Prism, Affine } from "./optics"
+export {
+  isoOf, lensOf, prismOf, affineOf,
+  iso, lens, prism,
+  prop, at, composeLenses,
+  unionMember, nullablePrism, indexLens,
+} from "./optics"
 
 // Observable primitives (useful for building adapters)
 export type { Observable, UpdateStream, Dispatcher, Update, Signal } from "./observable"

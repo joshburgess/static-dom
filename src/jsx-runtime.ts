@@ -22,7 +22,7 @@
 import { element, text, staticText, fragment, compiled, array, optional, ATTR_TO_PROP, applyClassMap } from "./constructors"
 import type { SDOM, KeyedItem } from "./types"
 import type { Dispatcher } from "./observable"
-import type { Prism } from "./optics"
+import type { Prism, Affine } from "./optics"
 
 // ---------------------------------------------------------------------------
 // IDL properties — routed to `attrs` for direct property assignment
@@ -488,7 +488,7 @@ export function For<M = any, Item = any>(props: {
  * ```
  */
 export function Optional<S = any, A = any>(props: {
-  prism: Prism<S, A>
+  prism: Prism<S, A> | Affine<S, A>
   children?: SDOMChild | SDOMChild[]
 }): SDOM<S, any> {
   const children = normalizeChildren(props.children)

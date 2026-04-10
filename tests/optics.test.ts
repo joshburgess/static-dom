@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest"
-import { lens, prop, composeLenses, unionMember, indexLens, iso } from "../src/optics"
-import type { Lens, Prism, Iso } from "../src/optics"
+import {
+  lens, lensOf, prism, prismOf, iso, isoOf, affineOf,
+  prop, at, composeLenses, unionMember, nullablePrism, indexLens,
+} from "../src/optics"
+import type { Lens, Prism, Iso, Affine } from "../src/optics"
 import {
   createSignal,
   toUpdateStream,
@@ -582,5 +585,344 @@ describe("contramapDispatcher", () => {
 
     mapped(42)
     expect(received).toEqual([42])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Composition table — structural subtyping
+// ---------------------------------------------------------------------------
+
+describe("composition table", () => {
+  // Iso: Celsius ↔ Fahrenheit
+  const cToF = isoOf<number, number>(
+    c => c * 9 / 5 + 32,
+    f => (f - 32) * 5 / 9,
+  )
+
+  // Lens: temp field
+  interface Weather { temp: number; desc: string }
+  const tempLens = lensOf<Weather, number>(
+    w => w.temp,
+    (t, w) => ({ ...w, temp: t }),
+  )
+
+  // Prism: positive number
+  const positivePrism = prismOf<number, number>(
+    n => n > 0 ? n : null,
+    n => n,
+  )
+
+  it("Iso + Iso = Iso", () => {
+    const doubleIso = isoOf<number, number>(n => n * 2, n => n / 2)
+    const composed = cToF.compose(doubleIso)
+    // If it's an Iso, it should have from/to
+    expect(composed.from(0)).toBe(64) // 32 * 2
+    expect(composed.to(64)).toBeCloseTo(0)
+  })
+
+  it("Lens + Lens = Lens", () => {
+    interface Outer { inner: Weather }
+    const innerLens = lensOf<Outer, Weather>(
+      o => o.inner,
+      (w, o) => ({ ...o, inner: w }),
+    )
+    const composed = innerLens.compose(tempLens)
+    const o: Outer = { inner: { temp: 25, desc: "sunny" } }
+    expect(composed.get(o)).toBe(25)
+    expect(composed.set(30, o)).toEqual({ inner: { temp: 30, desc: "sunny" } })
+  })
+
+  it("Prism + Prism = Prism", () => {
+    const evenPrism = prismOf<number, number>(
+      n => n % 2 === 0 ? n : null,
+      n => n,
+    )
+    const composed = positivePrism.compose(evenPrism)
+    expect(composed.preview(4)).toBe(4)   // positive + even
+    expect(composed.preview(3)).toBeNull() // positive but odd
+    expect(composed.preview(-2)).toBeNull() // even but negative
+    expect(composed.review(6)).toBe(6)
+  })
+
+  it("Lens + Prism = Affine", () => {
+    const composed = tempLens.compose(positivePrism)
+    const sunny: Weather = { temp: 25, desc: "sunny" }
+    const cold: Weather = { temp: -5, desc: "cold" }
+
+    expect(composed.preview(sunny)).toBe(25)
+    expect(composed.preview(cold)).toBeNull()
+  })
+
+  it("Prism + Lens = Affine", () => {
+    interface Wrapper { value: number }
+    const valueLens = lensOf<Wrapper, number>(
+      w => w.value,
+      (v, w) => ({ ...w, value: v }),
+    )
+    // Prism<number, Wrapper> doesn't make sense directly,
+    // so we test Prism<Shape, Circle>.compose(Lens<Circle, number>)
+    type Shape =
+      | { kind: "circle"; r: number }
+      | { kind: "rect"; w: number }
+    const circlePrism = prismOf<Shape, { kind: "circle"; r: number }>(
+      s => s.kind === "circle" ? s as { kind: "circle"; r: number } : null,
+      c => c,
+    )
+    const rLens = lensOf<{ kind: "circle"; r: number }, number>(
+      c => c.r,
+      (r, c) => ({ ...c, r }),
+    )
+    const composed = circlePrism.compose(rLens)
+    expect(composed.preview({ kind: "circle", r: 5 })).toBe(5)
+    expect(composed.preview({ kind: "rect", w: 3 })).toBeNull()
+  })
+
+  it("Iso + Lens = Lens", () => {
+    // Iso is a subtype of Lens, so Iso.compose(Lens) resolves to Lens.compose(Lens) = Lens
+    const composed = cToF.compose(tempLens)
+    // This composes: number --cToF--> number --tempLens--> ? but tempLens expects Weather...
+    // Let's compose the other direction: Lens then Iso
+    const composed2 = tempLens.compose(cToF)
+    const w: Weather = { temp: 0, desc: "freezing" }
+    expect(composed2.get(w)).toBe(32) // 0°C = 32°F
+    expect(composed2.set(212, w).temp).toBeCloseTo(100) // 212°F = 100°C
+  })
+
+  it("Iso + Prism = Prism", () => {
+    const composed = cToF.compose(positivePrism)
+    expect(composed.preview(0)).toBe(32) // 0°C = 32°F, positive
+    expect(composed.preview(-100)).toBeNull() // -100°C = -148°F, negative
+  })
+})
+
+// ---------------------------------------------------------------------------
+// modify()
+// ---------------------------------------------------------------------------
+
+describe("modify", () => {
+  const user: User = { name: "Alice", age: 30, address: { street: "Elm St", city: "Springfield" } }
+
+  it("modifies through a Lens", () => {
+    const ageLens = prop<User>()("age")
+    const increment = ageLens.modify((a: number) => a + 1)
+    expect(increment(user)).toEqual({ ...user, age: 31 })
+  })
+
+  it("modifies through a composed Lens", () => {
+    const streetLens = composeLenses(prop<User>()("address"), prop<Address>()("street"))
+    const upper = streetLens.modify((s: string) => s.toUpperCase())
+    expect(upper(user).address.street).toBe("ELM ST")
+  })
+
+  it("modifies through a Prism (target present)", () => {
+    type Shape = { kind: "circle"; r: number } | { kind: "rect"; w: number }
+    const circlePrism = prismOf<Shape, { kind: "circle"; r: number }>(
+      s => s.kind === "circle" ? s as { kind: "circle"; r: number } : null,
+      c => c,
+    )
+    const doubleR = circlePrism.modify(c => ({ ...c, r: c.r * 2 }))
+    expect(doubleR({ kind: "circle", r: 5 })).toEqual({ kind: "circle", r: 10 })
+  })
+
+  it("modify on Prism returns unchanged when target absent", () => {
+    type Shape = { kind: "circle"; r: number } | { kind: "rect"; w: number }
+    const circlePrism = prismOf<Shape, { kind: "circle"; r: number }>(
+      s => s.kind === "circle" ? s as { kind: "circle"; r: number } : null,
+      c => c,
+    )
+    const rect: Shape = { kind: "rect", w: 3 }
+    const doubleR = circlePrism.modify(c => ({ ...c, r: c.r * 2 }))
+    expect(doubleR(rect)).toBe(rect) // same reference
+  })
+
+  it("modifies through an Iso", () => {
+    const double = isoOf<number, number>(n => n * 2, n => n / 2)
+    const addTen = double.modify((n: number) => n + 10)
+    expect(addTen(5)).toBe(10) // double(5)=10, +10=20, halve=10
+  })
+
+  it("modifies through an Affine", () => {
+    interface Model { value: number | null }
+    const valueAffine = affineOf<Model, number>(
+      m => m.value,
+      (v, m) => ({ ...m, value: v }),
+    )
+    const increment = valueAffine.modify((v: number) => v + 1)
+    expect(increment({ value: 5 })).toEqual({ value: 6 })
+    expect(increment({ value: null })).toEqual({ value: null }) // absent, unchanged
+  })
+})
+
+// ---------------------------------------------------------------------------
+// affineOf()
+// ---------------------------------------------------------------------------
+
+describe("affineOf", () => {
+  interface Config { debug: boolean | null }
+
+  const debugAffine: Affine<Config, boolean> = affineOf(
+    (c: Config) => c.debug,
+    (d: boolean, c: Config) => ({ ...c, debug: d }),
+  )
+
+  it("preview returns value when present", () => {
+    expect(debugAffine.preview({ debug: true })).toBe(true)
+    expect(debugAffine.preview({ debug: false })).toBe(false)
+  })
+
+  it("preview returns null when absent", () => {
+    expect(debugAffine.preview({ debug: null })).toBeNull()
+  })
+
+  it("set updates value when present", () => {
+    expect(debugAffine.set(false, { debug: true })).toEqual({ debug: false })
+  })
+
+  it("set on absent target returns unchanged (via modify path)", () => {
+    const result = debugAffine.modify(() => false)({ debug: null })
+    expect(result).toEqual({ debug: null })
+  })
+
+  it("composes with a Lens to produce an Affine", () => {
+    interface App { config: Config }
+    const configLens = lensOf<App, Config>(
+      a => a.config,
+      (c, a) => ({ ...a, config: c }),
+    )
+    const composed = configLens.compose(debugAffine)
+    const app: App = { config: { debug: true } }
+    expect(composed.preview(app)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// nullablePrism() — now returns Affine
+// ---------------------------------------------------------------------------
+
+describe("nullablePrism (Affine)", () => {
+  interface Profile { name: string; bio: string | null }
+
+  it("returns Affine that previews non-null values", () => {
+    const bioAffine = nullablePrism<Profile>()("bio")
+    expect(bioAffine.preview({ name: "Alice", bio: "hello" })).toBe("hello")
+    expect(bioAffine.preview({ name: "Alice", bio: null })).toBeNull()
+  })
+
+  it("set updates the value", () => {
+    const bioAffine = nullablePrism<Profile>()("bio")
+    expect(bioAffine.set("updated", { name: "Alice", bio: "old" }))
+      .toEqual({ name: "Alice", bio: "updated" })
+  })
+
+  it("getDelta handles RecordDelta variants", () => {
+    const bioAffine = nullablePrism<Profile>()("bio")
+    expect(bioAffine.getDelta!({ kind: "noop" })).toBeUndefined()
+    expect(bioAffine.getDelta!({ kind: "fields", fields: { bio: { kind: "replace", value: "new" } } }))
+      .toEqual({ kind: "replace", value: "new" })
+  })
+
+  it("composes with a Lens", () => {
+    interface App { profile: Profile }
+    const profileLens = prop<App>()("profile")
+    const composed = profileLens.compose(nullablePrism<Profile>()("bio"))
+    const app: App = { profile: { name: "Alice", bio: "hi" } }
+    expect(composed.preview(app)).toBe("hi")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// at() — path selectors
+// ---------------------------------------------------------------------------
+
+describe("at", () => {
+  interface Root {
+    user: {
+      profile: {
+        name: string
+        settings: { theme: string }
+      }
+    }
+  }
+
+  const root: Root = {
+    user: { profile: { name: "Alice", settings: { theme: "dark" } } },
+  }
+
+  it("creates a single-key lens", () => {
+    const userLens = at<Root>()("user")
+    expect(userLens.get(root)).toBe(root.user)
+  })
+
+  it("creates a two-key composed lens", () => {
+    const profileLens = at<Root>()("user", "profile")
+    expect(profileLens.get(root)).toBe(root.user.profile)
+  })
+
+  it("creates a three-key composed lens", () => {
+    const nameLens = at<Root>()("user", "profile", "name")
+    expect(nameLens.get(root)).toBe("Alice")
+    expect(nameLens.set("Bob", root).user.profile.name).toBe("Bob")
+  })
+
+  it("creates a four-key composed lens", () => {
+    const themeLens = at<Root>()("user", "profile", "settings", "theme")
+    expect(themeLens.get(root)).toBe("dark")
+    expect(themeLens.set("light", root).user.profile.settings.theme).toBe("light")
+  })
+
+  it("preserves getDelta through composition", () => {
+    const nameLens = at<Root>()("user", "profile", "name")
+    expect(nameLens.getDelta).toBeDefined()
+
+    const delta = {
+      kind: "fields",
+      fields: {
+        user: {
+          kind: "fields",
+          fields: {
+            profile: {
+              kind: "fields",
+              fields: { name: { kind: "replace", value: "Bob" } },
+            },
+          },
+        },
+      },
+    }
+    expect(nameLens.getDelta!(delta)).toEqual({ kind: "replace", value: "Bob" })
+  })
+
+  it("modify works on path lenses", () => {
+    const nameLens = at<Root>()("user", "profile", "name")
+    const upper = nameLens.modify((n: string) => n.toUpperCase())
+    expect(upper(root).user.profile.name).toBe("ALICE")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// isoOf() / lensOf() / prismOf() — new constructor names
+// ---------------------------------------------------------------------------
+
+describe("new constructor names", () => {
+  it("isoOf is equivalent to iso", () => {
+    const a = isoOf<number, string>(n => String(n), s => Number(s))
+    const b = iso<number, string>(n => String(n), s => Number(s))
+    expect(a.from(42)).toBe(b.from(42))
+    expect(a.to("42")).toBe(b.to("42"))
+  })
+
+  it("lensOf is equivalent to lens", () => {
+    const a = lensOf<User, string>(u => u.name, (n, u) => ({ ...u, name: n }))
+    const b = lens<User, string>(u => u.name, (n, u) => ({ ...u, name: n }))
+    const user: User = { name: "Alice", age: 30, address: { street: "Elm St", city: "Springfield" } }
+    expect(a.get(user)).toBe(b.get(user))
+    expect(a.set("Bob", user)).toEqual(b.set("Bob", user))
+  })
+
+  it("prismOf is equivalent to prism", () => {
+    const a = prismOf<number, number>(n => n > 0 ? n : null, n => n)
+    const b = prism<number, number>(n => n > 0 ? n : null, n => n)
+    expect(a.preview(5)).toBe(b.preview(5))
+    expect(a.preview(-1)).toBe(b.preview(-1))
+    expect(a.review(10)).toBe(b.review(10))
   })
 })
