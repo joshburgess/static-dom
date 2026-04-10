@@ -1,0 +1,31 @@
+{
+  "name": "@sdom/core",
+  "version": "0.1.0",
+  "description": "Static DOM — a virtual-DOM-free UI library with precise TypeScript types",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./optics": {
+      "types": "./dist/optics.d.ts",
+      "import": "./dist/optics.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT"
+}
