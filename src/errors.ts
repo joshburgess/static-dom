@@ -69,8 +69,22 @@ export function getErrorHandler(): ErrorHandler {
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether error boundaries are active. When false, guard/guardFn/guardFn2
+ * skip try/catch entirely — zero overhead on the hot path.
+ *
+ * Defaults to true. Set to false in production for maximum performance
+ * when you trust your derive functions won't throw.
+ */
+export let __SDOM_GUARD__ = true
+
+/** Enable or disable error boundary guards at runtime. */
+export function setGuardEnabled(enabled: boolean): void {
+  __SDOM_GUARD__ = enabled
+}
+
+/**
  * Call `fn` inside a try/catch. If it throws, report via the error handler
- * and return `fallback`.
+ * and return `fallback`. When `__SDOM_GUARD__` is false, calls `fn` directly.
  */
 export function guard<T>(
   phase: ErrorPhase,
@@ -78,6 +92,7 @@ export function guard<T>(
   fn: () => T,
   fallback: T
 ): T {
+  if (!__SDOM_GUARD__) return fn()
   try {
     return fn()
   } catch (error) {
@@ -88,7 +103,7 @@ export function guard<T>(
 
 /**
  * Wrap a unary function so it catches and reports errors, returning `fallback`.
- * Used to wrap derive functions like `(model: M) => string`.
+ * When `__SDOM_GUARD__` is false, returns `fn` directly (zero wrapper overhead).
  */
 export function guardFn<A, R>(
   phase: ErrorPhase,
@@ -96,6 +111,7 @@ export function guardFn<A, R>(
   fn: (a: A) => R,
   fallback: R
 ): (a: A) => R {
+  if (!__SDOM_GUARD__) return fn
   return (a: A): R => {
     try {
       return fn(a)
@@ -108,7 +124,7 @@ export function guardFn<A, R>(
 
 /**
  * Wrap a binary function so it catches and reports errors.
- * Used for event handlers `(event, model) => Msg | null`.
+ * When `__SDOM_GUARD__` is false, returns `fn` directly.
  */
 export function guardFn2<A, B, R>(
   phase: ErrorPhase,
@@ -116,6 +132,7 @@ export function guardFn2<A, B, R>(
   fn: (a: A, b: B) => R,
   fallback: R
 ): (a: A, b: B) => R {
+  if (!__SDOM_GUARD__) return fn
   return (a: A, b: B): R => {
     try {
       return fn(a, b)

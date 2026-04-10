@@ -56,6 +56,40 @@ import { makeSDOM, type SDOM, type Teardown, type KeyedItem } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { KeyedArrayDelta, KeyedOp } from "./patch"
 
+// ---------------------------------------------------------------------------
+// Fast-patch handler — allows programWithDelta to bypass subscription chain
+// ---------------------------------------------------------------------------
+
+/**
+ * A handler that can process a single keyed patch directly, bypassing
+ * the full subscription chain. Registered by `incrementalArray` and
+ * consumed by `programWithDelta` for the common single-patch case.
+ */
+export type FastPatchHandler = (key: string, value: unknown) => boolean
+
+/**
+ * Slot for a fast-patch handler. When set, `programWithDelta` checks
+ * single-patch deltas against this handler before going through the
+ * full subscription chain.
+ *
+ * This is the mechanism that "flattens" the dispatch path:
+ *   dispatch → extract delta → fastPatchHandler(key, value) → done
+ * instead of:
+ *   dispatch → observer → incrementalArray → isKeyedArrayDelta → applyKeyedOp → pushItemUpdate → item observer → attrUpdaters
+ */
+let _fastPatchHandler: FastPatchHandler | null = null
+
+/** @internal Register the fast-patch handler. Returns unregister function. */
+export function _registerFastPatch(handler: FastPatchHandler): () => void {
+  _fastPatchHandler = handler
+  return () => { if (_fastPatchHandler === handler) _fastPatchHandler = null }
+}
+
+/** @internal Try the fast-patch handler. Returns true if handled. */
+export function _tryFastPatch(key: string, value: unknown): boolean {
+  return _fastPatchHandler !== null && _fastPatchHandler(key, value)
+}
+
 /** Runtime check for KeyedArrayDelta shape (since delta comes as `unknown`). */
 function isKeyedArrayDelta(v: unknown): v is KeyedArrayDelta<unknown> {
   if (v == null || typeof v !== "object") return false
@@ -102,43 +136,40 @@ export function incrementalArray<
     const container = document.createElement(containerTag)
     parent.appendChild(container)
 
-    // Live item tracking.
-    // observer/observers use a fast path: when there's exactly one subscriber
-    // (the common case), we store it directly and skip Set allocation/iteration.
-    const liveItems = new Map<string, {
-      wrapper: HTMLElement
+    // Live item tracking — comment markers instead of wrapper divs.
+    // Single-observer fast path: first subscriber stored directly.
+    type ItemEntry = {
+      startMarker: Comment
+      endMarker: Comment
       teardown: Teardown
       modelRef: { current: ItemModel }
       observer: Observer<Update<ItemModel>> | null
       observers: Set<Observer<Update<ItemModel>>> | null
-      // Reusable mutable update object — avoids allocation per item update
       update: { prev: ItemModel; next: ItemModel; delta?: unknown }
-    }>()
+    }
+    const liveItems = new Map<string, ItemEntry>()
 
     // Ordered key list for position lookups
     let keyOrder: string[] = []
 
-    function mountItem(key: string, itemModel: ItemModel): HTMLElement {
-      const wrapper = document.createElement("div")
-      wrapper.dataset["sdKey"] = key
+    function mountItem(key: string, itemModel: ItemModel): void {
+      const startMarker = document.createComment(`s:${key}`)
+      const endMarker = document.createComment(`e:${key}`)
 
       const modelRef = { current: itemModel }
       const update = { prev: itemModel, next: itemModel } as { prev: ItemModel; next: ItemModel; delta?: unknown }
 
-      // Item entry is stored before attach so subscribe can find it
-      const entry: (typeof liveItems extends Map<string, infer V> ? V : never) = {
-        wrapper, teardown: { teardown() {} }, modelRef,
+      const entry: ItemEntry = {
+        startMarker, endMarker, teardown: { teardown() {} }, modelRef,
         observer: null, observers: null, update,
       }
       liveItems.set(key, entry)
 
       const itemUpdates: UpdateStream<ItemModel> = {
         subscribe(obs) {
-          // Fast path: first subscriber stored directly, no Set
           if (entry.observer === null && entry.observers === null) {
             entry.observer = obs
           } else {
-            // Promote to Set
             if (entry.observers === null) {
               entry.observers = new Set()
               if (entry.observer) {
@@ -158,28 +189,54 @@ export function incrementalArray<
         },
       }
 
-      entry.teardown = itemSdom.attach(wrapper, itemModel, itemUpdates, dispatch)
-      return wrapper
+      const frag = document.createDocumentFragment()
+      frag.appendChild(startMarker)
+      entry.teardown = itemSdom.attach(frag, itemModel, itemUpdates, dispatch)
+      frag.appendChild(endMarker)
+      container.appendChild(frag)
     }
 
     function unmountItem(key: string): void {
       const item = liveItems.get(key)
       if (!item) return
       item.teardown.teardown()
-      item.wrapper.remove()
+      item.startMarker.remove()
+      item.endMarker.remove()
       liveItems.delete(key)
     }
 
+    /** Move all nodes in [startMarker..endMarker] before `ref`. */
+    function moveItemBefore(entry: ItemEntry, ref: ChildNode | null): void {
+      let node: ChildNode | null = entry.startMarker
+      const end = entry.endMarker
+      while (node !== null) {
+        const next: ChildNode | null = node.nextSibling
+        container.insertBefore(node, ref)
+        if (node === end) break
+        node = next
+      }
+    }
+
+    // Cache last-looked-up entry
+    let lastKey: string | null = null
+    let lastEntry: ItemEntry | null = null
+
     function pushItemUpdate(key: string, newModel: ItemModel): void {
-      const item = liveItems.get(key)
-      if (!item) return
+      let item: ItemEntry | undefined
+      if (key === lastKey && lastEntry !== null) {
+        item = lastEntry
+      } else {
+        item = liveItems.get(key)
+        if (!item) return
+        lastKey = key
+        lastEntry = item
+      }
       const prev = item.modelRef.current
       if (prev !== newModel) {
         item.modelRef.current = newModel
         item.update.prev = prev
         item.update.next = newModel
         item.update.delta = undefined
-        // Single-observer fast path — direct call, no Set iteration
         if (item.observer) {
           item.observer(item.update as Update<ItemModel>)
         } else if (item.observers) {
@@ -195,18 +252,18 @@ export function incrementalArray<
     function applyKeyedOp(op: KeyedOp<ItemModel>): void {
       switch (op.kind) {
         case "insert": {
-          const wrapper = mountItem(op.key, op.item)
+          mountItem(op.key, op.item)
+          // mountItem appends to end; if `before` specified, move it
           if (op.before !== null) {
+            const entry = liveItems.get(op.key)!
             const beforeItem = liveItems.get(op.before)
             if (beforeItem) {
-              container.insertBefore(wrapper, beforeItem.wrapper)
+              moveItemBefore(entry, beforeItem.startMarker)
               const idx = keyOrder.indexOf(op.before)
               keyOrder.splice(idx, 0, op.key)
               return
             }
           }
-          // Append to end
-          container.appendChild(wrapper)
           keyOrder.push(op.key)
           break
         }
@@ -219,23 +276,22 @@ export function incrementalArray<
         }
 
         case "move": {
-          const item = liveItems.get(op.key)
-          if (!item) break
-          // Remove from current position
+          const entry = liveItems.get(op.key)
+          if (!entry) break
           const fromIdx = keyOrder.indexOf(op.key)
           if (fromIdx !== -1) keyOrder.splice(fromIdx, 1)
 
           if (op.before !== null) {
             const beforeItem = liveItems.get(op.before)
             if (beforeItem) {
-              container.insertBefore(item.wrapper, beforeItem.wrapper)
+              moveItemBefore(entry, beforeItem.startMarker)
               const toIdx = keyOrder.indexOf(op.before)
               keyOrder.splice(toIdx, 0, op.key)
               break
             }
           }
           // Move to end
-          container.appendChild(item.wrapper)
+          moveItemBefore(entry, null)
           keyOrder.push(op.key)
           break
         }
@@ -251,12 +307,8 @@ export function incrementalArray<
     // Full reconciliation fallback (same as standard array)
     // ─────────────────────────────────────────────────────────────────
 
-    function fullReconcile(prev: Model, next: Model): void {
-      const prevItems = getItems(prev)
+    function fullReconcile(_prev: Model, next: Model): void {
       const nextItems = getItems(next)
-
-      const prevByKey = new Map<string, ItemModel>()
-      for (const item of prevItems) prevByKey.set(item.key, item.model)
 
       const nextByKey = new Map<string, ItemModel>()
       for (const item of nextItems) nextByKey.set(item.key, item.model)
@@ -266,7 +318,7 @@ export function incrementalArray<
         if (!nextByKey.has(key)) unmountItem(key)
       }
 
-      // Mount new + update existing
+      // Mount new + update existing (use liveItems for prev model)
       for (const { key, model: itemModel } of nextItems) {
         if (!liveItems.has(key)) {
           mountItem(key, itemModel)
@@ -275,13 +327,15 @@ export function incrementalArray<
         }
       }
 
-      // Ensure DOM order
+      // Ensure DOM order — cursor-based walk
       keyOrder = nextItems.map(i => i.key)
+      let cursor: ChildNode | null = container.firstChild
       for (let i = 0; i < keyOrder.length; i++) {
-        const item = liveItems.get(keyOrder[i]!)!
-        const currentAtIndex = container.children[i]
-        if (currentAtIndex !== item.wrapper) {
-          container.insertBefore(item.wrapper, currentAtIndex ?? null)
+        const entry = liveItems.get(keyOrder[i]!)!
+        if (entry.startMarker === cursor) {
+          cursor = entry.endMarker.nextSibling
+        } else {
+          moveItemBefore(entry, cursor)
         }
       }
     }
@@ -290,48 +344,61 @@ export function incrementalArray<
     // Initial mount + subscription
     // ─────────────────────────────────────────────────────────────────
 
-    // Mount initial items
     const initialItems = getItems(initialModel)
     for (const { key, model: itemModel } of initialItems) {
-      const wrapper = mountItem(key, itemModel)
-      container.appendChild(wrapper)
+      mountItem(key, itemModel)
     }
     keyOrder = initialItems.map(i => i.key)
 
+    // Register fast-patch handler — bypasses subscription chain entirely
+    // for single keyedPatch operations (the most common incremental case).
+    const unregisterFastPatch = _registerFastPatch((key, value) => {
+      const entry = key === lastKey && lastEntry !== null ? lastEntry : liveItems.get(key)
+      if (!entry) return false
+      lastKey = key
+      lastEntry = entry
+      const prev = entry.modelRef.current
+      const newModel = value as ItemModel
+      if (prev !== newModel) {
+        entry.modelRef.current = newModel
+        entry.update.prev = prev
+        entry.update.next = newModel
+        entry.update.delta = undefined
+        if (entry.observer) {
+          entry.observer(entry.update as Update<ItemModel>)
+        } else if (entry.observers) {
+          entry.observers.forEach(obs => obs(entry.update as Update<ItemModel>))
+        }
+      }
+      return true
+    })
+
     const unsub = updates.subscribe(({ prev, next, delta: streamDelta }) => {
-      // Priority: 1) stream delta (from Update.delta), 2) getDelta(next), 3) full reconcile
       const rawDelta = streamDelta ?? (getDelta ? getDelta(next) : null)
-      // If the stream delta is a KeyedArrayDelta, use it directly.
-      // If it's a RecordDelta with a field pointing to this array, the parent
-      // focus should have already extracted it via lens.getDelta.
       const delta = isKeyedArrayDelta(rawDelta) ? rawDelta as KeyedArrayDelta<ItemModel> : null
 
       if (delta !== null && delta.kind === "ops") {
-        // Incremental path: apply operations directly
         for (const op of delta.ops) {
           applyKeyedOp(op)
         }
       } else if (delta !== null && delta.kind === "replace") {
-        // Full replace — clear and remount
         for (const key of [...liveItems.keys()]) unmountItem(key)
         keyOrder = []
-        const nextItems = delta.value.map((item, i) => ({
-          // For replace deltas with raw values, we need getItems to provide keys.
-          // Fall back to full reconcile which uses getItems.
-          key: String(i), model: item,
-        }))
-        // Actually, replace with raw values doesn't have keys — fall back
         fullReconcile(prev, next)
       } else {
-        // No delta or noop — full reconciliation
         fullReconcile(prev, next)
       }
     })
 
     return {
       teardown() {
+        unregisterFastPatch()
         unsub()
-        for (const { teardown: td } of liveItems.values()) td.teardown()
+        for (const { teardown: td, startMarker, endMarker } of liveItems.values()) {
+          td.teardown()
+          startMarker.remove()
+          endMarker.remove()
+        }
         container.remove()
       },
     }

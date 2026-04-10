@@ -114,7 +114,7 @@
 
 // Error boundaries
 export type { SDOMError, ErrorHandler, ErrorPhase } from "./errors"
-export { setErrorHandler } from "./errors"
+export { setErrorHandler, setGuardEnabled } from "./errors"
 
 // Dev mode
 export { setDevMode, setDevWarningHandler, resetDevWarnings } from "./dev"
@@ -148,6 +148,7 @@ export {
   noop, replace, applyAtom, applyArrayOp, applyArrayDelta,
   insert, remove, move, patch,
   keyedInsert, keyedRemove, keyedMove, keyedPatch, keyedOps, keyedOp1,
+  pooledKeyedPatch, pooledKeyedRemove, pooledKeyedInsert,
   ops, diffKeyed,
   fields, applyRecord, fieldDelta, produce,
 } from "./patch"

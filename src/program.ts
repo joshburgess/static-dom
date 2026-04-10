@@ -19,6 +19,7 @@
 
 import { createSignal, toUpdateStream, type Dispatcher, type Observer, type Update, type Unsubscribe, type UpdateStream } from "./observable"
 import type { SDOM, Teardown } from "./types"
+import { _tryFastPatch } from "./incremental"
 
 // ---------------------------------------------------------------------------
 // Program types
@@ -199,15 +200,30 @@ export function programWithDelta<Model, Msg>(
 ): ProgramHandle<Model, Msg> {
   const { container, init, update, view, onUpdate } = config
 
-  // We can't use toUpdateStream here because we need to attach deltas.
-  // Instead, we build a custom UpdateStream that carries the delta.
+  // Custom UpdateStream that carries deltas.
+  // Single-observer fast path + reusable mutable Update object.
   let current = init
-  const observers = new Set<Observer<Update<Model>>>()
+  let observer: Observer<Update<Model>> | null = null
+  let observers: Set<Observer<Update<Model>>> | null = null
+
+  // Reusable mutable update — safe because observers consume synchronously
+  const updateObj = { prev: init, next: init } as { prev: Model; next: Model; delta?: unknown }
 
   const deltaUpdates: UpdateStream<Model> = {
-    subscribe(observer: Observer<Update<Model>>): Unsubscribe {
-      observers.add(observer)
-      return () => observers.delete(observer)
+    subscribe(obs: Observer<Update<Model>>): Unsubscribe {
+      if (observer === null && observers === null) {
+        observer = obs
+      } else {
+        if (observers === null) {
+          observers = new Set()
+          if (observer) { observers.add(observer); observer = null }
+        }
+        observers.add(obs)
+      }
+      return () => {
+        if (observer === obs) { observer = null }
+        else if (observers) { observers.delete(obs) }
+      }
     },
   }
 
@@ -218,10 +234,28 @@ export function programWithDelta<Model, Msg>(
     const [next, delta] = update(msg, prev)
     onUpdate?.(msg, prev, next, delta)
     current = next
-    const updatePayload: Update<Model> = delta !== undefined
-      ? { prev, next, delta }
-      : { prev, next }
-    observers.forEach(obs => obs(updatePayload))
+
+    // Fast path: single keyedPatch delta → bypass subscription chain entirely.
+    // This is the "compiled dispatch" optimization: delta → item updater, no observers.
+    if (delta != null && typeof delta === "object") {
+      const d = delta as { kind?: string; ops?: readonly { kind?: string; key?: string; value?: unknown }[] }
+      if (d.kind === "ops" && d.ops !== undefined && d.ops.length === 1) {
+        const op = d.ops[0]!
+        if (op.kind === "patch" && op.key !== undefined && _tryFastPatch(op.key, op.value)) {
+          return // Handled — skip normal subscription chain
+        }
+      }
+    }
+
+    // Normal path: fire all observers
+    updateObj.prev = prev
+    updateObj.next = next
+    updateObj.delta = delta
+    if (observer) {
+      observer(updateObj as Update<Model>)
+    } else if (observers) {
+      observers.forEach(obs => obs(updateObj as Update<Model>))
+    }
   }
 
   viewTeardown = view.attach(container, init, deltaUpdates, dispatch)

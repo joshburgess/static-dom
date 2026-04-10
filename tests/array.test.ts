@@ -61,17 +61,17 @@ describe("array", () => {
       { id: "a", label: "A" },
       { id: "b", label: "B" },
     ]})
-    // Grab a reference to the "b" wrapper
-    const wrappers = h.container.querySelectorAll("[data-sd-key]")
-    const bWrapper = wrappers[1]!
+    // Grab a reference to the "b" item's <li> element
+    const lis = h.container.querySelectorAll("li")
+    const bLi = lis[1]!
 
     // Reverse order — "b" should keep its DOM node
     h.set({ items: [
       { id: "b", label: "B" },
       { id: "a", label: "A" },
     ]})
-    const reordered = h.container.querySelectorAll("[data-sd-key]")
-    expect(reordered[0]).toBe(bWrapper) // Same DOM node, moved to first position
+    const reordered = h.container.querySelectorAll("li")
+    expect(reordered[0]).toBe(bLi) // Same DOM node, moved to first position
   })
 
   it("updates item content when model changes", () => {

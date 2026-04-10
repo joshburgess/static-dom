@@ -149,7 +149,7 @@ describe("incrementalArray", () => {
     h = mount(makeIncrArray(), {
       items: [{ id: "a", label: "A" }],
     })
-    const wrapper = h.container.querySelector("[data-sd-key='a']")!
+    const li = h.container.querySelector("li")!
 
     h.set({
       items: [{ id: "a", label: "A updated" }],
@@ -157,8 +157,8 @@ describe("incrementalArray", () => {
     })
 
     // Same DOM node — no unmount/remount
-    expect(h.container.querySelector("[data-sd-key='a']")).toBe(wrapper)
-    expect(wrapper.querySelector("li")!.textContent).toBe("A updated")
+    expect(h.container.querySelector("li")).toBe(li)
+    expect(li.textContent).toBe("A updated")
   })
 
   // ── Fallback (no delta) ──────────────────────────────────────────

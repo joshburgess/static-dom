@@ -371,6 +371,49 @@ export function keyedOp1<T>(op: KeyedOp<T>): KeyedArrayDelta<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Pooled constructors — zero-allocation for synchronous consumers
+// ---------------------------------------------------------------------------
+
+/**
+ * Mutable pooled KeyedPatch. Reuses a single object across calls.
+ *
+ * SAFETY: The returned object is ONLY valid until the next call to
+ * `pooledKeyedPatch`. Only use this when the consumer processes the
+ * delta synchronously (e.g., inside a `programWithDelta` update cycle).
+ */
+const _pooledPatch: { kind: "patch"; key: string; value: unknown } = { kind: "patch", key: "", value: undefined }
+const _pooledPatchOps: [typeof _pooledPatch] = [_pooledPatch]
+const _pooledPatchDelta: { kind: "ops"; ops: readonly [typeof _pooledPatch] } = { kind: "ops", ops: _pooledPatchOps }
+
+export function pooledKeyedPatch<T>(key: string, value: T): KeyedArrayDelta<T> {
+  _pooledPatch.key = key
+  _pooledPatch.value = value
+  return _pooledPatchDelta as unknown as KeyedArrayDelta<T>
+}
+
+/** Mutable pooled KeyedRemove. Same safety constraints as `pooledKeyedPatch`. */
+const _pooledRemove: { kind: "remove"; key: string } = { kind: "remove", key: "" }
+const _pooledRemoveOps: [typeof _pooledRemove] = [_pooledRemove]
+const _pooledRemoveDelta: { kind: "ops"; ops: readonly [typeof _pooledRemove] } = { kind: "ops", ops: _pooledRemoveOps }
+
+export function pooledKeyedRemove<T>(key: string): KeyedArrayDelta<T> {
+  _pooledRemove.key = key
+  return _pooledRemoveDelta as unknown as KeyedArrayDelta<T>
+}
+
+/** Mutable pooled KeyedInsert. Same safety constraints as `pooledKeyedPatch`. */
+const _pooledInsert: { kind: "insert"; key: string; item: unknown; before: string | null } = { kind: "insert", key: "", item: undefined, before: null }
+const _pooledInsertOps: [typeof _pooledInsert] = [_pooledInsert]
+const _pooledInsertDelta: { kind: "ops"; ops: readonly [typeof _pooledInsert] } = { kind: "ops", ops: _pooledInsertOps }
+
+export function pooledKeyedInsert<T>(key: string, item: T, before: string | null = null): KeyedArrayDelta<T> {
+  _pooledInsert.key = key
+  _pooledInsert.item = item
+  _pooledInsert.before = before
+  return _pooledInsertDelta as unknown as KeyedArrayDelta<T>
+}
+
+// ---------------------------------------------------------------------------
 // Diff utilities
 // ---------------------------------------------------------------------------
 

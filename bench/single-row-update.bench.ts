@@ -16,7 +16,8 @@ import { createSignal as solidSignal, createRoot as solidRoot, createEffect } fr
 import type { Setter } from "solid-js"
 import { text, element, array } from "../src/constructors"
 import { incrementalArray } from "../src/incremental"
-import { keyedOp1, keyedPatch, type KeyedArrayDelta } from "../src/patch"
+import { pooledKeyedPatch, keyedOps, keyedPatch, type KeyedArrayDelta } from "../src/patch"
+import { programWithDelta, type ProgramHandle } from "../src/program"
 import { createSignal, toUpdateStream, type Dispatcher } from "../src/observable"
 import type { Teardown } from "../src/types"
 import { makeRows, type Row } from "./helpers"
@@ -91,7 +92,7 @@ describe(`single row update — ${ROW_COUNT} rows`, () => {
     incrRows = newRows
     incrSignal.setValue({
       rows: incrRows,
-      _delta: keyedOp1(keyedPatch(row.id, updated)),
+      _delta: pooledKeyedPatch(row.id, updated),
     })
   }, {
     setup() {
@@ -120,6 +121,62 @@ describe(`single row update — ${ROW_COUNT} rows`, () => {
     },
     teardown() {
       incrTeardown.teardown()
+    },
+  })
+
+  // ─── SDOM (compiled fast-path) ───────────────────────────────────────
+  // Uses programWithDelta + incrementalArray with the compiled dispatch
+  // fast path. Single-patch deltas bypass the entire subscription chain.
+
+  type CompiledMsg = { type: "update"; idx: number }
+  interface CompiledModel {
+    rows: Row[]
+  }
+
+  let compiledHandle: ProgramHandle<CompiledModel, CompiledMsg>
+  let compiledRows: Row[]
+
+  bench("sdom (compiled)", () => {
+    const idx = Math.floor(Math.random() * ROW_COUNT)
+    compiledHandle.dispatch({ type: "update", idx })
+  }, {
+    setup() {
+      const container = document.createElement("div")
+      document.body.appendChild(container)
+
+      const rowView = element<Row, never>("tr", {}, [
+        element<Row, never>("td", {
+          rawAttrs: { class: (m) => m.selected ? "selected" : "" },
+        }, [text((m) => m.id)]),
+        element<Row, never>("td", {}, [text((m) => m.label)]),
+      ])
+
+      const view = incrementalArray<CompiledModel, Row, never>(
+        "tbody",
+        (m) => m.rows.map(r => ({ key: r.id, model: r })),
+        rowView
+      )
+
+      compiledRows = makeRows(ROW_COUNT)
+
+      compiledHandle = programWithDelta<CompiledModel, CompiledMsg>({
+        container,
+        init: { rows: compiledRows },
+        update: (msg, model) => {
+          const row = model.rows[msg.idx]!
+          const updated = { ...row, label: row.label + " !" }
+          const newRows = [...model.rows]
+          newRows[msg.idx] = updated
+          return [
+            { rows: newRows },
+            { kind: "ops", ops: [{ kind: "patch", key: row.id, value: updated }] },
+          ]
+        },
+        view,
+      })
+    },
+    teardown() {
+      compiledHandle.teardown()
     },
   })
 

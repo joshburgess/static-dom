@@ -21,7 +21,7 @@ import { makeSDOM, type SDOM, type Teardown, type AttrInput,
          type ChannelEvent, type SDOMWithChannel } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { Prism } from "./optics"
-import { guard, guardFn, guardFn2 } from "./errors"
+import { guard, guardFn, guardFn2, __SDOM_GUARD__ } from "./errors"
 import { __SDOM_DEV__, validateModelShape, validateUniqueKeys } from "./dev"
 
 // ---------------------------------------------------------------------------
@@ -38,15 +38,18 @@ import { __SDOM_DEV__, validateModelShape, validateUniqueKeys } from "./dev"
 export function text<Model>(value: (model: Model) => string): SDOM<Model, never> {
   return makeSDOM<Model, never>((parent, initialModel, updates, _dispatch) => {
     const safeValue = guardFn("attach", "text derive", value, "")
-    const node = document.createTextNode(safeValue(initialModel))
+    let lastText = safeValue(initialModel)
+    const node = document.createTextNode(lastText)
     parent.appendChild(node)
 
     const checkShape = validateModelShape("text", initialModel)
-
     const unsub = updates.subscribe(({ next }) => {
       checkShape(next)
-      const nextText = guard("update", "text derive", () => value(next), "")
-      if (node.textContent !== nextText) {
+      const nextText = __SDOM_GUARD__
+        ? guard("update", "text derive", () => value(next), "")
+        : value(next)
+      if (nextText !== lastText) {
+        lastText = nextText
         node.textContent = nextText
       }
     })
@@ -121,57 +124,84 @@ export function element<
       const attr = rawAttr as SDOMAttr<Model, Msg>
       switch (attr.kind) {
         case "string": {
-          el.setAttribute(attr.name, guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), ""))
+          // Cache last-written value in JS — avoids DOM read (getAttribute) on every tick
+          let lastVal = guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), "")
+          el.setAttribute(attr.name, lastVal)
+          const derive = attr.value
+          const name = attr.name
           attrUpdaters.push((_prev, next) => {
-            const v = guard("update", `attr "${attr.name}"`, () => attr.value(next), "")
-            if (el.getAttribute(attr.name) !== v) el.setAttribute(attr.name, v)
+            const v = __SDOM_GUARD__
+              ? guard("update", `attr "${name}"`, () => derive(next), "")
+              : derive(next)
+            if (v !== lastVal) { lastVal = v; el.setAttribute(name, v) }
           })
           break
         }
         case "bool": {
-          el.toggleAttribute(attr.name, guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), false))
+          let lastVal = guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), false)
+          el.toggleAttribute(attr.name, lastVal)
+          const derive = attr.value
+          const name = attr.name
           attrUpdaters.push((_prev, next) => {
-            el.toggleAttribute(attr.name, guard("update", `attr "${attr.name}"`, () => attr.value(next), false))
+            const v = __SDOM_GUARD__
+              ? guard("update", `attr "${name}"`, () => derive(next), false)
+              : derive(next)
+            if (v !== lastVal) { lastVal = v; el.toggleAttribute(name, v) }
           })
           break
         }
         case "prop": {
-          ;(el as any)[attr.name] = guard("attach", `prop "${attr.name}"`, () => attr.value(initialModel), "")
+          let lastVal: string | boolean | number = guard("attach", `prop "${attr.name}"`, () => attr.value(initialModel), "")
+          ;(el as any)[attr.name] = lastVal
+          const derive = attr.value
+          const name = attr.name
           attrUpdaters.push((_prev, next) => {
-            const v = guard("update", `prop "${attr.name}"`, () => attr.value(next), "")
-            if ((el as any)[attr.name] !== v) (el as any)[attr.name] = v
+            const v = __SDOM_GUARD__
+              ? guard("update", `prop "${name}"`, () => derive(next), "")
+              : derive(next)
+            if (v !== lastVal) { lastVal = v; (el as any)[name] = v }
           })
           break
         }
         case "style": {
-          ;(el as HTMLElement).style.setProperty(attr.property, guard("attach", `style "${attr.property}"`, () => attr.value(initialModel), ""))
+          let lastVal = guard("attach", `style "${attr.property}"`, () => attr.value(initialModel), "")
+          ;(el as HTMLElement).style.setProperty(attr.property, lastVal)
+          const derive = attr.value
+          const prop = attr.property
           attrUpdaters.push((_prev, next) => {
-            ;(el as HTMLElement).style.setProperty(attr.property, guard("update", `style "${attr.property}"`, () => attr.value(next), ""))
+            const v = __SDOM_GUARD__
+              ? guard("update", `style "${prop}"`, () => derive(next), "")
+              : derive(next)
+            if (v !== lastVal) { lastVal = v; (el as HTMLElement).style.setProperty(prop, v) }
           })
           break
         }
         case "classMap": {
           const emptyMap: Record<string, boolean> = {}
-          applyClassMap(el, guard("attach", "classMap", () => attr.map(initialModel), emptyMap))
-          attrUpdaters.push((prev, next) => {
-            const prevMap = guard("update", "classMap", () => attr.map(prev), emptyMap)
-            const nextMap = guard("update", "classMap", () => attr.map(next), emptyMap)
-            if (prevMap !== nextMap) applyClassMap(el, nextMap, prevMap)
+          let lastMap = guard("attach", "classMap", () => attr.map(initialModel), emptyMap)
+          applyClassMap(el, lastMap)
+          const derive = attr.map
+          attrUpdaters.push((_prev, next) => {
+            const nextMap = __SDOM_GUARD__
+              ? guard("update", "classMap", () => derive(next), emptyMap)
+              : derive(next)
+            if (nextMap !== lastMap) { applyClassMap(el, nextMap, lastMap); lastMap = nextMap }
           })
           break
         }
         case "event": {
-          // Events don't subscribe to the update stream per-attr — they
-          // update a model ref from the single subscription below.
           const ref = { current: initialModel }
+          const evtHandler = attr.handler
+          const name = attr.name
           const handler = (event: Event) => {
-            const msg = guard("event", `on "${attr.name}"`, () => attr.handler(event, ref.current), null)
+            const msg = __SDOM_GUARD__
+              ? guard("event", `on "${name}"`, () => evtHandler(event, ref.current), null)
+              : evtHandler(event, ref.current)
             if (msg !== null) dispatch(msg)
           }
-          el.addEventListener(attr.name, handler)
-          // Push a model-ref updater (very cheap — just a ref assign)
+          el.addEventListener(name, handler)
           attrUpdaters.push((_prev, next) => { ref.current = next })
-          eventTeardowns.push(() => el.removeEventListener(attr.name, handler))
+          eventTeardowns.push(() => el.removeEventListener(name, handler))
           break
         }
       }
@@ -181,10 +211,11 @@ export function element<
     // One observer callback that runs all updaters in a tight loop.
     // This replaces N separate subscriptions (one per attr).
     let attrUnsub: (() => void) | null = null
-    if (attrUpdaters.length > 0) {
+    const nUpdaters = attrUpdaters.length
+    if (nUpdaters > 0) {
       attrUnsub = updates.subscribe(({ prev, next }) => {
         if (__SDOM_DEV__) checkShape(next)
-        for (let i = 0; i < attrUpdaters.length; i++) {
+        for (let i = 0; i < nUpdaters; i++) {
           attrUpdaters[i]!(prev, next)
         }
       })
@@ -254,82 +285,141 @@ export function array<
     const container = document.createElement(containerTag)
     parent.appendChild(container)
 
-    // Map from key → { wrapper element, teardown, model ref, observers }
-    // Each item's observers are notified from the array-level subscription,
-    // avoiding O(n) .find() per item (O(n) total instead of O(n^2)).
-    const liveItems = new Map<string, {
-      wrapper: Element
+    // Map from key → { markers, teardown, model ref, observer(s) }
+    // No wrapper div — items attach directly to the container.
+    // Comment markers delimit each item's DOM range.
+    // Single-observer fast path: store first subscriber directly, avoid Set.
+    type ItemEntry = {
+      startMarker: Comment
+      endMarker: Comment
       teardown: Teardown
       modelRef: { current: ItemModel }
-      observers: Set<Observer<Update<ItemModel>>>
-    }>()
+      observer: Observer<Update<ItemModel>> | null
+      observers: Set<Observer<Update<ItemModel>>> | null
+      update: { prev: ItemModel; next: ItemModel }
+    }
+    const liveItems = new Map<string, ItemEntry>()
 
     function mountItem(key: string, itemModel: ItemModel): void {
-      const wrapper = document.createElement("div")
-      wrapper.dataset["sdKey"] = key
+      const startMarker = document.createComment(`s:${key}`)
+      const endMarker = document.createComment(`e:${key}`)
 
       const modelRef = { current: itemModel }
-      const observers = new Set<Observer<Update<ItemModel>>>()
+      const update = { prev: itemModel, next: itemModel }
 
-      // Item update stream — observers are pushed to from the array-level sub
+      const entry: ItemEntry = {
+        startMarker, endMarker, teardown: { teardown() {} }, modelRef,
+        observer: null, observers: null, update,
+      }
+      liveItems.set(key, entry)
+
+      // Item update stream with single-observer fast path
       const itemUpdates: UpdateStream<ItemModel> = {
         subscribe(observer) {
-          observers.add(observer)
-          return () => { observers.delete(observer) }
+          if (entry.observer === null && entry.observers === null) {
+            entry.observer = observer
+          } else {
+            if (entry.observers === null) {
+              entry.observers = new Set()
+              if (entry.observer) {
+                entry.observers.add(entry.observer)
+                entry.observer = null
+              }
+            }
+            entry.observers.add(observer)
+          }
+          return () => {
+            if (entry.observer === observer) {
+              entry.observer = null
+            } else if (entry.observers) {
+              entry.observers.delete(observer)
+            }
+          }
         },
       }
 
-      const td = guard("attach", `array item "${key}"`, () =>
-        itemSdom.attach(wrapper, itemModel, itemUpdates, dispatch),
+      // Build item in a fragment: [startMarker, ...content, endMarker]
+      const frag = document.createDocumentFragment()
+      frag.appendChild(startMarker)
+
+      entry.teardown = guard("attach", `array item "${key}"`, () =>
+        itemSdom.attach(frag, itemModel, itemUpdates, dispatch),
         { teardown() {} }
       )
-      liveItems.set(key, { wrapper, teardown: td, modelRef, observers })
+
+      frag.appendChild(endMarker)
+      container.appendChild(frag)
     }
 
-    function reconcile(prev: Model, next: Model): void {
-      const prevItems = getItems(prev)
+    function pushItemUpdate(entry: ItemEntry, prevModel: ItemModel, itemModel: ItemModel): void {
+      entry.modelRef.current = itemModel
+      entry.update.prev = prevModel
+      entry.update.next = itemModel
+      if (entry.observer) {
+        entry.observer(entry.update)
+      } else if (entry.observers) {
+        entry.observers.forEach(obs => obs(entry.update))
+      }
+    }
+
+    /** Move all nodes in [startMarker..endMarker] before `ref`. */
+    function moveItemBefore(entry: ItemEntry, ref: ChildNode | null): void {
+      let node: ChildNode | null = entry.startMarker
+      const end = entry.endMarker
+      while (node !== null) {
+        const next: ChildNode | null = node.nextSibling
+        container.insertBefore(node, ref)
+        if (node === end) break
+        node = next
+      }
+    }
+
+    /** Remove an item: teardown (removes content nodes) + remove markers. */
+    function removeItem(key: string): void {
+      const entry = liveItems.get(key)
+      if (!entry) return
+      entry.teardown.teardown()
+      // Teardown removes content nodes; markers remain — remove them.
+      entry.startMarker.remove()
+      entry.endMarker.remove()
+      liveItems.delete(key)
+    }
+
+    function reconcile(_prev: Model, next: Model): void {
       const nextItems = getItems(next)
 
       validateUniqueKeys(nextItems.map(i => i.key), "array")
 
-      // Build key→model maps once — O(n)
-      const prevByKey = new Map<string, ItemModel>()
-      for (const item of prevItems) prevByKey.set(item.key, item.model)
-
+      // Build next key set for removal check — O(n)
       const nextByKey = new Map<string, ItemModel>()
       for (const item of nextItems) nextByKey.set(item.key, item.model)
 
       // 1. Remove items no longer present
-      for (const [key, item] of liveItems) {
-        if (!nextByKey.has(key)) {
-          item.teardown.teardown()
-          item.wrapper.remove()
-          liveItems.delete(key)
-        }
+      for (const [key] of liveItems) {
+        if (!nextByKey.has(key)) removeItem(key)
       }
 
       // 2. Mount new items + fan out updates to existing items
+      // Use liveItems.modelRef for previous model — avoids building prevByKey map
       for (const { key, model: itemModel } of nextItems) {
-        if (!liveItems.has(key)) {
+        const entry = liveItems.get(key)
+        if (!entry) {
           mountItem(key, itemModel)
-        } else {
-          const item = liveItems.get(key)!
-          const prevModel = prevByKey.get(key) ?? item.modelRef.current
-          if (prevModel !== itemModel) {
-            item.modelRef.current = itemModel
-            const update = { prev: prevModel, next: itemModel }
-            item.observers.forEach(obs => obs(update))
-          }
+        } else if (entry.modelRef.current !== itemModel) {
+          pushItemUpdate(entry, entry.modelRef.current, itemModel)
         }
       }
 
-      // 3. Ensure DOM order matches nextItems
+      // 3. Ensure DOM order — cursor-based walk over markers
+      let cursor: ChildNode | null = container.firstChild
       for (let i = 0; i < nextItems.length; i++) {
-        const entry = nextItems[i]!
-        const { wrapper } = liveItems.get(entry.key)!
-        const currentAtIndex = container.children[i]
-        if (currentAtIndex !== wrapper) {
-          container.insertBefore(wrapper, currentAtIndex ?? null)
+        const entry = liveItems.get(nextItems[i]!.key)!
+        if (entry.startMarker === cursor) {
+          // Already in position — skip past this item
+          cursor = entry.endMarker.nextSibling
+        } else {
+          // Out of position — move before cursor
+          moveItemBefore(entry, cursor)
         }
       }
     }
@@ -342,7 +432,11 @@ export function array<
     return {
       teardown() {
         unsub()
-        for (const { teardown: td } of liveItems.values()) td.teardown()
+        for (const { teardown: td, startMarker, endMarker } of liveItems.values()) {
+          td.teardown()
+          startMarker.remove()
+          endMarker.remove()
+        }
         container.remove()
       },
     }
