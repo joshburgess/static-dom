@@ -163,3 +163,15 @@ export { createDelegator } from "./delegation"
 
 // JSX utilities
 export { typed } from "./jsx-runtime"
+
+// Cmd constructors (Elm-style commands)
+export type { HttpRequest } from "./cmd"
+export { mapCmd, httpRequest, httpGetJson, httpPostJson, randomInt, randomFloat, delay, nextTick } from "./cmd"
+
+// Navigation (URL-based routing)
+export type { UrlLocation } from "./navigation"
+export { currentUrl, pushUrl, replaceUrl, back, forward, onUrlChange, onHashChange } from "./navigation"
+
+// Ports (typed JS interop)
+export type { InPort, OutPort } from "./ports"
+export { createInPort, createOutPort, portSub, portCmd } from "./ports"

@@ -83,10 +83,11 @@ changed" React lifecycle into the `UpdateStream<Model>` that SDOM expects.
 
 ## Layer 3: Elm architecture adapter — `@sdom/elm`
 
-**Status: substantially complete**
+**Status: complete**
 
 `programWithEffects` in Layer 1 already handles the `[Model, Cmd]` return
-from update. Layer 3 adds the subscription system.
+from update. Layer 3 adds the subscription system, rich commands,
+navigation, and ports.
 
 ### What's done
 
@@ -96,13 +97,26 @@ from update. Layer 3 adds the subscription system.
 - `programWithSub` — pure update loop + Elm-style subscriptions
 - `elmProgram` — full Elm runtime (Cmd + Sub)
 - Subscription diffing: starts new subs, stops removed subs by key after each update
-- Tests: 11 tests covering sub constructors, diffing, programWithSub, elmProgram
+- `cmd.ts` — rich command constructors:
+  - `httpRequest`, `httpGetJson`, `httpPostJson` — Fetch-based HTTP commands
+  - `randomInt`, `randomFloat` — random value generation
+  - `delay`, `nextTick` — time-based message dispatch
+  - `mapCmd` — transform command message types
+- `navigation.ts` — URL-based routing:
+  - `pushUrl`, `replaceUrl`, `back`, `forward` — navigation commands
+  - `onUrlChange`, `onHashChange` — navigation subscriptions
+  - `currentUrl` — URL snapshot helper
+- `ports.ts` — typed JS interop (Elm-style ports):
+  - `createInPort` — external JS sends data into SDOM runtime (subscription)
+  - `createOutPort` — SDOM runtime sends data to external JS (command)
+  - `portSub` / `portCmd` — adapt ports to Sub/Cmd interfaces
+- Tests: 11 subscription tests, 12 cmd tests, 13 navigation tests, 13 port tests
 
 ### What could still be added
 
-- [ ] **`Cmd<Msg>`** — a richer command type with built-in HTTP, random, ports
-- [ ] **Navigation** — URL-based routing that feeds into the update loop
-- [ ] **Ports** — typed JS interop matching Elm's port system
+- [x] **`Cmd<Msg>`** — rich command type with built-in HTTP, random, delay, map
+- [x] **Navigation** — URL-based routing feeding into the update loop
+- [x] **Ports** — typed JS interop matching Elm's port system
 
 ---
 
@@ -175,7 +189,7 @@ from update. Layer 3 adds the subscription system.
 ```
 Layer 5  @sdom/jsx         — JSX runtime & build tooling            [complete]
 Layer 4  @sdom/incremental — Delta-based updates                    [complete]
-Layer 3  @sdom/elm         — Full Elm architecture on top of SDOM   [substantially complete]
+Layer 3  @sdom/elm         — Full Elm architecture on top of SDOM   [complete]
 Layer 2  @sdom/react       — React boundary component               [complete]
 Layer 1  @sdom/core        — Core library                           [complete]
 ```
