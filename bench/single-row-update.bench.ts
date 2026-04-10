@@ -15,6 +15,8 @@ import { h, render as preactRender, type VNode } from "preact"
 import { createSignal as solidSignal, createRoot as solidRoot, createEffect } from "solid-js"
 import type { Setter } from "solid-js"
 import { text, element, array } from "../src/constructors"
+import { incrementalArray } from "../src/incremental"
+import { keyedOps, keyedPatch, type KeyedArrayDelta } from "../src/patch"
 import { createSignal, toUpdateStream, type Dispatcher } from "../src/observable"
 import type { Teardown } from "../src/types"
 import { makeRows, type Row } from "./helpers"
@@ -64,6 +66,60 @@ describe(`single row update — ${ROW_COUNT} rows`, () => {
     },
     teardown() {
       sdomTeardown.teardown()
+    },
+  })
+
+  // ─── SDOM (incremental) ─────────────────────────────────────────────
+  // Uses incrementalArray with keyed deltas — O(1) per update, no
+  // reconciliation. This is what the incremental layer is for.
+
+  interface IncrModel {
+    rows: Row[]
+    _delta: KeyedArrayDelta<Row> | null
+  }
+
+  let incrSignal: ReturnType<typeof createSignal<IncrModel>>
+  let incrTeardown: Teardown
+  let incrRows: Row[]
+
+  bench("sdom (incremental)", () => {
+    const idx = Math.floor(Math.random() * ROW_COUNT)
+    const row = incrRows[idx]!
+    const updated = { ...row, label: row.label + " !" }
+    const newRows = [...incrRows]
+    newRows[idx] = updated
+    incrRows = newRows
+    incrSignal.setValue({
+      rows: incrRows,
+      _delta: keyedOps(keyedPatch(row.id, updated)),
+    })
+  }, {
+    setup() {
+      const container = document.createElement("div")
+      document.body.appendChild(container)
+
+      const rowView = element<Row, never>("tr", {}, [
+        element<Row, never>("td", {
+          rawAttrs: { class: (m) => m.selected ? "selected" : "" },
+        }, [text((m) => m.id)]),
+        element<Row, never>("td", {}, [text((m) => m.label)]),
+      ])
+
+      const view = incrementalArray<IncrModel, Row, never>(
+        "tbody",
+        (m) => m.rows.map(r => ({ key: r.id, model: r })),
+        (m) => m._delta,
+        rowView
+      )
+
+      incrRows = makeRows(ROW_COUNT)
+      incrSignal = createSignal<IncrModel>({ rows: incrRows, _delta: null })
+      const updates = toUpdateStream(incrSignal)
+      const dispatch: Dispatcher<never> = () => {}
+      incrTeardown = view.attach(container, { rows: incrRows, _delta: null }, updates, dispatch)
+    },
+    teardown() {
+      incrTeardown.teardown()
     },
   })
 

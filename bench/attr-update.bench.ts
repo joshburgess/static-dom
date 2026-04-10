@@ -14,6 +14,8 @@ import { h, render as preactRender } from "preact"
 import { createSignal as solidSignal, createRoot as solidRoot, createEffect, batch } from "solid-js"
 import type { Setter } from "solid-js"
 import { text, element, array } from "../src/constructors"
+import { incrementalArray } from "../src/incremental"
+import { keyedOps, keyedPatch, type KeyedArrayDelta } from "../src/patch"
 import { createSignal, toUpdateStream, type Dispatcher } from "../src/observable"
 import type { Teardown } from "../src/types"
 
@@ -74,6 +76,64 @@ describe(`attribute-only update — ${ITEM_COUNT} items`, () => {
     },
     teardown() {
       sdomTeardown.teardown()
+    },
+  })
+
+  // ─── SDOM (incremental) ─────────────────────────────────────────────
+  // Uses incrementalArray with keyed deltas — sends a keyedPatch for
+  // each item, skipping the full reconciliation.
+
+  interface IncrModel {
+    items: Item[]
+    _delta: KeyedArrayDelta<Item> | null
+  }
+
+  let incrSignal: ReturnType<typeof createSignal<IncrModel>>
+  let incrTeardown: Teardown
+  let incrItems: Item[]
+  let incrTick: number
+
+  bench("sdom (incremental)", () => {
+    incrTick++
+    const newItems = incrItems.map(item => ({
+      ...item,
+      active: !item.active,
+      count: incrTick,
+    }))
+    const patches = newItems.map(item => keyedPatch<Item>(item.id, item))
+    incrItems = newItems
+    incrSignal.setValue({
+      items: incrItems,
+      _delta: keyedOps(...patches),
+    })
+  }, {
+    setup() {
+      const container = document.createElement("div")
+      document.body.appendChild(container)
+      incrTick = 0
+
+      const itemView = element<Item, never>("div", {
+        rawAttrs: {
+          class: (m) => m.active ? "active" : "inactive",
+          "data-count": (m) => String(m.count),
+        },
+      }, [text((m) => m.id)])
+
+      const view = incrementalArray<IncrModel, Item, never>(
+        "div",
+        (m) => m.items.map(i => ({ key: i.id, model: i })),
+        (m) => m._delta,
+        itemView
+      )
+
+      incrItems = makeItems(ITEM_COUNT)
+      incrSignal = createSignal<IncrModel>({ items: incrItems, _delta: null })
+      const updates = toUpdateStream(incrSignal)
+      const dispatch: Dispatcher<never> = () => {}
+      incrTeardown = view.attach(container, { items: incrItems, _delta: null }, updates, dispatch)
+    },
+    teardown() {
+      incrTeardown.teardown()
     },
   })
 
