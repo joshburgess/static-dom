@@ -19,7 +19,7 @@
 import { makeSDOM, type SDOM, type Teardown, type AttrInput,
          type SDOMAttr, type KeyedItem, type ArrayContext,
          type ChannelEvent, type SDOMWithChannel } from "./types"
-import type { UpdateStream, Dispatcher } from "./observable"
+import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { Prism } from "./optics"
 
 // ---------------------------------------------------------------------------
@@ -167,15 +167,14 @@ export function array<
     const container = document.createElement(containerTag)
     parent.appendChild(container)
 
-    // Ordered list of live item keys (for position reconciliation)
-    let liveOrder: string[] = []
-
-    // Map from key → { wrapper element, teardown, mutable model ref }
+    // Map from key → { wrapper element, teardown, model ref, observers }
+    // Each item's observers are notified from the array-level subscription,
+    // avoiding O(n) .find() per item (O(n) total instead of O(n^2)).
     const liveItems = new Map<string, {
       wrapper: Element
       teardown: Teardown
-      /** Mutable ref — updated when the array item model changes. */
       modelRef: { current: ItemModel }
+      observers: Set<Observer<Update<ItemModel>>>
     }>()
 
     function mountItem(key: string, itemModel: ItemModel): void {
@@ -183,65 +182,70 @@ export function array<
       wrapper.dataset["sdKey"] = key
 
       const modelRef = { current: itemModel }
+      const observers = new Set<Observer<Update<ItemModel>>>()
 
-      // Each item has its own update stream derived from the parent's
+      // Item update stream — observers are pushed to from the array-level sub
       const itemUpdates: UpdateStream<ItemModel> = {
         subscribe(observer) {
-          return updates.subscribe(({ prev, next }) => {
-            const prevItems = getItems(prev)
-            const nextItems = getItems(next)
-            const prevEntry = prevItems.find(i => i.key === key)
-            const nextEntry = nextItems.find(i => i.key === key)
-
-            if (nextEntry && prevEntry?.model !== nextEntry.model) {
-              const prevModel = prevEntry?.model ?? modelRef.current
-              modelRef.current = nextEntry.model
-              observer({ prev: prevModel, next: nextEntry.model })
-            }
-          })
+          observers.add(observer)
+          return () => { observers.delete(observer) }
         },
       }
 
       const td = itemSdom.attach(wrapper, itemModel, itemUpdates, dispatch)
-      liveItems.set(key, { wrapper, teardown: td, modelRef })
+      liveItems.set(key, { wrapper, teardown: td, modelRef, observers })
     }
 
-    function reconcile(model: Model): void {
-      const nextItems = getItems(model)
-      const nextKeys = new Set(nextItems.map(i => i.key))
+    function reconcile(prev: Model, next: Model): void {
+      const prevItems = getItems(prev)
+      const nextItems = getItems(next)
 
-      // 1. Remove items that are no longer present
-      for (const [key, { wrapper, teardown }] of liveItems) {
-        if (!nextKeys.has(key)) {
-          teardown.teardown()
-          wrapper.remove()
+      // Build key→model maps once — O(n)
+      const prevByKey = new Map<string, ItemModel>()
+      for (const item of prevItems) prevByKey.set(item.key, item.model)
+
+      const nextByKey = new Map<string, ItemModel>()
+      for (const item of nextItems) nextByKey.set(item.key, item.model)
+
+      // 1. Remove items no longer present
+      for (const [key, item] of liveItems) {
+        if (!nextByKey.has(key)) {
+          item.teardown.teardown()
+          item.wrapper.remove()
           liveItems.delete(key)
         }
       }
 
-      // 2. Mount new items
+      // 2. Mount new items + fan out updates to existing items
       for (const { key, model: itemModel } of nextItems) {
         if (!liveItems.has(key)) {
           mountItem(key, itemModel)
+        } else {
+          const item = liveItems.get(key)!
+          const prevModel = prevByKey.get(key) ?? item.modelRef.current
+          if (prevModel !== itemModel) {
+            item.modelRef.current = itemModel
+            const update = { prev: prevModel, next: itemModel }
+            item.observers.forEach(obs => obs(update))
+          }
         }
       }
 
       // 3. Ensure DOM order matches nextItems
-      nextItems.forEach(({ key }, index) => {
-        const { wrapper } = liveItems.get(key)!
-        const currentAtIndex = container.children[index]
+      for (let i = 0; i < nextItems.length; i++) {
+        const entry = nextItems[i]!
+        const { wrapper } = liveItems.get(entry.key)!
+        const currentAtIndex = container.children[i]
         if (currentAtIndex !== wrapper) {
           container.insertBefore(wrapper, currentAtIndex ?? null)
         }
-      })
-
-      liveOrder = nextItems.map(i => i.key)
+      }
     }
 
     // Initial mount
-    reconcile(initialModel)
+    reconcile(initialModel, initialModel)
 
-    const unsub = updates.subscribe(({ next }) => reconcile(next))
+    const unsub = updates.subscribe(({ prev, next }) => reconcile(prev, next))
 
     return {
       teardown() {
@@ -386,22 +390,22 @@ export function component<Model, Msg = never>(
 // ---------------------------------------------------------------------------
 
 /**
- * Interpret a channel-using component, converting channel events to Msg.
+ * Interpret a channel-using component, converting channel events to Msg
+ * and/or applying local model transforms.
  *
  * Matches PureScript's `interpretChannel`.
  *
- * @param inner    A component that emits `ChannelEvent<Channel, Model>`.
- * @param interpret  Maps channel events to model updates or Msg values.
+ * The interpreter can:
+ *   - Call `dispatch(msg)` for persistent state changes (goes through
+ *     the program's update loop — the standard Elm architecture path).
+ *   - Return a model transform for immediate local feedback (applied
+ *     optimistically; overwritten on the next outer model update).
  *
- * Example — an array item that can "remove itself":
- *   type ItemChannel = "remove"
+ * "update" kind channel events carry a model transform directly and
+ * are applied the same way.
  *
- *   const item: SDOMWithChannel<ItemChannel, Item> = ...
- *
- *   wrapChannel(item, (channel, _dispatch) => {
- *     if (channel === "remove") return msg => ({ ...msg, removeId: currentKey })
- *     return null
- *   })
+ * @param inner      A component that emits `ChannelEvent<Channel, Model>`.
+ * @param interpret  Maps parent channel events to model transforms or Msg values.
  */
 export function wrapChannel<Channel, Model, Msg>(
   inner: SDOMWithChannel<Channel, Model>,
@@ -411,20 +415,46 @@ export function wrapChannel<Channel, Model, Msg>(
   ) => ((model: Model) => Model) | null
 ): SDOM<Model, Msg> {
   return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const channelDispatch: Dispatcher<ChannelEvent<Channel, Model>> = event => {
-      if (event.kind === "parent") {
-        // Channel event — pass to interpreter
-        const update = interpret(event.value, dispatch)
-        // If the interpreter returns a model transform, we'd need to feed it
-        // back to the store. In a full implementation this connects to the
-        // top-level update loop. For now, this is a hook point.
-        // (In practice, you'd call your store's dispatch here.)
-        void update
-      }
-      // "update" events are handled by the update loop externally
+    // Local model state — tracks the latest model from either outer updates
+    // or local transforms. Outer updates are authoritative and reset this.
+    let currentModel = initialModel
+    const localObservers = new Set<Observer<Update<Model>>>()
+
+    // Merged update stream: inner component sees both outer updates and
+    // local transforms from channel events.
+    const mergedUpdates: UpdateStream<Model> = {
+      subscribe(observer) {
+        localObservers.add(observer)
+        const outerUnsub = updates.subscribe(update => {
+          currentModel = update.next
+          observer(update)
+        })
+        return () => {
+          localObservers.delete(observer)
+          outerUnsub()
+        }
+      },
     }
 
-    return inner.attach(parent, initialModel, updates, channelDispatch)
+    function applyTransform(fn: (model: Model) => Model): void {
+      const prev = currentModel
+      const next = fn(prev)
+      if (prev !== next) {
+        currentModel = next
+        localObservers.forEach(obs => obs({ prev, next }))
+      }
+    }
+
+    const channelDispatch: Dispatcher<ChannelEvent<Channel, Model>> = event => {
+      if (event.kind === "parent") {
+        const transform = interpret(event.value, dispatch)
+        if (transform) applyTransform(transform)
+      } else {
+        applyTransform(event.fn)
+      }
+    }
+
+    return inner.attach(parent, initialModel, mergedUpdates, channelDispatch)
   })
 }
 

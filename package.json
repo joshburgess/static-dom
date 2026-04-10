@@ -21,11 +21,14 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "typescript": "^5.9.3"
+    "happy-dom": "^20.8.9",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
   },
   "license": "MIT"
 }
