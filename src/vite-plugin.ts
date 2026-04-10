@@ -9,7 +9,7 @@
  * ```typescript
  * // vite.config.ts
  * import { defineConfig } from "vite"
- * import { sdomJsx } from "@sdom/core/vite"
+ * import { sdomJsx } from "static-dom-core/vite"
  *
  * export default defineConfig({
  *   plugins: [sdomJsx()],
@@ -32,7 +32,7 @@ export function sdomJsx(): VitePlugin {
       return {
         esbuild: {
           jsx: "automatic",
-          jsxImportSource: "@sdom/core",
+          jsxImportSource: "static-dom-core",
         },
       }
     },

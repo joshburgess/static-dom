@@ -18,7 +18,7 @@ describe("sdomJsx (Vite plugin)", () => {
     expect(config).toEqual({
       esbuild: {
         jsx: "automatic",
-        jsxImportSource: "@sdom/core",
+        jsxImportSource: "static-dom-core",
       },
     })
   })

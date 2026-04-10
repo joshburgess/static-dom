@@ -11,7 +11,7 @@
  *
  * @example
  * ```tsx
- * import { SDOMBoundary } from "@sdom/core/react"
+ * import { SDOMBoundary } from "static-dom-core/react"
  * import { myTableView } from "./views"
  *
  * function App({ model, onMsg }) {

@@ -1,5 +1,5 @@
 {
-  "name": "@sdom/core",
+  "name": "static-dom-core",
   "version": "0.1.0",
   "description": "Static DOM — a virtual-DOM-free UI library with precise TypeScript types",
   "type": "module",

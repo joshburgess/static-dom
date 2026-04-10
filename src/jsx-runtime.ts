@@ -3,7 +3,7 @@
  *
  * Implements the automatic JSX runtime interface that esbuild/TypeScript
  * call when transforming JSX with `jsx: "automatic"` and
- * `jsxImportSource: "@sdom/core"`.
+ * `jsxImportSource: "static-dom-core"`.
  *
  * esbuild transforms:
  *   <div class={m => m.active ? "active" : ""}>

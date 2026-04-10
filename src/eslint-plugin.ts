@@ -7,7 +7,7 @@
  *
  * @example Flat config (eslint.config.js):
  * ```javascript
- * import sdom from "@sdom/core/eslint"
+ * import sdom from "static-dom-core/eslint"
  *
  * export default [
  *   {

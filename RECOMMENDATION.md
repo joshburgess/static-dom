@@ -25,8 +25,8 @@ elements, 3 dynamic) and ~12% faster for typical templates. Static attributes
 Always disable guards and dev mode in production:
 
 ```typescript
-import { setGuardEnabled } from "@sdom/core/errors"
-import { setDevMode } from "@sdom/core/dev"
+import { setGuardEnabled } from "static-dom-core/errors"
+import { setDevMode } from "static-dom-core/dev"
 
 setGuardEnabled(false)
 setDevMode(false)
@@ -47,7 +47,7 @@ update pattern.
 ### `arrayBy()` — the best default
 
 ```typescript
-import { arrayBy } from "@sdom/core"
+import { arrayBy } from "static-dom-core"
 
 arrayBy("tbody",
   (m) => m.rows,
@@ -87,7 +87,7 @@ allocations + GC pressure gives a 19% improvement.
 ### `array()` — legacy keyed list
 
 ```typescript
-import { array } from "@sdom/core"
+import { array } from "static-dom-core"
 
 array("tbody",
   (m) => m.rows.map(r => ({ key: r.id, model: r })),
@@ -105,8 +105,8 @@ updates. Beats Solid by 17% on bulk attribute updates.
 ### `incrementalArray()` — for large, frequently-updated lists
 
 ```typescript
-import { incrementalArray } from "@sdom/core"
-import { pooledKeyedPatch, keyedOps } from "@sdom/core/patch"
+import { incrementalArray } from "static-dom-core"
+import { pooledKeyedPatch, keyedOps } from "static-dom-core/patch"
 
 incrementalArray("tbody",
   (m) => m.rows.map(r => ({ key: r.id, model: r })),
@@ -143,7 +143,7 @@ targeted updates.
 ### `indexedArray()` — for append-only / positional lists
 
 ```typescript
-import { indexedArray } from "@sdom/core"
+import { indexedArray } from "static-dom-core"
 
 indexedArray("tbody",
   (m) => m.rows,
@@ -165,7 +165,7 @@ list rows, a hand-written `compiled()` template eliminates per-field observer
 subscriptions:
 
 ```typescript
-import { compiled } from "@sdom/core"
+import { compiled } from "static-dom-core"
 
 const rowView = compiled<Row, never>((parent, model, _dispatch) => {
   const tr = document.createElement("tr")

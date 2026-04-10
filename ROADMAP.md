@@ -7,7 +7,7 @@ a UI library that eliminates virtual DOM diffing by encoding the guarantee
 that DOM structure is fixed after initial render. Only leaf values (text
 nodes, attributes) update in place, directly, with no intermediate representation.
 
-## Layer 1: Core library — `@sdom/core`
+## Layer 1: Core library — `static-dom-core`
 
 **Status: complete**
 
@@ -48,7 +48,7 @@ nodes, attributes) update in place, directly, with no intermediate representatio
 
 ---
 
-## Layer 2: React adapter — `@sdom/react`
+## Layer 2: React adapter — `static-dom-react`
 
 **Status: complete**
 
@@ -60,7 +60,7 @@ with zero changes to the React component tree above them.
 ### Design
 
 ```tsx
-import { SDOMBoundary } from "@sdom/core/react"
+import { SDOMBoundary } from "static-dom-core/react"
 
 // Inside any React component:
 <SDOMBoundary
@@ -86,7 +86,7 @@ changed" React lifecycle into the `UpdateStream<Model>` that SDOM expects.
 
 ---
 
-## Layer 3: Elm architecture adapter — `@sdom/elm`
+## Layer 3: Elm architecture adapter — `static-dom-elm`
 
 **Status: complete**
 
@@ -125,7 +125,7 @@ navigation, and ports.
 
 ---
 
-## Layer 4: Incremental / differentiable rendering — `@sdom/incremental`
+## Layer 4: Incremental / differentiable rendering — `static-dom-incremental`
 
 **Status: complete**
 
@@ -153,7 +153,7 @@ navigation, and ports.
 
 ---
 
-## Layer 5: JSX runtime & build tooling — `@sdom/jsx`
+## Layer 5: JSX runtime & build tooling — `static-dom-jsx`
 
 **Status: complete**
 
@@ -192,11 +192,11 @@ navigation, and ports.
 ## Summary
 
 ```
-Layer 5  @sdom/jsx         — JSX runtime & build tooling            [complete]
-Layer 4  @sdom/incremental — Delta-based updates                    [complete]
-Layer 3  @sdom/elm         — Full Elm architecture on top of SDOM   [complete]
-Layer 2  @sdom/react       — React boundary component               [complete]
-Layer 1  @sdom/core        — Core library                           [complete]
+Layer 5  static-dom-jsx         — JSX runtime & build tooling            [complete]
+Layer 4  static-dom-incremental — Delta-based updates                    [complete]
+Layer 3  static-dom-elm         — Full Elm architecture on top of SDOM   [complete]
+Layer 2  static-dom-react       — React boundary component               [complete]
+Layer 1  static-dom-core        — Core library                           [complete]
 ```
 
 Each layer is independently useful and can be adopted without the others.

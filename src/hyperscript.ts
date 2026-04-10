@@ -6,7 +6,7 @@
  *
  * @example
  * ```typescript
- * import { h, div, span, button } from "@sdom/core/hyperscript"
+ * import { h, div, span, button } from "static-dom-core/hyperscript"
  *
  * const view = div({ class: m => m.active ? "active" : "" }, [
  *   span({}, [m => m.label]),
