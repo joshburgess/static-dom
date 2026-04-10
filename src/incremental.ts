@@ -15,8 +15,8 @@
  *
  * @example
  * ```typescript
- * import { incrementalArray } from "static-dom-core/incremental"
- * import { keyedOps, keyedInsert, keyedRemove, keyedPatch } from "static-dom-core/patch"
+ * import { incrementalArray } from "static-dom/incremental"
+ * import { keyedOps, keyedInsert, keyedRemove, keyedPatch } from "static-dom/patch"
  *
  * // The model carries optional pending patches
  * interface Model {

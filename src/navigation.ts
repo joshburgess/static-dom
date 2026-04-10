@@ -6,7 +6,7 @@
  *
  * @example
  * ```typescript
- * import { onUrlChange, pushUrl, currentUrl, elmProgram } from "static-dom-core"
+ * import { onUrlChange, pushUrl, currentUrl, elmProgram } from "static-dom"
  *
  * type Msg = { type: "urlChanged"; url: UrlLocation } | { type: "navigate"; path: string }
  *

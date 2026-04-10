@@ -1,4 +1,4 @@
-# static-dom-core
+# static-dom
 
 A TypeScript UI library that eliminates virtual DOM diffing by fixing DOM structure at mount time. Only leaf values (text content, attributes) update in place — no intermediate representation, no reconciliation.
 
@@ -16,7 +16,7 @@ This gives you:
 ## Quick start
 
 ```typescript
-import { element, text, program } from "static-dom-core"
+import { element, text, program } from "static-dom"
 
 interface Model { count: number }
 type Msg = { type: "inc" } | { type: "dec" }
@@ -98,7 +98,7 @@ SDOM includes a unified optics system using structural subtyping. A single `Opti
 Lens + Prism = Affine. Any optic + Traversal = Traversal.
 
 ```typescript
-import { prop, at, each, lensOf, prismOf, affineOf, nullablePrism } from "static-dom-core"
+import { prop, at, each, lensOf, prismOf, affineOf, nullablePrism } from "static-dom"
 
 // Path selectors — compose prop lenses in one call
 const nameLens = at<AppModel>()("user", "profile", "name")
@@ -136,7 +136,7 @@ All optics carry optional `getDelta` for O(1) delta propagation through `.focus(
 Full Elm-style architecture with commands, subscriptions, navigation, and ports:
 
 ```typescript
-import { elmProgram, noCmd, httpGetJson, onUrlChange, delay } from "static-dom-core"
+import { elmProgram, noCmd, httpGetJson, onUrlChange, delay } from "static-dom"
 
 elmProgram<Model, Msg>({
   container: document.getElementById("app")!,
@@ -188,7 +188,7 @@ For large lists, SDOM provides a delta-based rendering system that skips the dis
 SDOM supports JSX via the automatic runtime (`jsx: "automatic"`). The JSX transform classifies props and delegates to SDOM constructors — compilable subtrees use template cloning (`innerHTML` + `cloneNode`) with static attributes baked into the HTML string for zero-cost duplication.
 
 ```tsx
-// tsconfig.json or vite config: jsx: "automatic", jsxImportSource: "static-dom-core"
+// tsconfig.json or vite config: jsx: "automatic", jsxImportSource: "static-dom"
 
 const view = (
   <div class={m => m.active ? "active" : ""}>
@@ -204,9 +204,9 @@ const view = (
 
 | Export | Description |
 |---|---|
-| `static-dom-core/vite` | Vite plugin — `sdomJsx()` |
-| `static-dom-core/esbuild` | esbuild plugin + SWC config helper |
-| `static-dom-core/eslint` | `no-dynamic-children` rule for static children verification |
+| `static-dom/vite` | Vite plugin — `sdomJsx()` |
+| `static-dom/esbuild` | esbuild plugin + SWC config helper |
+| `static-dom/eslint` | `no-dynamic-children` rule for static children verification |
 
 ### Built-in JSX components
 

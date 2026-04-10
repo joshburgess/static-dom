@@ -11,7 +11,7 @@
  *
  * @example
  * ```typescript
- * import { html } from "static-dom-core/html"
+ * import { html } from "static-dom/html"
  *
  * const view = html`
  *   <div class=${m => m.active ? "active" : ""}>

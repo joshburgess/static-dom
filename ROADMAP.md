@@ -7,7 +7,7 @@ a UI library that eliminates virtual DOM diffing by encoding the guarantee
 that DOM structure is fixed after initial render. Only leaf values (text
 nodes, attributes) update in place, directly, with no intermediate representation.
 
-## Layer 1: Core library — `static-dom-core`
+## Layer 1: Core library — `static-dom`
 
 **Status: complete**
 
@@ -60,7 +60,7 @@ with zero changes to the React component tree above them.
 ### Design
 
 ```tsx
-import { SDOMBoundary } from "static-dom-core/react"
+import { SDOMBoundary } from "static-dom/react"
 
 // Inside any React component:
 <SDOMBoundary
@@ -196,7 +196,7 @@ Layer 5  static-dom-jsx         — JSX runtime & build tooling            [comp
 Layer 4  static-dom-incremental — Delta-based updates                    [complete]
 Layer 3  static-dom-elm         — Full Elm architecture on top of SDOM   [complete]
 Layer 2  static-dom-react       — React boundary component               [complete]
-Layer 1  static-dom-core        — Core library                           [complete]
+Layer 1  static-dom        — Core library                           [complete]
 ```
 
 Each layer is independently useful and can be adopted without the others.

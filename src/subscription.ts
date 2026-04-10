@@ -8,7 +8,7 @@
  *
  * @example
  * ```typescript
- * import { interval, onWindow, programWithSub } from "static-dom-core"
+ * import { interval, onWindow, programWithSub } from "static-dom"
  *
  * type Msg = { type: "tick"; time: number } | { type: "resize"; w: number; h: number }
  *

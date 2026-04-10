@@ -8,7 +8,7 @@
  *
  * @example
  * ```typescript
- * import { httpGetJson, delay, randomInt, mapCmd } from "static-dom-core"
+ * import { httpGetJson, delay, randomInt, mapCmd } from "static-dom"
  *
  * function update(msg: Msg, model: Model): [Model, Cmd<Msg>] {
  *   switch (msg.type) {

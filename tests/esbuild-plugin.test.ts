@@ -18,7 +18,7 @@ describe("sdomJsx (esbuild plugin)", () => {
     plugin.setup(build as any)
 
     expect(build.initialOptions.jsx).toBe("automatic")
-    expect(build.initialOptions.jsxImportSource).toBe("static-dom-core")
+    expect(build.initialOptions.jsxImportSource).toBe("static-dom")
   })
 
   it("does not override explicit jsx settings", () => {
@@ -43,7 +43,7 @@ describe("sdomJsx (esbuild plugin)", () => {
     plugin.setup(build as any)
 
     expect(build.initialOptions.jsx).toBe("preserve")
-    expect(build.initialOptions.jsxImportSource).toBe("static-dom-core")
+    expect(build.initialOptions.jsxImportSource).toBe("static-dom")
   })
 })
 
@@ -56,7 +56,7 @@ describe("sdomJsxOptions", () => {
     const opts = sdomJsxOptions()
     expect(opts).toEqual({
       jsx: "automatic",
-      jsxImportSource: "static-dom-core",
+      jsxImportSource: "static-dom",
     })
   })
 })
@@ -73,7 +73,7 @@ describe("sdomSwcConfig", () => {
         transform: {
           react: {
             runtime: "automatic",
-            importSource: "static-dom-core",
+            importSource: "static-dom",
           },
         },
       },
