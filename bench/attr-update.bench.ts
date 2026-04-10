@@ -11,6 +11,8 @@ import { bench, describe } from "vitest"
 import { createElement } from "react"
 import { createRoot, type Root as ReactRoot } from "react-dom/client"
 import { h, render as preactRender } from "preact"
+import { createSignal as solidSignal, createRoot as solidRoot, createEffect, batch } from "solid-js"
+import type { Setter } from "solid-js"
 import { text, element, array } from "../src/constructors"
 import { createSignal, toUpdateStream, type Dispatcher } from "../src/observable"
 import type { Teardown } from "../src/types"
@@ -162,6 +164,62 @@ describe(`attribute-only update — ${ITEM_COUNT} items`, () => {
     teardown() {
       preactRender(null, preactContainer)
       preactContainer.remove()
+    },
+  })
+
+  // ─── Solid ──────────────────────────────────────────────────────────
+  // Each item has its own signals; toggling is O(n) signal updates
+  // batched into a single flush — exactly how Solid apps work.
+
+  let solidDispose: () => void
+  let solidActiveSetters: Setter<boolean>[]
+  let solidCountSetters: Setter<number>[]
+  let solidTick: number
+
+  bench("solid", () => {
+    solidTick++
+    batch(() => {
+      for (let i = 0; i < ITEM_COUNT; i++) {
+        solidActiveSetters[i]!(prev => !prev)
+        solidCountSetters[i]!(solidTick)
+      }
+    })
+  }, {
+    setup() {
+      const container = document.createElement("div")
+      document.body.appendChild(container)
+      solidTick = 0
+
+      solidRoot(dispose => {
+        solidDispose = dispose
+        solidActiveSetters = []
+        solidCountSetters = []
+
+        const items = makeItems(ITEM_COUNT)
+        const wrapper = document.createElement("div")
+
+        for (const item of items) {
+          const [active, setActive] = solidSignal(item.active)
+          const [count, setCount] = solidSignal(item.count)
+          solidActiveSetters.push(setActive)
+          solidCountSetters.push(setCount)
+
+          const div = document.createElement("div")
+          div.textContent = item.id
+          createEffect(() => {
+            div.className = active() ? "active" : "inactive"
+          })
+          createEffect(() => {
+            div.setAttribute("data-count", String(count()))
+          })
+          wrapper.appendChild(div)
+        }
+
+        container.appendChild(wrapper)
+      })
+    },
+    teardown() {
+      solidDispose()
     },
   })
 })

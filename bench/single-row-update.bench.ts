@@ -12,6 +12,8 @@ import { bench, describe, beforeEach } from "vitest"
 import { createElement, type ReactElement } from "react"
 import { createRoot, type Root as ReactRoot } from "react-dom/client"
 import { h, render as preactRender, type VNode } from "preact"
+import { createSignal as solidSignal, createRoot as solidRoot, createEffect } from "solid-js"
+import type { Setter } from "solid-js"
 import { text, element, array } from "../src/constructors"
 import { createSignal, toUpdateStream, type Dispatcher } from "../src/observable"
 import type { Teardown } from "../src/types"
@@ -144,6 +146,55 @@ describe(`single row update — ${ROW_COUNT} rows`, () => {
     teardown() {
       preactRender(null, preactContainer)
       preactContainer.remove()
+    },
+  })
+
+  // ─── Solid ──────────────────────────────────────────────────────────
+  // Raw reactive API — each row's label is a signal, effects patch the DOM.
+  // This is exactly what Solid's compiler generates from JSX.
+
+  let solidDispose: () => void
+  let solidLabelSetters: Setter<string>[]
+
+  bench("solid", () => {
+    const idx = Math.floor(Math.random() * ROW_COUNT)
+    solidLabelSetters[idx]!(prev => prev + " !")
+  }, {
+    setup() {
+      const container = document.createElement("div")
+      document.body.appendChild(container)
+
+      solidRoot(dispose => {
+        solidDispose = dispose
+        solidLabelSetters = []
+        const rows = makeRows(ROW_COUNT)
+        const tbody = document.createElement("tbody")
+
+        for (const row of rows) {
+          const [selected] = solidSignal(row.selected)
+          const [label, setLabel] = solidSignal(row.label)
+          solidLabelSetters.push(setLabel)
+
+          const tr = document.createElement("tr")
+          const td1 = document.createElement("td")
+          createEffect(() => {
+            td1.className = selected() ? "selected" : ""
+          })
+          td1.textContent = row.id
+          const td2 = document.createElement("td")
+          createEffect(() => {
+            td2.textContent = label()
+          })
+          tr.appendChild(td1)
+          tr.appendChild(td2)
+          tbody.appendChild(tr)
+        }
+
+        container.appendChild(tbody)
+      })
+    },
+    teardown() {
+      solidDispose()
     },
   })
 })
