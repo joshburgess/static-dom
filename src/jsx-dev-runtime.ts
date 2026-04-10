@@ -12,7 +12,7 @@ import type { SDOM } from "./types"
 export { Fragment }
 
 export function jsxDEV(
-  type: string | symbol,
+  type: string | symbol | ((props: Record<string, unknown>) => SDOM<any, any>),
   props: Record<string, unknown>,
   _key?: string,
   _isStatic?: boolean,

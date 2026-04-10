@@ -19,9 +19,10 @@
  * and delegates to the existing constructors.
  */
 
-import { element, text, staticText, fragment, compiled, ATTR_TO_PROP, applyClassMap } from "./constructors"
-import type { SDOM } from "./types"
+import { element, text, staticText, fragment, compiled, array, optional, ATTR_TO_PROP, applyClassMap } from "./constructors"
+import type { SDOM, KeyedItem } from "./types"
 import type { Dispatcher } from "./observable"
+import type { Prism } from "./optics"
 
 // ---------------------------------------------------------------------------
 // IDL properties — routed to `attrs` for direct property assignment
@@ -373,33 +374,107 @@ function buildSpecElement(
 // ---------------------------------------------------------------------------
 
 export function jsx(
-  type: string | symbol,
+  type: string | symbol | ((props: Record<string, unknown>) => SDOM<any, any>),
   props: Record<string, unknown>,
   _key?: string,
 ): SDOM<any, any> {
+  // Fragment
   if (type === Fragment) {
     return fragment(normalizeChildren(props.children))
   }
 
+  // Function component (Show, For, Optional, or user-defined)
+  if (typeof type === "function") {
+    return (type as (props: Record<string, unknown>) => SDOM<any, any>)(props)
+  }
+
+  // At this point type is string | symbol — only strings are valid element tags
+  const tag = type as string
+
   // Try to build a compiled template when all children are compilable
-  if (typeof type === "string") {
-    const childSpecs = tryBuildChildSpecs(props.children)
-    if (childSpecs !== null) {
-      const classified = classifyProps(props)
-      const spec: JsxSpec = { tag: type, classified, children: childSpecs }
-      const sdom = compileSpec(spec)
-      ;(sdom as any)[_JSX_SPEC] = spec
-      return sdom
-    }
+  const childSpecs = tryBuildChildSpecs(props.children)
+  if (childSpecs !== null) {
+    const classified = classifyProps(props)
+    const spec: JsxSpec = { tag, classified, children: childSpecs }
+    const sdom = compileSpec(spec)
+    ;(sdom as any)[_JSX_SPEC] = spec
+    return sdom
   }
 
   // Fall back to element() when children include opaque SDOM nodes
   const attrInput = classifyProps(props)
   const children = normalizeChildren(props.children)
-  return element(type as any, attrInput as any, children)
+  return element(tag as any, attrInput as any, children)
 }
 
 export { jsx as jsxs }
+
+// ---------------------------------------------------------------------------
+// Built-in JSX components
+// ---------------------------------------------------------------------------
+
+/**
+ * Conditionally show/hide content based on a model predicate.
+ * Uses `display: none` toggling — DOM nodes are always mounted.
+ *
+ * @example
+ * ```tsx
+ * <Show when={m => m.visible}>
+ *   <div>Visible content</div>
+ * </Show>
+ * ```
+ */
+export function Show(props: {
+  when: (model: any) => boolean
+  children?: SDOMChild | SDOMChild[]
+}): SDOM<any, any> {
+  const children = normalizeChildren(props.children)
+  const inner = children.length === 1 ? children[0]! : fragment(children)
+  return inner.showIf(props.when)
+}
+
+/**
+ * Render a keyed list of items.
+ *
+ * @example
+ * ```tsx
+ * <For each={m => m.todos.map(t => ({ key: t.id, model: t }))} tag="ul">
+ *   <li>{m => m.text}</li>
+ * </For>
+ * ```
+ */
+export function For(props: {
+  each: (model: any) => KeyedItem<any>[]
+  children?: SDOMChild | SDOMChild[]
+  tag?: string
+}): SDOM<any, any> {
+  const children = normalizeChildren(props.children)
+  const itemTemplate = children.length === 1 ? children[0]! : fragment(children)
+  return array(
+    (props.tag ?? "div") as keyof HTMLElementTagNameMap,
+    props.each,
+    itemTemplate,
+  )
+}
+
+/**
+ * Conditionally render content based on a prism. Mounts/unmounts DOM.
+ *
+ * @example
+ * ```tsx
+ * <Optional prism={nullablePrism<Model>()("user")}>
+ *   <UserProfile />
+ * </Optional>
+ * ```
+ */
+export function Optional(props: {
+  prism: Prism<any, any>
+  children?: SDOMChild | SDOMChild[]
+}): SDOM<any, any> {
+  const children = normalizeChildren(props.children)
+  const inner = children.length === 1 ? children[0]! : fragment(children)
+  return optional(props.prism, inner)
+}
 
 // ---------------------------------------------------------------------------
 // JSX type namespace
@@ -452,6 +527,10 @@ interface DataAriaProps {
 
 export declare namespace JSX {
   type Element = SDOM<any, any>
+
+  type ElementType =
+    | keyof IntrinsicElements
+    | ((props: any) => Element)
 
   interface ElementChildrenAttribute {
     children: {}

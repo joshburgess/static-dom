@@ -108,7 +108,7 @@ from update. Layer 3 adds the subscription system.
 
 ## Layer 4: Incremental / differentiable rendering — `@sdom/incremental`
 
-**Status: substantially complete**
+**Status: complete**
 
 ### What's done
 
@@ -123,12 +123,14 @@ from update. Layer 3 adds the subscription system.
 - `patchItem` — direct-patch API bypassing entire dispatch chain
 - Fast-patch handler — short-circuits subscription chain for single patches
 - Pooled delta constructors — zero-alloc reusable delta objects
+- `diffRecord` — automatic shallow delta inference by field reference equality
+- `autoDelta` — wraps plain update functions for automatic delta generation
 
 ### What could still be added
 
 - [x] Incremental `optional` (delta-aware mount/unmount)
 - [x] Incremental `focus` (skip unchanged subtrees via delta inspection) — already done via `lens.getDelta`
-- [ ] Automatic delta inference from model diffing
+- [x] Automatic delta inference from model diffing — `diffRecord` + `autoDelta`
 
 ---
 
@@ -150,12 +152,15 @@ from update. Layer 3 adds the subscription system.
 - Compiled template optimization: auto-detects compilable subtrees and generates
   `compiled()` nodes with fused single-observer updates instead of per-attr subscriptions
 - Tests: 17 additional tests for compiled templates
+- Function component support: `jsx()` handles `typeof type === "function"`
+- Built-in JSX components: `Show` (showIf), `For` (array), `Optional` (optional/prism)
+- Tests: 12 additional tests for function components
 
 ### What could still be added
 
 - [x] Compile-time optimization (converting `jsx()` calls into direct `compiled()` templates)
 - [ ] Model/Msg type parameter flow through JSX
-- [ ] Custom JSX components for `array`, `optional`, etc.
+- [x] Custom JSX components for `array`, `optional`, etc.
 - [ ] SWC/esbuild standalone plugins (non-Vite bundlers)
 - [ ] Static analysis to verify children lists are truly static
 

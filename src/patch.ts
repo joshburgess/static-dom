@@ -414,6 +414,82 @@ export function pooledKeyedInsert<T>(key: string, item: T, before: string | null
 }
 
 // ---------------------------------------------------------------------------
+// Automatic delta inference — diffRecord / autoDelta
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute a RecordDelta by shallow-comparing fields of two objects.
+ *
+ * For each key in `next`, if `prev[key] !== next[key]` (reference equality),
+ * the field is marked as replaced. This is the automatic counterpart to
+ * manually constructing `fields({ ... })` deltas.
+ *
+ * Use with `programWithDelta` via `autoDelta` to get delta-powered
+ * focus skipping without manually constructing deltas in update functions.
+ *
+ * @example
+ * ```typescript
+ * const prev = { name: "Alice", count: 0, items: [1, 2] }
+ * const next = { name: "Alice", count: 1, items: [1, 2] }
+ * diffRecord(prev, next)
+ * // → { kind: "fields", fields: { count: { kind: "replace", value: 1 } } }
+ * ```
+ */
+export function diffRecord<T extends object>(prev: T, next: T): RecordDelta<T> {
+  if (prev === next) return NOOP
+
+  const deltaFields: Partial<Record<keyof T, AtomDelta<any>>> = {}
+  let hasChanges = false
+
+  for (const key in next) {
+    if (prev[key] !== next[key]) {
+      deltaFields[key] = replace(next[key])
+      hasChanges = true
+    }
+  }
+
+  // Detect removed keys (rare in immutable update patterns, but correct)
+  for (const key in prev) {
+    if (!(key in next)) {
+      deltaFields[key] = replace(undefined as any)
+      hasChanges = true
+    }
+  }
+
+  return hasChanges ? { kind: "fields", fields: deltaFields as FieldDeltas<T> } : NOOP
+}
+
+/**
+ * Wrap a plain update function to automatically compute RecordDelta.
+ *
+ * The wrapped function returns `[Model, RecordDelta<Model>]` — suitable
+ * for `programWithDelta`. This gives you automatic delta propagation
+ * through `focus` (via `lens.getDelta`) without changing your update function.
+ *
+ * @example
+ * ```typescript
+ * // Plain update function:
+ * function update(msg: Msg, model: Model): Model { ... }
+ *
+ * // Use with programWithDelta for automatic delta-powered focus skipping:
+ * programWithDelta({
+ *   init: initialModel,
+ *   update: autoDelta(update),
+ *   view: myView,
+ *   container: document.getElementById("app")!,
+ * })
+ * ```
+ */
+export function autoDelta<Model extends object, Msg>(
+  update: (msg: Msg, model: Model) => Model
+): (msg: Msg, model: Model) => [Model, RecordDelta<Model>] {
+  return (msg: Msg, model: Model) => {
+    const next = update(msg, model)
+    return [next, diffRecord(model, next)]
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Diff utilities
 // ---------------------------------------------------------------------------
 

@@ -153,7 +153,7 @@ export {
   insert, remove, move, patch,
   keyedInsert, keyedRemove, keyedMove, keyedPatch, keyedOps, keyedOp1,
   pooledKeyedPatch, pooledKeyedRemove, pooledKeyedInsert,
-  ops, diffKeyed,
+  ops, diffKeyed, diffRecord, autoDelta,
   fields, applyRecord, fieldDelta, produce,
 } from "./patch"
 
