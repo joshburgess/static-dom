@@ -25,8 +25,7 @@ elements, 3 dynamic) and ~12% faster for typical templates. Static attributes
 Always disable guards and dev mode in production:
 
 ```typescript
-import { setGuardEnabled } from "static-dom/errors"
-import { setDevMode } from "static-dom/dev"
+import { setGuardEnabled, setDevMode } from "static-dom"
 
 setGuardEnabled(false)
 setDevMode(false)
@@ -106,7 +105,7 @@ updates. Beats Solid by 17% on bulk attribute updates.
 
 ```typescript
 import { incrementalArray } from "static-dom"
-import { pooledKeyedPatch, keyedOps } from "static-dom/patch"
+import { pooledKeyedPatch, keyedOps } from "static-dom"
 
 incrementalArray("tbody",
   (m) => m.rows.map(r => ({ key: r.id, model: r })),
