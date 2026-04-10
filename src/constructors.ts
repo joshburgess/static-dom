@@ -21,7 +21,7 @@ import { makeSDOM, type SDOM, type Teardown, type AttrInput,
          type ChannelEvent, type SDOMWithChannel } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { Prism, Affine } from "./optics"
-import { guard, guardFn, guardFn2, __SDOM_GUARD__ } from "./errors"
+import { guard, guardApply, getErrorHandler, __SDOM_GUARD__ } from "./errors"
 import { __SDOM_DEV__, validateModelShape, validateUniqueKeys } from "./dev"
 
 // ---------------------------------------------------------------------------
@@ -164,8 +164,7 @@ interface IUpdater<M> { run(prev: M, next: M): void }
  */
 export function text<Model>(value: (model: Model) => string): SDOM<Model, never> {
   return makeSDOM<Model, never>((parent, initialModel, updates, _dispatch) => {
-    const safeValue = guardFn("attach", "text derive", value, "")
-    let lastText = safeValue(initialModel)
+    let lastText = guardApply("attach", "text derive", value, initialModel, "")
     const node = document.createTextNode(lastText)
     parent.appendChild(node)
 
@@ -262,7 +261,7 @@ export function element<
       const attr = rawAttr as SDOMAttr<Model, Msg>
       switch (attr.kind) {
         case "string": {
-          const initial = guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), "")
+          const initial = guardApply("attach", `attr "${attr.name}"`, attr.value, initialModel, "")
           const propName = ATTR_TO_PROP[attr.name]
           if (propName) {
             // Direct property assignment — 2–5× faster than setAttribute
@@ -273,22 +272,22 @@ export function element<
           break
         }
         case "bool": {
-          const initial = guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), false)
+          const initial = guardApply("attach", `attr "${attr.name}"`, attr.value, initialModel, false)
           attrUpdaters.push(new BoolAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
           break
         }
         case "prop": {
-          const initial = guard("attach", `prop "${attr.name}"`, () => attr.value(initialModel), "")
+          const initial = guardApply("attach", `prop "${attr.name}"`, attr.value, initialModel, "")
           attrUpdaters.push(new PropUpdater<Model>(el, attr.name, `prop "${attr.name}"`, attr.value, "", initial))
           break
         }
         case "style": {
-          const initial = guard("attach", `style "${attr.property}"`, () => attr.value(initialModel), "")
+          const initial = guardApply("attach", `style "${attr.property}"`, attr.value, initialModel, "")
           attrUpdaters.push(new StyleUpdater<Model>(el as HTMLElement, attr.property, `style "${attr.property}"`, attr.value, initial))
           break
         }
         case "classMap": {
-          const initial = guard("attach", "classMap", () => attr.map(initialModel), EMPTY_CLASS_MAP)
+          const initial = guardApply("attach", "classMap", attr.map, initialModel, EMPTY_CLASS_MAP)
           attrUpdaters.push(new ClassMapUpdater<Model>(el, attr.map, initial))
           break
         }
@@ -329,14 +328,22 @@ export function element<
 
     // ── Children ──
     // Bitwise flag HAS_CHILDREN gates child mount — skip for leaf elements.
+    // Inline try/catch avoids closure allocation from guard() per child.
     if (HAS_CHILDREN) {
       childTeardowns = []
-      for (let i = 0; i < children.length; i++) {
-        const td = guard("attach", `element<${tag}> child[${i}]`, () =>
-          children[i]!.attach(el, initialModel, updates, dispatch),
-          { teardown() {} }
-        )
-        childTeardowns.push(td)
+      if (__SDOM_GUARD__) {
+        for (let i = 0; i < children.length; i++) {
+          try {
+            childTeardowns.push(children[i]!.attach(el, initialModel, updates, dispatch))
+          } catch (error) {
+            getErrorHandler()({ error, phase: "attach", context: `element<${tag}> child[${i}]` })
+            childTeardowns.push({ teardown() {} })
+          }
+        }
+      } else {
+        for (let i = 0; i < children.length; i++) {
+          childTeardowns.push(children[i]!.attach(el, initialModel, updates, dispatch))
+        }
       }
     }
 
@@ -567,8 +574,15 @@ export function array<
       }
     }
 
-    // Initial mount
-    reconcile(initialModel, initialModel)
+    // Initial mount — direct loop, skipping reconcile overhead
+    // (no Map, no LIS, no validateUniqueKeys on first render)
+    {
+      const initialItems = getItems(initialModel)
+      for (let i = 0; i < initialItems.length; i++) {
+        const item = initialItems[i]!
+        mountItem(item.key, item.model)
+      }
+    }
 
     const unsub = updates.subscribe(({ prev, next }) => reconcile(prev, next))
 
@@ -1125,13 +1139,23 @@ export function applyClassMap(
   nextMap: Record<string, boolean>,
   prevMap?: Record<string, boolean>
 ): void {
+  // Fast path: initial render — no prevMap, just add truthy classes directly.
+  // Avoids Set allocation and Object.keys on an empty prev.
+  if (!prevMap) {
+    const keys = Object.keys(nextMap)
+    for (let i = 0; i < keys.length; i++) {
+      if (nextMap[keys[i]!]) el.classList.add(keys[i]!)
+    }
+    return
+  }
+
   const allKeys = new Set([
     ...Object.keys(nextMap),
-    ...(prevMap ? Object.keys(prevMap) : []),
+    ...Object.keys(prevMap),
   ])
   for (const cls of allKeys) {
     const shouldHave = nextMap[cls] ?? false
-    const hadBefore = prevMap?.[cls] ?? false
+    const hadBefore = prevMap[cls] ?? false
     if (shouldHave !== hadBefore) {
       el.classList.toggle(cls, shouldHave)
     }

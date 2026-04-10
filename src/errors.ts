@@ -102,6 +102,26 @@ export function guard<T>(
 }
 
 /**
+ * Like `guard`, but takes a unary function and its argument separately.
+ * Avoids allocating a closure just to call `fn(arg)`.
+ */
+export function guardApply<A, R>(
+  phase: ErrorPhase,
+  context: string,
+  fn: (a: A) => R,
+  arg: A,
+  fallback: R
+): R {
+  if (!__SDOM_GUARD__) return fn(arg)
+  try {
+    return fn(arg)
+  } catch (error) {
+    currentHandler({ error, phase, context })
+    return fallback
+  }
+}
+
+/**
  * Wrap a unary function so it catches and reports errors, returning `fallback`.
  * When `__SDOM_GUARD__` is false, returns `fn` directly (zero wrapper overhead).
  */

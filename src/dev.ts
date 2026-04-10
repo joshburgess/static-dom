@@ -81,6 +81,9 @@ export function resetDevWarnings(): void {
 // Validation functions
 // ---------------------------------------------------------------------------
 
+/** Shared no-op — avoids allocating a new `() => {}` per node in production. */
+const VALIDATION_NOOP: (...args: any[]) => void = () => {}
+
 /**
  * Validate that an element's children array length is static.
  * Called once at construction time in `element()`.
@@ -89,7 +92,7 @@ export function validateChildrenLength(
   tag: string,
   childrenLength: number
 ): (nextLength: number) => void {
-  if (!__SDOM_DEV__) return () => {}
+  if (!__SDOM_DEV__) return VALIDATION_NOOP
 
   const expected = childrenLength
   return (nextLength: number) => {
@@ -110,9 +113,9 @@ export function validateModelShape(
   context: string,
   initialModel: unknown
 ): (nextModel: unknown) => void {
-  if (!__SDOM_DEV__) return () => {}
+  if (!__SDOM_DEV__) return VALIDATION_NOOP
 
-  if (initialModel == null || typeof initialModel !== "object") return () => {}
+  if (initialModel == null || typeof initialModel !== "object") return VALIDATION_NOOP
 
   const initialKeys = Object.keys(initialModel).sort().join(",")
 
