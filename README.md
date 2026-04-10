@@ -227,31 +227,34 @@ SDOM uses `NoInfer` on `element`'s `attrInput` and `children` parameters so that
 
 SDOM is designed for fast updates, not fast initial renders. On targeted
 updates (single row change in a 1,000-row table), SDOM's incremental layer
-reaches **80% of Solid.js throughput in real Chromium** while using a simpler
-whole-model architecture (no signals, no dependency tracking).
+reaches **88% of Solid.js throughput in real Chromium** while using a simpler
+whole-model architecture (no signals, no dependency tracking). On bulk
+attribute updates, SDOM's basic `array()` path **beats Solid by 17%**.
 
-See [BENCHMARKS.md](./BENCHMARKS.md) and [PERFORMANCE.md](./PERFORMANCE.md)
-for full results across React, Preact, Inferno, and Solid.js.
+See [BENCHMARKS.md](./BENCHMARKS.md) for full results across React, Preact,
+Inferno, and Solid.js. See [RECOMMENDATION.md](./RECOMMENDATION.md) for
+guidance on which APIs, constructors, and settings to use for best
+performance.
 
 ### Optimization tiers
 
 | Tier | Technique | Single-row ops/s (Chromium) |
 |---|---|---:|
-| 0 | `array` + `element` | ~4,400 |
+| 0 | `array` + `element` (same-structure fast path) | ~27,000 |
 | 1 | `incrementalArray` + keyed deltas | ~50,000 |
-| 2 | `programWithDelta` fast-path | ~52,000 |
-| 3 | `patchItem` + `compiled` + disabled guards | ~179,000 |
-| — | Solid.js (signal-per-leaf) | ~223,000 |
+| 2 | `programWithDelta` fast-path | ~50,000 |
+| 3 | `patchItem` + `compiled` + disabled guards | ~177,000 |
+| — | Solid.js (signal-per-leaf) | ~201,000 |
 
 ### Optics overhead
 
 | Operation | Optic | Raw baseline | Overhead |
 |---|---|---|---|
-| Single lens get | 16.9M ops/s | 17.1M ops/s | ~1% |
-| Prism preview (match) | 17.0M ops/s | 16.9M ops/s | 0% |
-| Prism preview (miss) | 16.8M ops/s | 16.9M ops/s | 0% |
-| Composed 3-deep get | 10.0M ops/s | 16.9M ops/s | 1.7x |
-| Lens modify | 9.1M ops/s | 14.9M ops/s | 1.6x |
+| Single lens get | 8.5M ops/s | 8.6M ops/s | ~1% |
+| Prism preview (match) | 8.6M ops/s | 8.6M ops/s | 0% |
+| Prism preview (miss) | 8.7M ops/s | 8.6M ops/s | 0% |
+| Composed 3-deep get | 6.9M ops/s | 8.7M ops/s | 1.25x |
+| Lens modify | 7.2M ops/s | 8.5M ops/s | 1.17x |
 
 ### Additional features
 
@@ -262,7 +265,7 @@ for full results across React, Preact, Inferno, and Solid.js.
 
 ## Status
 
-All 5 layers are complete with 406 tests across 32 test files:
+All 5 layers are complete with 486 tests across 36 test files:
 
 ```
 Layer 5  JSX runtime & build tooling            [complete]
