@@ -112,6 +112,13 @@
  * ```
  */
 
+// Error boundaries
+export type { SDOMError, ErrorHandler, ErrorPhase } from "./errors"
+export { setErrorHandler } from "./errors"
+
+// Dev mode
+export { setDevMode, setDevWarningHandler, resetDevWarnings } from "./dev"
+
 // Core types
 export type { SDOM, Teardown, AttrInput, KeyedItem, ArrayContext } from "./types"
 

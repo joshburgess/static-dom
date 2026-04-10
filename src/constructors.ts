@@ -21,6 +21,8 @@ import { makeSDOM, type SDOM, type Teardown, type AttrInput,
          type ChannelEvent, type SDOMWithChannel } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { Prism } from "./optics"
+import { guard, guardFn, guardFn2 } from "./errors"
+import { __SDOM_DEV__, validateModelShape, validateUniqueKeys } from "./dev"
 
 // ---------------------------------------------------------------------------
 // text
@@ -35,11 +37,15 @@ import type { Prism } from "./optics"
  */
 export function text<Model>(value: (model: Model) => string): SDOM<Model, never> {
   return makeSDOM<Model, never>((parent, initialModel, updates, _dispatch) => {
-    const node = document.createTextNode(value(initialModel))
+    const safeValue = guardFn("attach", "text derive", value, "")
+    const node = document.createTextNode(safeValue(initialModel))
     parent.appendChild(node)
 
+    const checkShape = validateModelShape("text", initialModel)
+
     const unsub = updates.subscribe(({ next }) => {
-      const nextText = value(next)
+      checkShape(next)
+      const nextText = guard("update", "text derive", () => value(next), "")
       if (node.textContent !== nextText) {
         node.textContent = nextText
       }
@@ -103,17 +109,34 @@ export function element<
     const el = document.createElement(tag) as HTMLElementTagNameMap[Tag] & Element
 
     const teardowns: Teardown[] = []
+    const checkShape = validateModelShape(`element<"${tag}">`, initialModel)
+
+    // Wrap updates to validate model shape in dev mode
+    const validatedUpdates: UpdateStream<Model> = __SDOM_DEV__
+      ? {
+          subscribe(observer) {
+            return updates.subscribe((update) => {
+              checkShape(update.next)
+              observer(update)
+            })
+          },
+        }
+      : updates
 
     // Apply initial attribute values and set up subscriptions
     for (const attr of attrList) {
       teardowns.push(
-        mountAttr(attr as SDOMAttr<Model, Msg>, el, initialModel, updates, dispatch)
+        mountAttr(attr as SDOMAttr<Model, Msg>, el, initialModel, validatedUpdates, dispatch)
       )
     }
 
     // Mount children — static structure, mounted once
-    for (const child of children) {
-      teardowns.push(child.attach(el, initialModel, updates, dispatch))
+    for (let i = 0; i < children.length; i++) {
+      const td = guard("attach", `element<${tag}> child[${i}]`, () =>
+        children[i]!.attach(el, initialModel, validatedUpdates, dispatch),
+        { teardown() {} }
+      )
+      teardowns.push(td)
     }
 
     parent.appendChild(el)
@@ -192,13 +215,18 @@ export function array<
         },
       }
 
-      const td = itemSdom.attach(wrapper, itemModel, itemUpdates, dispatch)
+      const td = guard("attach", `array item "${key}"`, () =>
+        itemSdom.attach(wrapper, itemModel, itemUpdates, dispatch),
+        { teardown() {} }
+      )
       liveItems.set(key, { wrapper, teardown: td, modelRef, observers })
     }
 
     function reconcile(prev: Model, next: Model): void {
       const prevItems = getItems(prev)
       const nextItems = getItems(next)
+
+      validateUniqueKeys(nextItems.map(i => i.key), "array")
 
       // Build key→model maps once — O(n)
       const prevByKey = new Map<string, ItemModel>()
@@ -298,7 +326,10 @@ export function optional<Model, SubModel, Msg>(
           })
         },
       }
-      currentTeardown = inner.attach(fragment, subModel, subUpdates, dispatch)
+      currentTeardown = guard("attach", "optional inner", () =>
+        inner.attach(fragment, subModel, subUpdates, dispatch),
+        { teardown() {} }
+      )
       anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
     }
 
@@ -371,9 +402,14 @@ export function component<Model, Msg = never>(
     const el = document.createElement("div")
     parent.appendChild(el)
 
-    const instance = setup(el, initialModel, dispatch)
+    const instance = guard("attach", "component setup", () =>
+      setup(el, initialModel, dispatch),
+      { update: () => {}, teardown: () => {} }
+    )
 
-    const unsub = updates.subscribe(({ next }) => instance.update(next))
+    const unsub = updates.subscribe(({ next }) => {
+      guard("update", "component update", () => { instance.update(next) }, undefined)
+    })
 
     return {
       teardown() {
@@ -546,26 +582,26 @@ function mountAttr<Model, Msg>(
 ): Teardown {
   switch (attr.kind) {
     case "string": {
-      el.setAttribute(attr.name, attr.value(initialModel))
+      el.setAttribute(attr.name, guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), ""))
       const unsub = updates.subscribe(({ next }) => {
-        const v = attr.value(next)
+        const v = guard("update", `attr "${attr.name}"`, () => attr.value(next), "")
         if (el.getAttribute(attr.name) !== v) el.setAttribute(attr.name, v)
       })
       return { teardown: unsub }
     }
 
     case "bool": {
-      el.toggleAttribute(attr.name, attr.value(initialModel))
+      el.toggleAttribute(attr.name, guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), false))
       const unsub = updates.subscribe(({ next }) => {
-        el.toggleAttribute(attr.name, attr.value(next))
+        el.toggleAttribute(attr.name, guard("update", `attr "${attr.name}"`, () => attr.value(next), false))
       })
       return { teardown: unsub }
     }
 
     case "prop": {
-      ;(el as any)[attr.name] = attr.value(initialModel)
+      ;(el as any)[attr.name] = guard("attach", `prop "${attr.name}"`, () => attr.value(initialModel), "")
       const unsub = updates.subscribe(({ next }) => {
-        const v = attr.value(next)
+        const v = guard("update", `prop "${attr.name}"`, () => attr.value(next), "")
         if ((el as any)[attr.name] !== v) {
           ;(el as any)[attr.name] = v
         }
@@ -574,32 +610,30 @@ function mountAttr<Model, Msg>(
     }
 
     case "style": {
-      ;(el as HTMLElement).style.setProperty(attr.property, attr.value(initialModel))
+      ;(el as HTMLElement).style.setProperty(attr.property, guard("attach", `style "${attr.property}"`, () => attr.value(initialModel), ""))
       const unsub = updates.subscribe(({ next }) => {
-        ;(el as HTMLElement).style.setProperty(attr.property, attr.value(next))
+        ;(el as HTMLElement).style.setProperty(attr.property, guard("update", `style "${attr.property}"`, () => attr.value(next), ""))
       })
       return { teardown: unsub }
     }
 
     case "classMap": {
-      applyClassMap(el, attr.map(initialModel))
+      const emptyMap: Record<string, boolean> = {}
+      applyClassMap(el, guard("attach", "classMap", () => attr.map(initialModel), emptyMap))
       const unsub = updates.subscribe(({ prev, next }) => {
-        const prevMap = attr.map(prev)
-        const nextMap = attr.map(next)
-        // Only diff if the map reference changed
+        const prevMap = guard("update", "classMap", () => attr.map(prev), emptyMap)
+        const nextMap = guard("update", "classMap", () => attr.map(next), emptyMap)
         if (prevMap !== nextMap) applyClassMap(el, nextMap, prevMap)
       })
       return { teardown: unsub }
     }
 
     case "event": {
-      // We close over a mutable model ref so the handler always sees
-      // the current model without subscribing to the update stream.
       let currentModel = initialModel
       const modelUnsub = updates.subscribe(({ next }) => { currentModel = next })
 
       const handler = (event: Event) => {
-        const msg = attr.handler(event, currentModel)
+        const msg = guard("event", `on "${attr.name}"`, () => attr.handler(event, currentModel), null)
         if (msg !== null) dispatch(msg)
       }
 

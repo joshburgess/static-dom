@@ -22,11 +22,17 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bench": "vitest bench"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "happy-dom": "^20.8.9",
+    "preact": "^10.29.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   },
