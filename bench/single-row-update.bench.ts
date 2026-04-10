@@ -12,13 +12,17 @@ import { bench, describe, beforeEach } from "vitest"
 import { createElement, type ReactElement } from "react"
 import { createRoot, type Root as ReactRoot } from "react-dom/client"
 import { h, render as preactRender, type VNode } from "preact"
+import { render as infernoRender, createVNode, createTextVNode } from "inferno"
+import { createElement as infernoH } from "inferno-create-element"
 import { createSignal as solidSignal, createRoot as solidRoot, createEffect } from "solid-js"
 import type { Setter } from "solid-js"
-import { text, element, array } from "../src/constructors"
+import { text, element, array, indexedArray, compiled } from "../src/constructors"
 import { incrementalArray } from "../src/incremental"
 import { pooledKeyedPatch, keyedOps, keyedPatch, type KeyedArrayDelta } from "../src/patch"
 import { programWithDelta, type ProgramHandle } from "../src/program"
 import { createSignal, toUpdateStream, type Dispatcher } from "../src/observable"
+import { setGuardEnabled } from "../src/errors"
+import { setDevMode } from "../src/dev"
 import type { Teardown } from "../src/types"
 import { makeRows, type Row } from "./helpers"
 
@@ -180,6 +184,218 @@ describe(`single row update — ${ROW_COUNT} rows`, () => {
     },
   })
 
+  // ─── SDOM (zero-copy) ─────────────────────────────────────────────────
+  // The full optimization stack:
+  //   1. extractDelta: skips update() entirely — no array spread (from Most.js)
+  //   2. compiled(): fused single-observer row template (from Inferno)
+  //   3. setGuardEnabled(false) + setDevMode(false): no try/catch, no Object.keys
+  //   4. pooledKeyedPatch: zero-alloc delta (reusable mutable object)
+  //
+  // This represents the ceiling of what SDOM can achieve without
+  // adopting Solid's signal-per-leaf architecture.
+
+  type ZCMsg = { type: "update"; idx: number }
+
+  let zcHandle: ProgramHandle<{ rows: Row[] }, ZCMsg>
+  let zcRows: Row[]
+
+  bench("sdom (zero-copy)", () => {
+    const idx = Math.floor(Math.random() * ROW_COUNT)
+    zcHandle.dispatch({ type: "update", idx })
+  }, {
+    setup() {
+      setGuardEnabled(false)
+      setDevMode(false)
+
+      const container = document.createElement("div")
+      document.body.appendChild(container)
+
+      // Fused row template: 1 observer instead of 3, direct DOM ops
+      const rowView = compiled<Row, never>((parent, model, _dispatch) => {
+        const tr = document.createElement("tr")
+        const td1 = document.createElement("td")
+        const td2 = document.createElement("td")
+
+        let lastCls = model.selected ? "selected" : ""
+        td1.className = lastCls
+        td1.textContent = model.id
+        let lastLabel = model.label
+        td2.textContent = lastLabel
+
+        tr.appendChild(td1)
+        tr.appendChild(td2)
+        parent.appendChild(tr)
+
+        return {
+          update(_prev: Row, next: Row) {
+            const cls = next.selected ? "selected" : ""
+            if (cls !== lastCls) { lastCls = cls; td1.className = cls }
+            const lbl = next.label
+            if (lbl !== lastLabel) { lastLabel = lbl; td2.textContent = lbl }
+          },
+          teardown() { tr.remove() },
+        }
+      })
+
+      const view = incrementalArray<{ rows: Row[] }, Row, never>(
+        "tbody",
+        (m) => m.rows.map(r => ({ key: r.id, model: r })),
+        rowView
+      )
+
+      zcRows = makeRows(ROW_COUNT)
+
+      zcHandle = programWithDelta<{ rows: Row[] }, ZCMsg>({
+        container,
+        init: { rows: zcRows },
+        // extractDelta: called first — if fast-patch handles it, update() is skipped
+        extractDelta: (msg, model) => {
+          const row = model.rows[msg.idx]!
+          const updated = { ...row, label: row.label + " !" }
+          model.rows[msg.idx] = updated // O(1) in-place mutation
+          return pooledKeyedPatch(row.id, updated)
+        },
+        // update: fallback — only called if extractDelta's fast-path fails
+        update: (msg, model) => {
+          const row = model.rows[msg.idx]!
+          const updated = { ...row, label: row.label + " !" }
+          const newRows = [...model.rows]
+          newRows[msg.idx] = updated
+          return [{ rows: newRows }, pooledKeyedPatch(row.id, updated)]
+        },
+        view,
+      })
+    },
+    teardown() {
+      zcHandle.teardown()
+      setGuardEnabled(true)
+      setDevMode(true)
+    },
+  })
+
+  // ─── SDOM (direct-patch) ───────────────────────────────────────────────
+  // Absolute minimum overhead path:
+  //   patchItem(key, value) → _tryFastPatch → handler → observer → DOM write
+  // No dispatch, no update(), no delta extraction, no subscription chain.
+  // This establishes the performance ceiling for SDOM's architecture.
+
+  type DPMsg = { type: "update"; idx: number }
+
+  let dpHandle: ProgramHandle<{ rows: Row[] }, DPMsg>
+  let dpRows: Row[]
+
+  bench("sdom (direct-patch)", () => {
+    const idx = Math.floor(Math.random() * ROW_COUNT)
+    const row = dpRows[idx]!
+    const updated = { ...row, label: row.label + " !" }
+    dpRows[idx] = updated
+    dpHandle.patchItem!(row.id, updated)
+  }, {
+    setup() {
+      setGuardEnabled(false)
+      setDevMode(false)
+
+      const container = document.createElement("div")
+      document.body.appendChild(container)
+
+      const rowView = compiled<Row, never>((parent, model, _dispatch) => {
+        const tr = document.createElement("tr")
+        const td1 = document.createElement("td")
+        const td2 = document.createElement("td")
+
+        let lastCls = model.selected ? "selected" : ""
+        td1.className = lastCls
+        td1.textContent = model.id
+        let lastLabel = model.label
+        td2.textContent = lastLabel
+
+        tr.appendChild(td1)
+        tr.appendChild(td2)
+        parent.appendChild(tr)
+
+        return {
+          update(_prev: Row, next: Row) {
+            const cls = next.selected ? "selected" : ""
+            if (cls !== lastCls) { lastCls = cls; td1.className = cls }
+            const lbl = next.label
+            if (lbl !== lastLabel) { lastLabel = lbl; td2.textContent = lbl }
+          },
+          teardown() { tr.remove() },
+        }
+      })
+
+      const view = incrementalArray<{ rows: Row[] }, Row, never>(
+        "tbody",
+        (m) => m.rows.map(r => ({ key: r.id, model: r })),
+        rowView
+      )
+
+      dpRows = makeRows(ROW_COUNT)
+
+      dpHandle = programWithDelta<{ rows: Row[] }, DPMsg>({
+        container,
+        init: { rows: dpRows },
+        update: (msg, model) => {
+          const row = model.rows[msg.idx]!
+          const updated = { ...row, label: row.label + " !" }
+          const newRows = [...model.rows]
+          newRows[msg.idx] = updated
+          return [{ rows: newRows }, pooledKeyedPatch(row.id, updated)]
+        },
+        view,
+      })
+    },
+    teardown() {
+      dpHandle.teardown()
+      setGuardEnabled(true)
+      setDevMode(true)
+    },
+  })
+
+  // ─── SDOM (indexed — non-keyed) ──────────────────────────────────────
+  // Uses indexedArray: no Map, no keys, pure positional patching.
+
+  let indexedSignal: ReturnType<typeof createSignal<{ rows: Row[] }>>
+  let indexedTeardown: Teardown
+  let indexedRows: Row[]
+
+  bench("sdom (indexed)", () => {
+    const idx = Math.floor(Math.random() * ROW_COUNT)
+    const row = indexedRows[idx]!
+    const updated = { ...row, label: row.label + " !" }
+    const newRows = [...indexedRows]
+    newRows[idx] = updated
+    indexedRows = newRows
+    indexedSignal.setValue({ rows: indexedRows })
+  }, {
+    setup() {
+      const container = document.createElement("div")
+      document.body.appendChild(container)
+
+      const rowView = element<"tr", Row, never>("tr", {
+        rawAttrs: { class: (m) => m.selected ? "selected" : "" },
+      }, [
+        element<"td", Row, never>("td", {}, [text((m) => m.id)]),
+        element<"td", Row, never>("td", {}, [text((m) => m.label)]),
+      ])
+
+      const view = indexedArray<{ rows: Row[] }, Row, never>(
+        "tbody",
+        (m) => m.rows,
+        rowView
+      )
+
+      indexedRows = makeRows(ROW_COUNT)
+      indexedSignal = createSignal<{ rows: Row[] }>({ rows: indexedRows })
+      const updates = toUpdateStream(indexedSignal)
+      const dispatch: Dispatcher<never> = () => {}
+      indexedTeardown = view.attach(container, { rows: indexedRows }, updates, dispatch)
+    },
+    teardown() {
+      indexedTeardown.teardown()
+    },
+  })
+
   // ─── React ──────────────────────────────────────────────────────────
 
   let reactRoot: ReactRoot
@@ -259,6 +475,91 @@ describe(`single row update — ${ROW_COUNT} rows`, () => {
     teardown() {
       preactRender(null, preactContainer)
       preactContainer.remove()
+    },
+  })
+
+  // ─── Inferno (createElement) ─────────────────────────────────────────
+  // Same API style as React/Preact — createElement with keyed children.
+
+  let infernoRows: Row[]
+  let infernoContainer: HTMLElement
+
+  bench("inferno", () => {
+    const idx = Math.floor(Math.random() * ROW_COUNT)
+    const row = infernoRows[idx]!
+    const updated = { ...row, label: row.label + " !" }
+    const newRows = [...infernoRows]
+    newRows[idx] = updated
+    infernoRows = newRows
+
+    const trs = infernoRows.map((r) =>
+      infernoH("tr", { key: r.id },
+        infernoH("td", { className: r.selected ? "selected" : "" }, r.id),
+        infernoH("td", null, r.label),
+      )
+    )
+    infernoRender(infernoH("tbody", null, trs), infernoContainer)
+  }, {
+    setup() {
+      infernoContainer = document.createElement("div")
+      document.body.appendChild(infernoContainer)
+      infernoRows = makeRows(ROW_COUNT)
+
+      const trs = infernoRows.map((r) =>
+        infernoH("tr", { key: r.id },
+          infernoH("td", { className: r.selected ? "selected" : "" }, r.id),
+          infernoH("td", null, r.label),
+        )
+      )
+      infernoRender(infernoH("tbody", null, trs), infernoContainer)
+    },
+    teardown() {
+      infernoRender(null, infernoContainer)
+      infernoContainer.remove()
+    },
+  })
+
+  // ─── Inferno (optimized — createVNode with flags) ──────────────────
+  // What Inferno's Babel plugin actually generates: pre-classified VNodes
+  // with explicit flags. Skips runtime type inference entirely.
+  //   HtmlElement = 1, HasKeyedChildren = 8, HasVNodeChildren = 2,
+  //   HasNonKeyedChildren = 4, Text = 16
+
+  let infernoOptRows: Row[]
+  let infernoOptContainer: HTMLElement
+
+  bench("inferno (optimized)", () => {
+    const idx = Math.floor(Math.random() * ROW_COUNT)
+    const row = infernoOptRows[idx]!
+    const updated = { ...row, label: row.label + " !" }
+    const newRows = [...infernoOptRows]
+    newRows[idx] = updated
+    infernoOptRows = newRows
+
+    const trs = infernoOptRows.map((r) =>
+      createVNode(1, "tr", null, [
+        createVNode(1, "td", r.selected ? "selected" : "", createTextVNode(r.id), 16),
+        createVNode(1, "td", null, createTextVNode(r.label), 16),
+      ], 4, null, r.id)
+    )
+    infernoRender(createVNode(1, "tbody", null, trs, 8), infernoOptContainer)
+  }, {
+    setup() {
+      infernoOptContainer = document.createElement("div")
+      document.body.appendChild(infernoOptContainer)
+      infernoOptRows = makeRows(ROW_COUNT)
+
+      const trs = infernoOptRows.map((r) =>
+        createVNode(1, "tr", null, [
+          createVNode(1, "td", r.selected ? "selected" : "", createTextVNode(r.id), 16),
+          createVNode(1, "td", null, createTextVNode(r.label), 16),
+        ], 4, null, r.id)
+      )
+      infernoRender(createVNode(1, "tbody", null, trs, 8), infernoOptContainer)
+    },
+    teardown() {
+      infernoRender(null, infernoOptContainer)
+      infernoOptContainer.remove()
     },
   })
 
