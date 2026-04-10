@@ -278,4 +278,4 @@ Layer 1  Core library                            [complete]
 
 ## License
 
-MIT
+Dual licensed under [Apache 2.0](./LICENSE-APACHE) or [MIT](./LICENSE-MIT).
