@@ -27,6 +27,14 @@
     "./vite": {
       "types": "./dist/vite-plugin.d.ts",
       "import": "./dist/vite-plugin.js"
+    },
+    "./esbuild": {
+      "types": "./dist/esbuild-plugin.d.ts",
+      "import": "./dist/esbuild-plugin.js"
+    },
+    "./eslint": {
+      "types": "./dist/eslint-plugin.d.ts",
+      "import": "./dist/eslint-plugin.js"
     }
   },
   "peerDependencies": {

@@ -414,23 +414,43 @@ export { jsx as jsxs }
 // ---------------------------------------------------------------------------
 
 /**
+ * Assert Model and Msg types on an SDOM node built from JSX.
+ *
+ * JSX intrinsic elements erase Model/Msg to `any` (same trade-off as
+ * Solid.js). Use `typed()` at the boundary to recover type safety:
+ *
+ * @example
+ * ```tsx
+ * const view = typed<Model, Msg>(
+ *   <div class={m => m.active ? "active" : ""}>
+ *     <span>{m => m.label}</span>
+ *   </div>
+ * )
+ * // view: SDOM<Model, Msg>
+ * ```
+ */
+export function typed<M, Msg = never>(sdom: SDOM<any, any>): SDOM<M, Msg> {
+  return sdom as SDOM<M, Msg>
+}
+
+/**
  * Conditionally show/hide content based on a model predicate.
  * Uses `display: none` toggling — DOM nodes are always mounted.
  *
  * @example
  * ```tsx
- * <Show when={m => m.visible}>
+ * <Show when={(m: Model) => m.visible}>
  *   <div>Visible content</div>
  * </Show>
  * ```
  */
-export function Show(props: {
-  when: (model: any) => boolean
+export function Show<M = any>(props: {
+  when: (model: M) => boolean
   children?: SDOMChild | SDOMChild[]
-}): SDOM<any, any> {
+}): SDOM<M, any> {
   const children = normalizeChildren(props.children)
   const inner = children.length === 1 ? children[0]! : fragment(children)
-  return inner.showIf(props.when)
+  return inner.showIf(props.when) as SDOM<M, any>
 }
 
 /**
@@ -438,23 +458,23 @@ export function Show(props: {
  *
  * @example
  * ```tsx
- * <For each={m => m.todos.map(t => ({ key: t.id, model: t }))} tag="ul">
- *   <li>{m => m.text}</li>
+ * <For each={(m: Model) => m.todos.map(t => ({ key: t.id, model: t }))} tag="ul">
+ *   <li>{(m: Todo) => m.text}</li>
  * </For>
  * ```
  */
-export function For(props: {
-  each: (model: any) => KeyedItem<any>[]
+export function For<M = any, Item = any>(props: {
+  each: (model: M) => KeyedItem<Item>[]
   children?: SDOMChild | SDOMChild[]
   tag?: string
-}): SDOM<any, any> {
+}): SDOM<M, any> {
   const children = normalizeChildren(props.children)
   const itemTemplate = children.length === 1 ? children[0]! : fragment(children)
   return array(
     (props.tag ?? "div") as keyof HTMLElementTagNameMap,
-    props.each,
+    props.each as (model: any) => KeyedItem<any>[],
     itemTemplate,
-  )
+  ) as SDOM<M, any>
 }
 
 /**
@@ -467,13 +487,13 @@ export function For(props: {
  * </Optional>
  * ```
  */
-export function Optional(props: {
-  prism: Prism<any, any>
+export function Optional<S = any, A = any>(props: {
+  prism: Prism<S, A>
   children?: SDOMChild | SDOMChild[]
-}): SDOM<any, any> {
+}): SDOM<S, any> {
   const children = normalizeChildren(props.children)
   const inner = children.length === 1 ? children[0]! : fragment(children)
-  return optional(props.prism, inner)
+  return optional(props.prism as Prism<any, any>, inner) as SDOM<S, any>
 }
 
 // ---------------------------------------------------------------------------

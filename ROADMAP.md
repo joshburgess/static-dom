@@ -136,7 +136,7 @@ from update. Layer 3 adds the subscription system.
 
 ## Layer 5: JSX runtime & build tooling — `@sdom/jsx`
 
-**Status: in progress**
+**Status: complete**
 
 ### What's done
 
@@ -148,29 +148,33 @@ from update. Layer 3 adds the subscription system.
   - Full JSX type namespace with `IntrinsicElements` mapped over `HTMLElementTagNameMap`
 - `jsx-dev-runtime.ts` — dev runtime delegating to production (future: source locations)
 - `vite-plugin.ts` — minimal Vite plugin configuring esbuild's `jsx: "automatic"` mode
+- `esbuild-plugin.ts` — esbuild plugin, build options helper, and SWC config helper
+- `eslint-plugin.ts` — ESLint rule `no-dynamic-children` for static children verification
 - Tests: 26 tests covering all prop types, children, fragments, and integration
 - Compiled template optimization: auto-detects compilable subtrees and generates
   `compiled()` nodes with fused single-observer updates instead of per-attr subscriptions
 - Tests: 17 additional tests for compiled templates
 - Function component support: `jsx()` handles `typeof type === "function"`
 - Built-in JSX components: `Show` (showIf), `For` (array), `Optional` (optional/prism)
-- Tests: 12 additional tests for function components
+  - Generic type parameters: `Show<M>`, `For<M, Item>`, `Optional<S, A>`
+- `typed<M, Msg>()` — asserts Model/Msg types on JSX-produced SDOM nodes
+- Tests: 12 function component tests, 6 typed/generic tests, 7 esbuild tests, 11 ESLint tests
 
 ### What could still be added
 
 - [x] Compile-time optimization (converting `jsx()` calls into direct `compiled()` templates)
-- [ ] Model/Msg type parameter flow through JSX
+- [x] Model/Msg type parameter flow through JSX — generic built-in components + `typed()` helper
 - [x] Custom JSX components for `array`, `optional`, etc.
-- [ ] SWC/esbuild standalone plugins (non-Vite bundlers)
-- [ ] Static analysis to verify children lists are truly static
+- [x] SWC/esbuild standalone plugins (non-Vite bundlers)
+- [x] Static analysis to verify children lists are truly static — ESLint `no-dynamic-children` rule
 
 ---
 
 ## Summary
 
 ```
-Layer 5  @sdom/jsx         — JSX runtime & build tooling            [substantially complete]
-Layer 4  @sdom/incremental — Delta-based updates                    [substantially complete]
+Layer 5  @sdom/jsx         — JSX runtime & build tooling            [complete]
+Layer 4  @sdom/incremental — Delta-based updates                    [complete]
 Layer 3  @sdom/elm         — Full Elm architecture on top of SDOM   [substantially complete]
 Layer 2  @sdom/react       — React boundary component               [complete]
 Layer 1  @sdom/core        — Core library                           [complete]
