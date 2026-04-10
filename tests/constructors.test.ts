@@ -1,0 +1,444 @@
+import { describe, it, expect, afterEach } from "vitest"
+import { component, compiled, fragment, wrapChannel, text, element } from "../src/constructors"
+import { makeSDOM, type ChannelEvent, type SDOMWithChannel, type SDOM } from "../src/types"
+import { mount, cleanup, type TestHarness } from "./helpers"
+import type { Dispatcher, Observer, Update, UpdateStream } from "../src/observable"
+
+let h: TestHarness<any, any>
+afterEach(() => { if (h) cleanup(h) })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// component
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("component", () => {
+  it("creates a wrapper div and appends to parent", () => {
+    const sdom = component<string, never>((el, _model, _dispatch) => {
+      el.textContent = "hello"
+      return { update: () => {}, teardown: () => {} }
+    })
+    h = mount(sdom, "init")
+    const wrapper = h.container.querySelector("div")
+    expect(wrapper).not.toBeNull()
+    expect(wrapper!.textContent).toBe("hello")
+  })
+
+  it("passes the initial model to setup", () => {
+    let receivedModel: string | undefined
+    const sdom = component<string, never>((el, model, _dispatch) => {
+      receivedModel = model
+      el.textContent = model
+      return { update: () => {}, teardown: () => {} }
+    })
+    h = mount(sdom, "initial-value")
+    expect(receivedModel).toBe("initial-value")
+  })
+
+  it("calls update with the new model on model changes", () => {
+    const updates: string[] = []
+    const sdom = component<string, never>((el, model, _dispatch) => {
+      el.textContent = model
+      return {
+        update: (next: string) => {
+          updates.push(next)
+          el.textContent = next
+        },
+        teardown: () => {},
+      }
+    })
+    h = mount(sdom, "first")
+    expect(updates).toEqual([])
+
+    h.set("second")
+    expect(updates).toEqual(["second"])
+
+    h.set("third")
+    expect(updates).toEqual(["second", "third"])
+    expect(h.container.querySelector("div")!.textContent).toBe("third")
+  })
+
+  it("passes dispatch to setup for message emission", () => {
+    const sdom = component<string, string>((_el, _model, dispatch) => {
+      dispatch("hello-msg")
+      return { update: () => {}, teardown: () => {} }
+    })
+    h = mount(sdom, "x")
+    expect(h.dispatched).toEqual(["hello-msg"])
+  })
+
+  it("cleans up on teardown: unsubscribes, calls user teardown, removes div", () => {
+    let tornDown = false
+    const updates: string[] = []
+    const sdom = component<string, never>((el, _model, _dispatch) => {
+      return {
+        update: (next: string) => { updates.push(next) },
+        teardown: () => { tornDown = true },
+      }
+    })
+    h = mount(sdom, "init")
+    expect(h.container.querySelector("div")).not.toBeNull()
+
+    h.teardown.teardown()
+    expect(tornDown).toBe(true)
+    expect(h.container.querySelector("div")).toBeNull()
+
+    // After teardown, updates should not propagate
+    h.set("after-teardown")
+    expect(updates).toEqual([])
+
+    // Prevent double-teardown in afterEach
+    h.container.remove()
+    h = undefined as any
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// compiled
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("compiled", () => {
+  it("calls setup with parent and initial model, appending nodes", () => {
+    const sdom = compiled<string, never>((parent, model, _dispatch) => {
+      const span = document.createElement("span")
+      span.textContent = model
+      parent.appendChild(span)
+      return { update: () => {}, teardown: () => {} }
+    })
+    h = mount(sdom, "hello")
+    expect(h.container.querySelector("span")!.textContent).toBe("hello")
+  })
+
+  it("provides prev and next to update callback", () => {
+    const received: Array<{ prev: string; next: string }> = []
+    const sdom = compiled<string, never>((parent, model, _dispatch) => {
+      const span = document.createElement("span")
+      span.textContent = model
+      parent.appendChild(span)
+      return {
+        update: (prev, next) => {
+          received.push({ prev, next })
+          span.textContent = next
+        },
+        teardown: () => {},
+      }
+    })
+    h = mount(sdom, "a")
+    h.set("b")
+    h.set("c")
+    expect(received).toEqual([
+      { prev: "a", next: "b" },
+      { prev: "b", next: "c" },
+    ])
+    expect(h.container.querySelector("span")!.textContent).toBe("c")
+  })
+
+  it("registers exactly one subscription on the update stream", () => {
+    let subscriptionCount = 0
+    const sdom = compiled<string, never>((parent, model, _dispatch) => {
+      const node = document.createTextNode(model)
+      parent.appendChild(node)
+      return {
+        update: (_prev, next) => { node.textContent = next },
+        teardown: () => { node.remove() },
+      }
+    })
+
+    // Wrap the SDOM to count subscriptions
+    const wrappedSdom = makeSDOM<string, never>((parent, initialModel, updates, dispatch) => {
+      const countingUpdates: UpdateStream<string> = {
+        subscribe(observer) {
+          subscriptionCount++
+          return updates.subscribe(observer)
+        },
+      }
+      return sdom.attach(parent, initialModel, countingUpdates, dispatch)
+    })
+
+    h = mount(wrappedSdom, "test")
+    expect(subscriptionCount).toBe(1)
+  })
+
+  it("cleans up on teardown", () => {
+    let tornDown = false
+    const sdom = compiled<string, never>((parent, model, _dispatch) => {
+      const span = document.createElement("span")
+      span.textContent = model
+      parent.appendChild(span)
+      return {
+        update: () => {},
+        teardown: () => {
+          tornDown = true
+          span.remove()
+        },
+      }
+    })
+    h = mount(sdom, "init")
+    expect(h.container.querySelector("span")).not.toBeNull()
+
+    h.teardown.teardown()
+    expect(tornDown).toBe(true)
+    expect(h.container.querySelector("span")).toBeNull()
+
+    h.container.remove()
+    h = undefined as any
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// fragment
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("fragment", () => {
+  it("handles empty children array", () => {
+    const sdom = fragment<string, never>([])
+    h = mount(sdom, "model")
+    expect(h.container.childNodes.length).toBe(0)
+  })
+
+  it("mounts a single child", () => {
+    const sdom = fragment<string, never>([
+      text(m => m),
+    ])
+    h = mount(sdom, "only-child")
+    expect(h.container.textContent).toBe("only-child")
+  })
+
+  it("mounts multiple children in order", () => {
+    const sdom = fragment<string, never>([
+      text(m => `first:${m}`),
+      text(m => `second:${m}`),
+      text(m => `third:${m}`),
+    ])
+    h = mount(sdom, "x")
+    const nodes = h.container.childNodes
+    expect(nodes.length).toBe(3)
+    expect(nodes[0]!.textContent).toBe("first:x")
+    expect(nodes[1]!.textContent).toBe("second:x")
+    expect(nodes[2]!.textContent).toBe("third:x")
+  })
+
+  it("propagates model updates to all children", () => {
+    const sdom = fragment<string, never>([
+      text(m => `a:${m}`),
+      text(m => `b:${m}`),
+    ])
+    h = mount(sdom, "v1")
+    expect(h.container.childNodes[0]!.textContent).toBe("a:v1")
+    expect(h.container.childNodes[1]!.textContent).toBe("b:v1")
+
+    h.set("v2")
+    expect(h.container.childNodes[0]!.textContent).toBe("a:v2")
+    expect(h.container.childNodes[1]!.textContent).toBe("b:v2")
+  })
+
+  it("calls teardown on all children", () => {
+    const tornDown: string[] = []
+
+    const child = (label: string): SDOM<string, never> =>
+      makeSDOM((parent, model, updates, _dispatch) => {
+        const node = document.createTextNode(model)
+        parent.appendChild(node)
+        return {
+          teardown: () => {
+            tornDown.push(label)
+            node.remove()
+          },
+        }
+      })
+
+    const sdom = fragment<string, never>([child("a"), child("b"), child("c")])
+    h = mount(sdom, "x")
+    expect(h.container.childNodes.length).toBe(3)
+
+    h.teardown.teardown()
+    expect(tornDown).toEqual(["a", "b", "c"])
+
+    h.container.remove()
+    h = undefined as any
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// wrapChannel
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("wrapChannel", () => {
+  /** Helper: create a fake SDOMWithChannel that captures its dispatch function. */
+  function fakeChannelSdom<Channel, Model>(
+    onAttach?: (ctx: {
+      parent: Element | DocumentFragment
+      model: Model
+      dispatch: Dispatcher<ChannelEvent<Channel, Model>>
+      pushUpdate: (model: Model) => void
+    }) => void
+  ): {
+    sdom: SDOMWithChannel<Channel, Model>
+    getDispatch: () => Dispatcher<ChannelEvent<Channel, Model>>
+    teardownCalled: () => boolean
+  } {
+    let capturedDispatch: Dispatcher<ChannelEvent<Channel, Model>> | undefined
+    let _teardownCalled = false
+
+    const sdom: SDOMWithChannel<Channel, Model> = {
+      attach(parent, initialModel, updates, dispatch) {
+        capturedDispatch = dispatch
+
+        // Collect local observers so tests can push updates into the inner component
+        const localPushes: Array<Observer<Update<Model>>> = []
+        const unsub = updates.subscribe(update => {
+          // Just consume outer+local updates
+        })
+
+        if (onAttach) {
+          onAttach({
+            parent,
+            model: initialModel,
+            dispatch,
+            pushUpdate: () => {},
+          })
+        }
+
+        return {
+          teardown() {
+            _teardownCalled = true
+            unsub()
+          },
+        }
+      },
+    }
+
+    return {
+      sdom,
+      getDispatch: () => capturedDispatch!,
+      teardownCalled: () => _teardownCalled,
+    }
+  }
+
+  it("passes through attach to inner component", () => {
+    let attached = false
+    const { sdom } = fakeChannelSdom<string, number>(() => { attached = true })
+    const wrapped = wrapChannel<string, number, string>(sdom, (_ch, _d) => null)
+    h = mount(wrapped, 42)
+    expect(attached).toBe(true)
+  })
+
+  it("interprets parent channel events and calls dispatch", () => {
+    const { sdom, getDispatch } = fakeChannelSdom<string, number>()
+    const wrapped = wrapChannel<string, number, string>(sdom, (channel, dispatch) => {
+      dispatch(`got:${channel}`)
+      return null
+    })
+    h = mount(wrapped, 0)
+
+    // Emit a parent channel event from the inner component
+    getDispatch()({ kind: "parent", value: "hello" })
+    expect(h.dispatched).toEqual(["got:hello"])
+  })
+
+  it("applies model transform from interpret on parent channel events", () => {
+    // Create a channeled SDOM that tracks model updates it receives
+    const receivedUpdates: Array<{ prev: number; next: number }> = []
+    let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
+
+    const innerSdom: SDOMWithChannel<string, number> = {
+      attach(parent, initialModel, updates, dispatch) {
+        capturedDispatch = dispatch
+        const unsub = updates.subscribe(({ prev, next }) => {
+          receivedUpdates.push({ prev, next })
+        })
+        return { teardown: () => unsub() }
+      },
+    }
+
+    const wrapped = wrapChannel<string, number, never>(innerSdom, (channel, _dispatch) => {
+      if (channel === "increment") return (m: number) => m + 1
+      return null
+    })
+
+    h = mount(wrapped, 10)
+
+    capturedDispatch!({ kind: "parent", value: "increment" })
+    // The local transform should have pushed an update to inner observers
+    expect(receivedUpdates.some(u => u.prev === 10 && u.next === 11)).toBe(true)
+  })
+
+  it("applies model transform from update channel events", () => {
+    const receivedUpdates: Array<{ prev: number; next: number }> = []
+    let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
+
+    const innerSdom: SDOMWithChannel<string, number> = {
+      attach(parent, initialModel, updates, dispatch) {
+        capturedDispatch = dispatch
+        const unsub = updates.subscribe(({ prev, next }) => {
+          receivedUpdates.push({ prev, next })
+        })
+        return { teardown: () => unsub() }
+      },
+    }
+
+    const wrapped = wrapChannel<string, number, never>(innerSdom, () => null)
+    h = mount(wrapped, 5)
+
+    capturedDispatch!({ kind: "update", fn: (m: number) => m * 2 })
+    expect(receivedUpdates.some(u => u.prev === 5 && u.next === 10)).toBe(true)
+  })
+
+  it("does not push local update when interpret returns null", () => {
+    const receivedUpdates: Array<{ prev: number; next: number }> = []
+    let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
+
+    const innerSdom: SDOMWithChannel<string, number> = {
+      attach(parent, initialModel, updates, dispatch) {
+        capturedDispatch = dispatch
+        const unsub = updates.subscribe(({ prev, next }) => {
+          receivedUpdates.push({ prev, next })
+        })
+        return { teardown: () => unsub() }
+      },
+    }
+
+    const wrapped = wrapChannel<string, number, string>(innerSdom, (_ch, _d) => null)
+    h = mount(wrapped, 100)
+
+    capturedDispatch!({ kind: "parent", value: "ignored" })
+    // No local updates should have been pushed (only outer updates count)
+    expect(receivedUpdates).toEqual([])
+  })
+
+  it("does not push local update when transform returns the same model", () => {
+    const receivedUpdates: Array<{ prev: number; next: number }> = []
+    let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
+
+    const innerSdom: SDOMWithChannel<string, number> = {
+      attach(parent, initialModel, updates, dispatch) {
+        capturedDispatch = dispatch
+        const unsub = updates.subscribe(({ prev, next }) => {
+          receivedUpdates.push({ prev, next })
+        })
+        return { teardown: () => unsub() }
+      },
+    }
+
+    const wrapped = wrapChannel<string, number, never>(innerSdom, (ch, _d) => {
+      return (m: number) => m // identity — same reference
+    })
+    h = mount(wrapped, 42)
+
+    capturedDispatch!({ kind: "parent", value: "noop" })
+    // Transform returned same value, so no update should be pushed
+    expect(receivedUpdates).toEqual([])
+  })
+
+  it("tears down inner component on teardown", () => {
+    const { sdom, teardownCalled } = fakeChannelSdom<string, number>()
+    const wrapped = wrapChannel<string, number, never>(sdom, () => null)
+    h = mount(wrapped, 0)
+    expect(teardownCalled()).toBe(false)
+
+    h.teardown.teardown()
+    expect(teardownCalled()).toBe(true)
+
+    h.container.remove()
+    h = undefined as any
+  })
+})
