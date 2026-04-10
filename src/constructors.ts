@@ -31,7 +31,8 @@ import { __SDOM_DEV__, validateModelShape, validateUniqueKeys } from "./dev"
 // because it bypasses the attribute→property reflection layer.
 // ---------------------------------------------------------------------------
 
-const ATTR_TO_PROP: Record<string, string> = {
+/** @internal Exported for jsx-runtime prop classification. */
+export const ATTR_TO_PROP: Record<string, string> = {
   class: "className",
   for: "htmlFor",
   tabindex: "tabIndex",

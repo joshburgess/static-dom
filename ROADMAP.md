@@ -45,7 +45,7 @@ nodes, attributes) update in place, directly, with no intermediate representatio
 
 ## Layer 2: React adapter — `@sdom/react`
 
-**Status: in progress**
+**Status: complete**
 
 ### Goal
 
@@ -122,40 +122,39 @@ from update. What Layer 3 would add:
 
 ---
 
-## Layer 5: Compiler / syntax sugar — `@sdom/jsx`
+## Layer 5: JSX runtime & build tooling — `@sdom/jsx`
 
-**Status: not started**
+**Status: in progress**
 
-A Babel/TypeScript transform that compiles JSX to SDOM constructor calls:
+### What's done
 
-```tsx
-// Input (JSX):
-const view = <div class={m => m.error ? "error" : ""}>
-  <span>{m => m.label}</span>
-</div>
+- `jsx-runtime.ts` — automatic JSX runtime (`jsx`, `jsxs`, `Fragment`)
+  - Prop classification: events → `on`, class/className → `rawAttrs.class`,
+    style → kebab-cased style map, data-*/aria-* → `rawAttrs`, IDL props → `attrs`
+  - Children normalization: functions → `text()`, strings → `staticText()`,
+    numbers → `staticText(String(n))`, SDOM nodes → passthrough
+  - Full JSX type namespace with `IntrinsicElements` mapped over `HTMLElementTagNameMap`
+- `jsx-dev-runtime.ts` — dev runtime delegating to production (future: source locations)
+- `vite-plugin.ts` — minimal Vite plugin configuring esbuild's `jsx: "automatic"` mode
+- Tests: 26 tests covering all prop types, children, fragments, and integration
 
-// Output (SDOM constructors):
-const view = element("div", {
-  rawAttrs: { class: m => m.error ? "error" : "" }
-}, [
-  element("span", {}, [text(m => m.label)])
-])
-```
+### What could still be added
 
-The compiler could also:
-- Statically verify that JSX children lists are truly static
-- Auto-insert `optional` around nullable expressions
-- Generate `compiled()` templates for leaf components (fused single-observer)
+- [ ] Compile-time optimization (converting `jsx()` calls into direct `compiled()` templates)
+- [ ] Model/Msg type parameter flow through JSX
+- [ ] Custom JSX components for `array`, `optional`, etc.
+- [ ] SWC/esbuild standalone plugins (non-Vite bundlers)
+- [ ] Static analysis to verify children lists are truly static
 
 ---
 
 ## Summary
 
 ```
-Layer 5  @sdom/jsx         — JSX transform & static analysis        [not started]
+Layer 5  @sdom/jsx         — JSX runtime & build tooling            [in progress]  ← YOU ARE HERE
 Layer 4  @sdom/incremental — Delta-based updates                    [substantially complete]
 Layer 3  @sdom/elm         — Full Elm architecture on top of SDOM   [partially done]
-Layer 2  @sdom/react       — React boundary component               [in progress]  ← YOU ARE HERE
+Layer 2  @sdom/react       — React boundary component               [complete]
 Layer 1  @sdom/core        — Core library                           [complete]
 ```
 
