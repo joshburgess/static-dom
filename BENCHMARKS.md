@@ -1,241 +1,438 @@
 # SDOM Benchmarks
 
-Benchmark results comparing SDOM against React, Preact, Inferno, and Solid.js
-across three scenarios: single row update, bulk attribute updates, and initial
-render.
+All results collected on Chromium via Playwright, using Vitest's bench runner (Tinybench).
 
-All benchmarks use the same data shape (keyed rows with `id`, `label`,
-`selected`) and equivalent DOM structure across frameworks.
+**Environment:** macOS Darwin 24.4.0, Playwright 1.59.1, Vitest 3.2.4
 
-## Environments
+**Framework versions:** React 19.2.5, Preact 10.29.1, Solid 1.9.12, Inferno 9.1.0
 
-Results are collected in two environments to show how real DOM cost changes
-the picture:
+**Date:** 2026-04-10
 
-- **Happy-dom** — fast JS-only DOM mock. Measures pure JS overhead with
-  near-zero DOM cost. Useful for isolating framework overhead.
-- **Chromium** — real browser via Playwright. Measures end-to-end including
-  layout, style recalc, and actual DOM mutations.
+---
 
-## Running
+## Running Benchmarks
 
 ```bash
-# Happy-dom (default)
-npm run bench
-
-# Real Chromium
+# All benchmarks in Chromium (recommended — real DOM cost)
 npx vitest bench --config vitest.browser.config.ts
+
+# Single benchmark file
+npx vitest bench bench/initial-render.bench.ts --config vitest.browser.config.ts
+
+# All benchmarks in happy-dom (faster, isolates JS overhead)
+npx vitest bench
 ```
 
 ---
 
-## Single row update (1,000 rows)
+## Comparative Benchmarks
 
-One row's label changes per iteration. This is SDOM's sweet spot: SDOM patches
-one text node directly, while vdom libraries must diff the entire tree (or at
-least the row list) to find the one changed row.
+### Initial Render — 10k rows
 
-### SDOM variants explained
+Mount 10k table rows from scratch into an empty container. Measures createElement,
+attribute setting, text content, and DOM tree assembly throughput.
 
-| Variant | What it does |
+| Variant | ops/sec | vs raw DOM | Notes |
+|---|---:|---:|---|
+| raw DOM | 106 | 1.00x | Theoretical ceiling — direct createElement loop |
+| solid | 91 | 1.16x | Per-row createEffect + signals |
+| **sdom (jsx compiled)** | **42** | **2.54x** | Compiled JSX path — fused observer, direct createElement |
+| preact | 45 | 2.36x | |
+| react | 44 | 2.40x | |
+| sdom (production) | 34 | 3.12x | element()/text() constructors, guards off |
+| sdom (dev) | 30 | 3.49x | Guards + dev mode on |
+| sdom (jsx + cloning) | 28 | 3.83x | Template cloning via compileSpecCloned |
+
+**Takeaway:** The compiled JSX path is SDOM's fastest initial render, comparable to
+React and Preact. The standard element()/text() path in production mode is somewhat
+slower due to per-element observer setup overhead. Template cloning is counterproductive
+for small row templates.
+
+---
+
+### Single Row Update — 1k rows
+
+Update one row's label in a 1k-row table. Tests the cost of detecting and applying a
+single change. This is SDOM's strongest scenario — keyed array reconciliation fans out
+updates per-item, so only the changed row's observers fire.
+
+**SDOM variant guide:**
+
+| Variant | Technique |
 |---|---|
-| `sdom` | Standard `array` — full keyed reconciliation on every update |
-| `sdom (incremental)` | `incrementalArray` with keyed deltas — O(1) per patch, no reconciliation |
-| `sdom (compiled)` | `programWithDelta` fast-path + element template |
-| `sdom (direct-patch)` | `patchItem` API — bypasses dispatch, update, and subscription chain entirely |
-| `sdom (zero-copy)` | `extractDelta` + `compiled` template + disabled guards/dev mode |
-| `sdom (indexed)` | `indexedArray` — non-keyed positional patching, no Map overhead |
+| sdom | Standard `array()` with same-structure fast path |
+| sdom (incremental) | `incrementalArray` with keyed deltas — O(1) per patch, no reconciliation |
+| sdom (compiled) | `programWithDelta` fast-path + element row template |
+| sdom (indexed) | `indexedArray` — non-keyed positional patching, no Map overhead |
+| sdom (direct-patch) | `patchItem()` API — bypasses dispatch, update, and subscription chain |
+| sdom (zero-copy) | `extractDelta` + `compiled()` fused row + pooledKeyedPatch + guards off |
 
-### Happy-dom results
+| Variant | ops/sec | vs solid | Notes |
+|---|---:|---:|---|
+| solid | 201,158 | 1.00x | Signal setter -> createEffect -> DOM write. O(1). |
+| **sdom (direct-patch)** | **176,592** | **1.14x** | Bypasses dispatch chain |
+| **sdom (zero-copy)** | **168,832** | **1.19x** | Full optimization stack |
+| **sdom (compiled)** | **49,874** | **4.03x** | programWithDelta fast-path |
+| **sdom (incremental)** | **49,710** | **4.05x** | Skips reconciliation via delta |
+| **sdom (indexed)** | **43,420** | **4.63x** | Positional patching |
+| **sdom** | **27,122** | **7.42x** | Same-structure fast path (key comparison only) |
+| inferno | 4,005 | 50.2x | createElement-based keyed diff |
+| inferno (optimized) | 2,202 | 91.4x | Pre-classified VNodes with flags |
+| preact | 1,215 | 165.6x | |
+| react | 448 | 449.2x | |
 
-| Framework | ops/s | vs Solid | vs React |
-|---|---:|---:|---:|
-| solid | 11,828,595 | 1.00x | 63,173x |
-| sdom (incremental) | 241,116 | 0.02x | 1,288x |
-| sdom (compiled) | 235,448 | 0.02x | 1,258x |
-| sdom (direct-patch) | 198,614 | 0.02x | 1,061x |
-| sdom (zero-copy) | 176,970 | 0.01x | 945x |
-| sdom (indexed) | 95,404 | 0.008x | 510x |
-| sdom | 2,655 | 0.0002x | 14x |
-| inferno | 2,378 | 0.0002x | 13x |
-| inferno (optimized) | 1,326 | 0.0001x | 7x |
-| preact | 452 | — | 2.4x |
-| react | 187 | — | 1.0x |
-
-### Chromium results
-
-| Framework | ops/s | vs Solid | vs React |
-|---|---:|---:|---:|
-| solid | 223,216 | 1.00x | 486x |
-| sdom (zero-copy) | 179,136 | 0.80x | 390x |
-| sdom (direct-patch) | 178,982 | 0.80x | 389x |
-| sdom (compiled) | 51,516 | 0.23x | 112x |
-| sdom (incremental) | 50,432 | 0.23x | 110x |
-| sdom (indexed) | 45,184 | 0.20x | 98x |
-| sdom | 4,425 | 0.02x | 9.6x |
-| inferno | 4,049 | 0.02x | 8.8x |
-| inferno (optimized) | 2,260 | 0.01x | 4.9x |
-| preact | 1,224 | 0.005x | 2.7x |
-| react | 460 | 0.002x | 1.0x |
-
-### Key observations
-
-**The Solid gap compresses dramatically in a real browser.** In happy-dom,
-Solid is ~50x faster than SDOM's best. In Chromium, SDOM's `direct-patch`
-and `zero-copy` variants are within **1.25x of Solid**. Both frameworks do
-exactly one `textContent` write per update — in a real browser that DOM
-mutation dominates everything else, erasing the JS overhead difference.
-
-**SDOM's optimized variants flip order between environments.** In happy-dom,
-`incremental` (241K) beats `direct-patch` (199K) because V8 optimizes the
-element template's prototype-based updaters better than compiled closures. In
-Chromium, `direct-patch` (179K) leads because skipping the subscription chain
-matters when DOM writes are expensive enough to create a measurable baseline.
-
-**Inferno lands next to SDOM's full-reconciliation path.** Both `sdom` (4,425)
-and `inferno` (4,049) do O(n) keyed diffing. SDOM's incremental layer is what
-creates the 10-40x separation — not structural tricks, but skipping the diff
-entirely by consuming structured deltas.
-
-**Inferno's "optimized" `createVNode` with flags is slower than `createElement`.**
-Inferno's keyed diffing path (`HasKeyedChildren`) has more bookkeeping than its
-unkeyed path. In happy-dom where DOM ops are cheap, the bookkeeping dominates.
+**Takeaway:** SDOM's direct-patch path reaches within 14% of Solid's speed (~177k vs
+201k ops/sec). The basic `sdom` variant with same-structure fast path is 27k ops/sec —
+60x faster than React, 22x faster than Preact, and 6.8x faster than Inferno. The
+incremental/compiled paths skip reconciliation entirely at ~50k ops/sec.
 
 ---
 
-## Attribute-only update (1,000 items)
+### Partial Update — 1 of 10k rows
 
-Every item's `class` and `data-count` attributes change on each tick. Tests
-bulk update throughput — the kind of update that happens during animations,
-filtering, or selection state changes.
+Same as single row update but at 10x scale (10k rows). Tests the cost of O(n) key
+comparison in the same-structure fast path.
 
-### Happy-dom results
+| Variant | ops/sec | vs raw DOM | Notes |
+|---|---:|---:|---|
+| raw DOM | 730,942 | 1.00x | Direct textContent mutation |
+| solid | 369,958 | 1.98x | O(1) signal update |
+| **sdom** | **1,858** | **393x** | Same-structure fast path — key comparison + ref check |
+| preact | 96 | 7,628x | Full vdom diff |
+| react | 45 | 16,154x | Full vdom diff |
 
-| Framework | ops/s | vs Solid |
-|---|---:|---:|
-| solid | 138,824 | 1.00x |
-| react | 319 | 0.002x |
-| sdom (incremental) | 120 | 0.0009x |
-| preact | 115 | 0.0008x |
-| sdom | 115 | 0.0008x |
+**Takeaway:** The same-structure fast path reduced SDOM's overhead from 2,507x to 393x
+vs raw DOM (6.4x improvement). SDOM is now 41x faster than React and 19x faster than
+Preact at this scale. The remaining cost is the O(10k) key comparison loop + ref check
+loop + getItems() allocation (10k `{ key, model }` objects).
 
-### Chromium results
-
-| Framework | ops/s | vs Solid |
-|---|---:|---:|
-| solid | 2,546 | 1.00x |
-| sdom (incremental) | 2,535 | **1.00x** |
-| sdom | 1,920 | 0.75x |
-| preact | 1,754 | 0.69x |
-| react | 1,052 | 0.41x |
-
-### Key observations
-
-**SDOM ties Solid for bulk attribute updates in Chromium.** Both produce the
-same 2,000 DOM mutations (1,000 className + 1,000 setAttribute). When all
-items change, there's no diff to skip — performance is purely DOM throughput.
-SDOM incremental (2,535) and Solid (2,546) are statistically identical.
-
-**Happy-dom exaggerates Solid's advantage.** Solid's batched signal updates
-avoid intermediate DOM flushes, which matters less when DOM writes are free
-(happy-dom) but is neutral when all frameworks produce the same final DOM
-mutations (real browser).
+The gap to Solid (393x vs 2x) reflects an architectural difference: Solid's per-signal
+updates are O(1), while SDOM's same-structure fast path is O(n) — it must verify all
+10k keys match before dispatching the one update.
 
 ---
 
-## Initial render (10,000 rows)
+### Attribute-Only Update — 1k items
 
-Time from empty container to all rows in the DOM. SDOM's advantage here is
-modest since all frameworks must create the full DOM tree.
+Toggle `class` and update `data-count` on all 1k items. Tests bulk attribute patching
+when the DOM structure doesn't change.
 
-### Happy-dom results
+| Variant | ops/sec | vs solid | Notes |
+|---|---:|---:|---|
+| **sdom** | **2,976** | **0.85x (17% faster)** | Same-structure fast path — skips reconciliation overhead |
+| sdom (incremental) | 2,574 | 1.01x | keyedOps with per-item patches |
+| solid | 2,539 | 1.00x | Per-item signal + createEffect, batched |
+| preact | 1,674 | 1.52x | |
+| react | 969 | 2.62x | |
 
-| Framework | ops/s | vs fastest |
-|---|---:|---:|
-| react | 17.8 | 1.00x |
-| solid | 3.7 | 0.21x |
-| preact | 2.8 | 0.16x |
-| sdom | 1.9 | 0.11x |
-
-### Chromium results
-
-| Framework | ops/s | vs fastest |
-|---|---:|---:|
-| solid | 100.1 | 1.00x |
-| preact | 52.0 | 0.52x |
-| react | 48.1 | 0.48x |
-| sdom | 24.7 | 0.25x |
-
-### Key observations
-
-**SDOM is slowest at initial render.** This is expected — SDOM's per-element
-bookkeeping (creating subscriptions, updater instances, signal wiring) is more
-work than a vdom library creating plain objects. The tradeoff pays off on every
-subsequent update, where SDOM avoids the diff entirely.
-
-**React's happy-dom dominance is artificial.** React at 17.8 ops/s in happy-dom
-vs 48.1 in Chromium means happy-dom's `createElement` is actually slower than
-the real browser's. This is a happy-dom artifact, not a React advantage.
+**Takeaway:** SDOM's same-structure fast path makes the basic `array()` path **17%
+faster than Solid** for bulk attribute updates. When all items change, the fast path
+skips Map building, LIS computation, and removal checks — it just iterates items and
+dispatches updates. SDOM beats React by 3.1x and Preact by 1.8x.
 
 ---
 
-## Interpreting the results
+### Array Reorder — 1k items
 
-### Why two environments matter
+Tests SDOM's LIS-based keyed reconciliation under various mutation patterns. The
+reconciler uses a Longest Increasing Subsequence algorithm (ported from Inferno) to
+minimize DOM `insertBefore` calls — only items NOT in the LIS require moves.
 
-Happy-dom and Chromium measure fundamentally different things:
+| Operation | ops/sec | Notes |
+|---|---:|---|
+| sdom — append 100 | 2,676 | Best case: no moves, just mount new items |
+| sdom — reverse 1k | 2,023 | Pathological: LIS length 1, almost all items move |
+| sdom — shuffle 1k | 846 | Worst case: random permutation |
+| sdom — remove 100 | 440 | Remove from middle + teardown |
+| react — shuffle 1k | 443 | React's keyed diff for comparison |
 
-- **Happy-dom** measures **framework JS overhead** — the cost of diffing,
-  subscription dispatch, delta extraction, and object creation. DOM writes are
-  essentially free (~20ns).
-- **Chromium** measures **end-to-end cost** — JS overhead + real DOM mutations
-  (~1-5us per property write), layout, and style recalculation.
+**Takeaway:** SDOM's shuffle is 1.9x faster than React's keyed diff. Reverse
+(pathological case where almost every element moves) is surprisingly fast because the
+DOM moves are sequential `insertBefore` calls with predictable access patterns.
 
-When a benchmark updates a single DOM property, the Chromium cost is dominated
-by that one DOM write. Framework overhead becomes noise. This is why the 50x
-happy-dom gap between SDOM and Solid compresses to 1.25x in Chromium — both
-do exactly one `textContent` write.
+---
 
-When a benchmark updates 1,000 properties, DOM cost dominates in both
-environments, and all frameworks that produce the same mutations converge.
+### Replace All — 10k rows
 
-### What this means for real applications
+Swap all 10k rows with a fresh 10k (all new keys). Tests combined teardown + mount cost.
+Uses bulk replacement fast path: detects zero key overlap, bulk-clears DOM, and mounts
+fresh items without markers.
 
-- **For targeted updates** (single item change, toggle, input): SDOM's
-  incremental variants are competitive with Solid in real browsers. The
-  optimization layers (`compiled`, `direct-patch`, `zero-copy`) provide
-  measurable gains.
+| Variant | ops/sec | vs raw DOM | Notes |
+|---|---:|---:|---|
+| raw DOM | 105 | 1.00x | innerHTML = "" + build new tbody |
+| react | 46 | 2.31x | |
+| **sdom** | **29** | **3.65x** | Bulk replace: teardown all + textContent clear + fast mount |
+| preact | 1.6 | 65x | |
 
-- **For bulk updates** (filtering, sorting, select-all): Performance is
-  dominated by DOM mutation count. SDOM and Solid produce identical DOM
-  operations and perform identically.
+**Takeaway:** The bulk replacement fast path improved SDOM from 4.3x to 3.65x vs raw
+DOM. SDOM detects that no old keys survive, skips marker insertion entirely, and uses
+the fast initial mount path (no markers, no fragments). React's 2.31x reflects its
+efficient vdom batch processing.
 
-- **For initial render**: SDOM pays a setup cost for its subscription
-  infrastructure. Consider lazy rendering or virtualization for very large
-  initial renders.
+---
 
-### SDOM optimization tiers
+### Append 1k Rows to 10k
 
-From simplest to fastest, the optimization layers stack:
+Add 1k new rows to an existing 10k-row table. Uses the append-only fast path: detects
+that existing keys form a prefix of the new list, skips full reconciliation.
+
+| Variant | ops/sec | vs raw DOM | Notes |
+|---|---:|---:|---|
+| raw DOM | 1,183 | 1.00x | Direct appendChild loop |
+| **sdom** | **196** | **6.05x** | Append fast path — prefix key check + mount new only |
+| preact | 39 | 30.5x | |
+| react | 26 | 46.3x | |
+
+**Takeaway:** The append-only fast path reduced SDOM's overhead from 19.9x to 6.05x vs
+raw DOM (3.3x improvement). SDOM is 5x faster than Preact and 7.6x faster than React.
+The remaining cost is the O(10k) prefix key comparison to verify existing items haven't
+changed.
+
+**Caveat:** State grows across iterations (10k -> 11k -> 12k -> ...), so later iterations
+are more expensive. The reported ops/sec is the average across all iterations.
+
+---
+
+### Clear Rows — 10k to 0
+
+Teardown all 10k rows to empty. Uses the clear-all fast path: skips marker insertion,
+bulk-clears the container.
+
+| Variant | ops/sec | vs raw DOM | Notes |
+|---|---:|---:|---|
+| raw DOM | 6,635,586 | 1.00x | innerHTML = "" |
+| **sdom** | **4,853,678** | **1.37x** | |
+| preact | 3,385,799 | 1.96x | |
+| react | 973,555 | 6.82x | |
+
+**Caveat:** This benchmark has a known setup/iteration issue. The `setup()` function
+runs once per benchmark task, not per iteration. After the first iteration clears all
+rows, subsequent iterations are no-op reconciliations (setting rows to `[]` when already
+empty). The absolute ops/sec numbers are inflated. **Relative rankings are valid** since
+all frameworks have the same issue.
+
+---
+
+### Static-Heavy Template — 1k cards (15 elements, 3 dynamic bindings)
+
+Mount 1k cards where each card has 15 static DOM elements (divs, spans, headings,
+paragraphs, buttons) and only 3 dynamic bindings (title, subtitle, badge). This is the
+scenario template cloning is theoretically designed to win.
+
+| Variant | ops/sec | vs raw DOM | Notes |
+|---|---:|---:|---|
+| raw DOM | 164 | 1.00x | Direct createElement for all 15 elements |
+| raw DOM (template cloning) | 146 | 1.13x | cloneNode(true) + 3x querySelector |
+| **sdom (jsx compiled)** | **101** | **1.63x** | Direct createElement, single fused observer |
+| sdom (template cloning) | 74 | 2.23x | cloneNode(true) + path-based binding resolution |
+
+**Takeaway:** Template cloning loses even in its ideal scenario. Even the raw DOM
+template cloning approach (querySelector to find 3 dynamic elements) is 13% slower than
+raw DOM createElement for a 15-element tree. The cost of querying/resolving bindings
+outweighs the `cloneNode` savings over 15 createElement calls.
+
+---
+
+## Internal Benchmarks (SDOM-only)
+
+### Compiled Templates — 5-level tree, 10 dynamic attrs
+
+Compares the three SDOM compilation strategies for an update tick.
+
+| Approach | ops/sec | vs element() |
+|---|---:|---:|
+| compiled() | 230,720 | 1.16x |
+| jsx() auto-compiled | 214,586 | 1.08x |
+| element() chain | 199,616 | 1.00x |
+
+**Takeaway:** `compiled()` is 16% faster than `element()` chains due to a single fused
+observer vs per-element observers. The JSX auto-compiled path adds ~7% overhead from
+spec classification.
+
+---
+
+### Focus Chain Depth — 100 leaves
+
+Measures the cost of nested `focus()` calls. Each level adds a lens + update propagation
+layer.
+
+| Depth | ops/sec | vs 1-level |
+|---|---:|---:|
+| 1-level | 64,965 | 1.00x |
+| 5-level | 29,384 | 2.21x |
+| 10-level | 19,056 | 3.41x |
+| 20-level | 11,818 | 5.50x |
+
+**Takeaway:** Update cost scales roughly O(depth). At 20 levels deep, throughput is
+still 11.8k ops/sec (~85us per update), acceptable for typical UI nesting depths (3-5
+levels).
+
+---
+
+### Optics
+
+Microbenchmarks for the optics subsystem (lenses, prisms, traversals).
+
+#### Lens get/set (single prop)
+
+| Operation | ops/sec | vs baseline |
+|---|---:|---:|
+| raw get | 8,633,657 | 1.00x |
+| lens.get | 8,539,042 | 1.01x |
+| raw set | 8,471,266 | 1.00x |
+| lens.set | 7,766,468 | 1.09x |
+
+Near-zero overhead for single-prop lenses.
+
+#### Lens get/set (3-deep composed via `at`)
+
+| Operation | ops/sec | vs baseline |
+|---|---:|---:|
+| raw get | 8,655,683 | 1.00x |
+| composed.get | 6,925,504 | 1.25x |
+| raw set | 7,458,510 | 1.00x |
+| composed.set | 4,752,520 | 1.57x |
+
+Composed lenses add ~25% overhead for get and ~57% for set (immutable copy at each level).
+
+#### Prism preview
+
+| Operation | ops/sec |
+|---|---:|
+| prism.preview (match) | 8,626,196 |
+| prism.preview (miss) | 8,665,968 |
+| raw check | 8,599,674 |
+
+Zero overhead — prism preview is just a function call.
+
+#### Modify (single element)
+
+| Operation | ops/sec | vs baseline |
+|---|---:|---:|
+| raw modify | 8,460,348 | 1.00x |
+| lens.modify | 7,237,764 | 1.17x |
+| prism.modify (match) | 6,877,113 | 1.23x |
+| prism.modify (miss) | 7,668,660 | 1.10x |
+| affine.modify (present) | 6,836,133 | 1.24x |
+| affine.modify (absent) | 7,717,191 | 1.10x |
+
+Single-element modify is within 1.24x of baseline across all optic types.
+
+#### Traversal getAll (1k elements)
+
+| Operation | ops/sec | vs raw map |
+|---|---:|---:|
+| each().getAll | 8,713,226 | — (returns ref) |
+| raw map | 323,973 | 1.00x |
+| raw filter | 303,484 | 1.07x |
+| filtered().getAll | 155,963 | 2.08x |
+| each().compose(prop).getAll | 67,100 | 4.83x |
+
+Traversal composition adds significant overhead for bulk operations due to intermediate
+array allocation at each composition level.
+
+#### Traversal modifyAll (1k elements)
+
+| Operation | ops/sec | vs baseline |
+|---|---:|---:|
+| raw map | 32,690 | 1.00x |
+| each().compose(prop).modifyAll | 19,196 | 1.70x |
+
+1.7x overhead for composed traversal modify.
+
+#### Traversal fold (1k elements)
+
+| Operation | ops/sec | vs baseline |
+|---|---:|---:|
+| raw reduce | 1,175,478 | 1.00x |
+| traversal.fold | 68,646 | 17.12x |
+
+Fold is 17x slower than raw reduce, dominated by the per-element callback + accumulator
+pattern through the optic chain.
+
+---
+
+## Summary
+
+### Strengths
+
+1. **Single-item updates (1k rows):** Basic `array()` with fast path achieves 27k
+   ops/sec — 60x faster than React, 22x faster than Preact. The zero-copy path reaches
+   88% of Solid (~177k vs 201k ops/sec).
+
+2. **Bulk attribute updates:** SDOM's basic path (2,976 ops/sec) is **17% faster than
+   Solid**, 3.1x faster than React.
+
+3. **Array reorder:** LIS-based reconciliation is 1.9x faster than React's keyed diff
+   for random shuffles.
+
+4. **Optics overhead:** Near-zero for single-prop lenses/prisms (~1.01-1.24x baseline).
+
+5. **Append rows:** 6x vs raw DOM, 5x faster than Preact, 7.6x faster than React.
+
+6. **Replace all:** 3.65x vs raw DOM with bulk replacement, beating Preact by 18x.
+
+### Weaknesses
+
+1. **O(n) key scan at scale:** Even with the same-structure fast path, `array()` must
+   compare all 10k keys to verify structure hasn't changed. At 10k rows: 1,858 ops/sec
+   vs Solid's 370k ops/sec. Solid's O(1) signals avoid this entirely.
+
+2. **getItems() allocation:** Each reconciliation creates n `{ key, model }` objects via
+   `.map()`. This allocation accounts for roughly half the cost of the fast path.
+
+3. **Template cloning:** Slower than direct `createElement` in all tested scenarios,
+   including the 15-element static-heavy case it was designed for.
+
+4. **Traversal fold/getAll overhead:** 17x for fold, 5x for composed getAll.
+
+### Reconciliation Fast Paths
+
+The `array()` reconciler has four fast paths, tried in order:
 
 ```
-Tier 0: array + element               ~2,500 ops/s (happy-dom)    ~4,400 ops/s (Chromium)
-         Full keyed reconciliation on every update.
+1. Same-structure: keys match in order → update-only, O(n) key comparison
+2. Append-only:    prefix keys match + new items at end → update + mount tail
+3. Full replace:   zero key overlap → bulk clear + fresh mount (no markers)
+4. Full reconcile: arbitrary changes → Map building + LIS-based DOM reorder
+```
 
-Tier 1: incrementalArray + element    ~241,000 ops/s (happy-dom)  ~50,000 ops/s (Chromium)
+### Optimization Tiers
+
+From simplest API to fastest throughput (single row update, 1k rows, Chromium):
+
+```
+Tier 0: array + element               ~27,000 ops/sec      (7.4x slower than Solid)
+         Same-structure fast path. Key comparison only.
+
+Tier 1: incrementalArray + element    ~50,000 ops/sec      (4.0x slower than Solid)
          Keyed deltas skip reconciliation. O(1) per patch.
 
-Tier 2: programWithDelta fast-path    ~235,000 ops/s (happy-dom)  ~52,000 ops/s (Chromium)
-         Single-patch deltas bypass subscription chain via _tryFastPatch.
+Tier 2: programWithDelta fast-path    ~50,000 ops/sec      (4.0x slower than Solid)
+         Single-patch deltas bypass subscription chain.
 
-Tier 3: patchItem + compiled          ~199,000 ops/s (happy-dom) ~179,000 ops/s (Chromium)
-         Bypass dispatch/update/delta entirely. Fused row template.
-         Disabled guards and dev mode.
+Tier 3: patchItem + compiled          ~177,000 ops/sec     (1.14x slower than Solid)
+         Bypass dispatch/update/delta. Fused row template.
+         Guards and dev mode disabled.
 
-Ceiling: Solid.js (signal-per-leaf) ~11,800,000 ops/s (happy-dom) ~223,000 ops/s (Chromium)
+Tier 4: extractDelta + compiled       ~169,000 ops/sec     (1.19x slower than Solid)
+         Zero-copy delta extraction. No array spread.
+         Guards and dev mode disabled.
+
+Ceiling: Solid (signal-per-leaf)      ~201,000 ops/sec     (1.00x)
 ```
 
-Tier 3 reaches **80% of Solid's Chromium throughput** without adopting
-signal-per-leaf reactivity. The remaining gap is SDOM's Map lookup, model
-object creation, and multi-field comparison overhead — inherent to the
-whole-model-pass-through architecture.
+### Remaining Optimization Opportunities
+
+1. **Zero-allocation array API:** An `arrayBy(tag, getItems, getKey, itemSdom)` variant
+   that accepts separate key extractor, avoiding the `.map()` allocation that currently
+   creates n `{ key, model }` wrapper objects per reconciliation.
+
+2. **Automatic delta detection:** Diff old vs new item arrays by reference to produce
+   deltas automatically, bridging the gap between `array()` and `incrementalArray`
+   without requiring manual delta management.
+
+3. **Compiled row templates for array():** Automatically use `compiled()` row paths
+   (single observer, direct DOM ops) when the item SDOM is a simple element tree,
+   reducing per-item overhead.

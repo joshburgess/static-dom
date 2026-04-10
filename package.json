@@ -35,6 +35,18 @@
     "./eslint": {
       "types": "./dist/eslint-plugin.d.ts",
       "import": "./dist/eslint-plugin.js"
+    },
+    "./hyperscript": {
+      "types": "./dist/hyperscript.d.ts",
+      "import": "./dist/hyperscript.js"
+    },
+    "./htm": {
+      "types": "./dist/htm.d.ts",
+      "import": "./dist/htm.js"
+    },
+    "./html": {
+      "types": "./dist/html.d.ts",
+      "import": "./dist/html.js"
     }
   },
   "peerDependencies": {

@@ -19,151 +19,16 @@
  * and delegates to the existing constructors.
  */
 
-import { element, text, staticText, fragment, compiled, array, optional, ATTR_TO_PROP, applyClassMap } from "./constructors"
+import { element, fragment, compiled, array, optional, ATTR_TO_PROP, applyClassMap } from "./constructors"
 import type { SDOM, KeyedItem } from "./types"
-import type { Dispatcher } from "./observable"
 import type { Prism, Affine } from "./optics"
-
-// ---------------------------------------------------------------------------
-// IDL properties — routed to `attrs` for direct property assignment
-// ---------------------------------------------------------------------------
-
-const IDL_PROPS = new Set([
-  // Form elements
-  "value", "checked", "disabled", "readOnly", "multiple", "selected",
-  "defaultValue", "defaultChecked", "indeterminate",
-  // Common
-  "type", "href", "src", "alt", "placeholder", "title",
-  "id", "name", "target", "rel",
-  "min", "max", "step", "pattern", "required",
-  "autoFocus", "autoComplete", "autoPlay",
-  "width", "height", "hidden",
-  "tabIndex", "htmlFor", "contentEditable",
-  "draggable", "spellCheck",
-  // Media
-  "controls", "loop", "muted", "volume", "currentTime",
-  "playbackRate", "preload", "poster",
-  // Table
-  "colSpan", "rowSpan",
-  // Form
-  "action", "method", "encType", "noValidate",
-  "accept", "acceptCharset",
-  "open", "wrap", "cols", "rows",
-  "download", "ping", "referrerPolicy",
-  "sandbox", "allow", "loading",
-  "integrity", "crossOrigin",
-])
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const EVENT_RE = /^on[A-Z]/
-
-function camelToKebab(s: string): string {
-  return s.replace(/[A-Z]/g, m => "-" + m.toLowerCase())
-}
-
-/** Wrap a static value in a constant function. */
-function ensureFn<T>(v: T | ((...args: any[]) => T)): (...args: any[]) => T {
-  return typeof v === "function" ? v as (...args: any[]) => T : () => v
-}
-
-function isSDOMNode(x: unknown): x is SDOM<any, any> {
-  return x !== null && typeof x === "object" && "attach" in x &&
-    typeof (x as any).attach === "function"
-}
-
-// ---------------------------------------------------------------------------
-// Prop classification
-// ---------------------------------------------------------------------------
-
-function classifyProps(props: Record<string, unknown>): Record<string, unknown> {
-  const attrs: Record<string, unknown> = {}
-  const rawAttrs: Record<string, unknown> = {}
-  const on: Record<string, unknown> = {}
-  let style: Record<string, unknown> | undefined
-  let classes: unknown
-
-  for (const key in props) {
-    if (key === "children" || key === "key") continue
-
-    const val = props[key]
-
-    if (key === "classes") {
-      classes = val
-      continue
-    }
-
-    if (EVENT_RE.test(key)) {
-      const eventName = key[2]!.toLowerCase() + key.slice(3)
-      on[eventName] = val
-      continue
-    }
-
-    if (key === "style" && typeof val === "object" && val !== null) {
-      style = {}
-      for (const k in val as Record<string, unknown>) {
-        const sv = (val as Record<string, unknown>)[k]
-        style[camelToKebab(k)] = ensureFn(sv)
-      }
-      continue
-    }
-
-    if (key === "class" || key === "className") {
-      rawAttrs["class"] = ensureFn(val)
-      continue
-    }
-
-    if (key.startsWith("data-") || key.startsWith("aria-")) {
-      rawAttrs[key] = ensureFn(val)
-      continue
-    }
-
-    if (IDL_PROPS.has(key)) {
-      attrs[key] = ensureFn(val)
-      continue
-    }
-
-    // Default: rawAttrs (safe fallback via setAttribute)
-    rawAttrs[key] = ensureFn(val)
-  }
-
-  const result: Record<string, unknown> = {}
-  if (Object.keys(attrs).length > 0) result.attrs = attrs
-  if (Object.keys(rawAttrs).length > 0) result.rawAttrs = rawAttrs
-  if (Object.keys(on).length > 0) result.on = on
-  if (style !== undefined) result.style = style
-  if (classes !== undefined) result.classes = classes
-  return result
-}
-
-// ---------------------------------------------------------------------------
-// Children normalization
-// ---------------------------------------------------------------------------
-
-function normalizeChild(child: unknown): SDOM<any, any> | null {
-  if (child === null || child === undefined || typeof child === "boolean") return null
-  if (isSDOMNode(child)) return child
-  if (typeof child === "function") return text(child as (m: any) => string)
-  if (typeof child === "string") return staticText(child)
-  if (typeof child === "number") return staticText(String(child))
-  return null
-}
-
-function normalizeChildren(children: unknown): SDOM<any, any>[] {
-  if (children === undefined || children === null) return []
-  if (Array.isArray(children)) {
-    const result: SDOM<any, any>[] = []
-    for (const child of children) {
-      const node = normalizeChild(child)
-      if (node !== null) result.push(node)
-    }
-    return result
-  }
-  const node = normalizeChild(children)
-  return node !== null ? [node] : []
-}
+import type { Dispatcher } from "./observable"
+import {
+  classifyProps, normalizeChildren, tryBuildChildSpecs,
+  _TEMPLATE_SPEC,
+  type JsxSpec,
+} from "./shared"
+import { buildTemplate, instantiateTemplate, type TemplateCache } from "./template"
 
 // ---------------------------------------------------------------------------
 // Fragment
@@ -181,67 +46,67 @@ export const Fragment = Symbol.for("sdom.fragment")
 // writing a compiled() template.
 // ---------------------------------------------------------------------------
 
-const _JSX_SPEC = Symbol("sdom.jsxSpec")
-
-interface JsxSpec {
-  tag: string
-  classified: Record<string, unknown>
-  children: JsxChildSpec[]
-}
-
-type JsxChildSpec =
-  | { kind: "static"; text: string }
-  | { kind: "dynamic"; fn: (m: any) => string }
-  | { kind: "element"; spec: JsxSpec }
-
-/**
- * Try to build compilable child specs from raw children.
- * Returns null if any child is not compilable (e.g., a pre-existing SDOM node).
- */
-function tryBuildChildSpecs(children: unknown): JsxChildSpec[] | null {
-  if (children === undefined || children === null) return []
-
-  if (Array.isArray(children)) {
-    const specs: JsxChildSpec[] = []
-    for (const child of children) {
-      const spec = tryBuildChildSpec(child)
-      if (spec === null) return null // not compilable
-      if (spec !== false) specs.push(spec)
-    }
-    return specs
-  }
-
-  const spec = tryBuildChildSpec(children)
-  if (spec === null) return null
-  if (spec === false) return []
-  return [spec]
-}
-
-/**
- * Try to classify a single child for compilation.
- * Returns false for skippable children (null/undefined/boolean),
- * null for non-compilable children, or a JsxChildSpec.
- */
-function tryBuildChildSpec(child: unknown): JsxChildSpec | null | false {
-  if (child === null || child === undefined || typeof child === "boolean") return false
-  if (typeof child === "string") return { kind: "static", text: child }
-  if (typeof child === "number") return { kind: "static", text: String(child) }
-  if (typeof child === "function") return { kind: "dynamic", fn: child as (m: any) => string }
-  if (isSDOMNode(child) && (child as any)[_JSX_SPEC] !== undefined) {
-    return { kind: "element", spec: (child as any)[_JSX_SPEC] }
-  }
-  return null // opaque SDOM node — not compilable
-}
-
 /**
  * Build a compiled() SDOM node from a JsxSpec.
- * All dynamic values share a single subscription.
+ *
+ * Default: uses direct createElement chains with a single fused observer.
+ * Each attach creates elements imperatively — faster for simple/dynamic
+ * templates (no path resolution overhead).
+ *
+ * Skips event cleanup array allocation when the spec has no events.
  */
-function compileSpec(spec: JsxSpec): SDOM<any, any> {
+export function compileSpec(spec: JsxSpec): SDOM<any, any> {
+  // Pre-check once: does this spec tree contain any events?
+  const hasEvents = specHasEvents(spec)
+
   return compiled((parent, initialModel, dispatch) => {
     const updaters: Array<(next: any) => void> = []
-    const eventCleanups: Array<() => void> = []
+    const eventCleanups: Array<() => void> | null = hasEvents ? [] : null
     const el = buildSpecElement(spec, initialModel, dispatch, updaters, eventCleanups)
+    parent.appendChild(el)
+
+    const n = updaters.length
+    return {
+      update(_prev, next) {
+        for (let i = 0; i < n; i++) updaters[i]!(next)
+      },
+      teardown() {
+        if (eventCleanups) {
+          for (let i = 0; i < eventCleanups.length; i++) eventCleanups[i]!()
+        }
+        el.remove()
+      },
+    }
+  })
+}
+
+function specHasEvents(spec: JsxSpec): boolean {
+  if (spec.classified.on) return true
+  for (const child of spec.children) {
+    if (child.kind === "element" && specHasEvents(child.spec)) return true
+  }
+  return false
+}
+
+/**
+ * Build a compiled() SDOM node using template cloning.
+ *
+ * First attach builds a `<template>` element from the spec, subsequent
+ * attaches clone it via `cloneNode(true)`. Faster for complex, static-heavy
+ * templates where the cloneNode savings outweigh the path resolution cost.
+ *
+ * Use this explicitly for templates with many static elements and few
+ * dynamic bindings.
+ */
+export function compileSpecCloned(spec: JsxSpec): SDOM<any, any> {
+  let cache: TemplateCache | null = null
+
+  return compiled((parent, initialModel, dispatch) => {
+    if (!cache) cache = buildTemplate(spec)
+
+    const updaters: Array<(next: any) => void> = []
+    const eventCleanups: Array<() => void> = []
+    const el = instantiateTemplate(cache, initialModel, dispatch, updaters, eventCleanups)
     parent.appendChild(el)
 
     const n = updaters.length
@@ -257,21 +122,21 @@ function compileSpec(spec: JsxSpec): SDOM<any, any> {
   })
 }
 
-/**
- * Recursively build a DOM element from a JsxSpec, collecting update
- * functions and event cleanups along the way.
- */
+// ---------------------------------------------------------------------------
+// buildSpecElement — direct createElement implementation
+// ---------------------------------------------------------------------------
+
 function buildSpecElement(
   spec: JsxSpec,
   model: any,
   dispatch: Dispatcher<any>,
   updaters: Array<(next: any) => void>,
-  eventCleanups: Array<() => void>,
-): HTMLElement {
+  eventCleanups: Array<() => void> | null,
+): Element {
   const el = document.createElement(spec.tag)
   const c = spec.classified
 
-  // IDL properties (attrs — direct property assignment)
+  // IDL properties
   if (c.attrs) {
     for (const [name, fn] of Object.entries(c.attrs as Record<string, (m: any) => any>)) {
       let last = fn(model)
@@ -283,7 +148,7 @@ function buildSpecElement(
     }
   }
 
-  // Raw attributes (setAttribute / property reflection)
+  // Raw attributes
   if (c.rawAttrs) {
     for (const [name, fn] of Object.entries(c.rawAttrs as Record<string, (m: any) => string>)) {
       const propName = ATTR_TO_PROP[name]
@@ -339,7 +204,7 @@ function buildSpecElement(
         if (msg !== null) dispatch(msg)
       }
       el.addEventListener(eventName, listener)
-      eventCleanups.push(() => el.removeEventListener(eventName, listener))
+      eventCleanups!.push(() => el.removeEventListener(eventName, listener))
       updaters.push((next) => { ref.current = next })
     }
   }
@@ -351,11 +216,12 @@ function buildSpecElement(
         el.appendChild(document.createTextNode(child.text))
         break
       case "dynamic": {
-        let last = child.fn(model)
+        const fn = child.fn
+        let last = fn(model)
         const textNode = document.createTextNode(last)
         el.appendChild(textNode)
         updaters.push((next) => {
-          const v = child.fn(next)
+          const v = fn(next)
           if (v !== last) { last = v; textNode.textContent = v }
         })
         break
@@ -397,7 +263,7 @@ export function jsx(
     const classified = classifyProps(props)
     const spec: JsxSpec = { tag, classified, children: childSpecs }
     const sdom = compileSpec(spec)
-    ;(sdom as any)[_JSX_SPEC] = spec
+    ;(sdom as any)[_TEMPLATE_SPEC] = spec
     return sdom
   }
 
@@ -432,6 +298,15 @@ export { jsx as jsxs }
 export function typed<M, Msg = never>(sdom: SDOM<any, any>): SDOM<M, Msg> {
   return sdom as SDOM<M, Msg>
 }
+
+type SDOMChild =
+  | SDOM<any, any>
+  | ((model: any) => string)
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
 
 /**
  * Conditionally show/hide content based on a model predicate.
@@ -521,15 +396,6 @@ type EventProps = {
   [K in keyof HTMLElementEventMap as `on${Capitalize<K & string>}`]?:
     EventHandler<HTMLElementEventMap[K]>
 }
-
-type SDOMChild =
-  | SDOM<any, any>
-  | ((model: any) => string)
-  | string
-  | number
-  | boolean
-  | null
-  | undefined
 
 interface CommonProps {
   class?: AttrValue<string>
