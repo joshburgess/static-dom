@@ -123,7 +123,7 @@ export { setDevMode, setDevWarningHandler, resetDevWarnings } from "./dev"
 export type { SDOM, Teardown, AttrInput, KeyedItem, ArrayContext } from "./types"
 
 // Optics
-export type { Optic, Iso, Lens, Prism, Affine, Traversal } from "./optics"
+export type { OpticKind, ComposeKinds, ResolveOptic, OpticBase, Optic, Iso, Lens, Prism, Affine, Traversal } from "./optics"
 export {
   isoOf, lensOf, prismOf, affineOf, traversal,
   iso, lens, prism,

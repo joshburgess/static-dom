@@ -1,17 +1,13 @@
 /**
  * optics.ts
  *
- * Unified optics using structural subtyping, inspired by @fp-ts/optic (ZIO Optics).
+ * Unified optics using a tagged-kind approach with `OpticKind` string literal
+ * tags and a type-level composition table (`ComposeKinds`).
  *
- * A single `Optic` base type is parameterized so that Iso, Lens, Prism, and
- * Affine emerge as type aliases. Composition result types fall out automatically
- * from method overload resolution:
- *
- *   Iso   + Iso   = Iso
- *   Lens  + Lens  = Lens
- *   Prism + Prism = Prism
- *   Lens  + Prism = Affine   (via structural subtyping — both are subtypes of Affine)
- *   Prism + Lens  = Affine
+ * Each optic kind (Iso, Lens, Prism, Affine) is a concrete named interface
+ * extending `OpticBase<K, S, A>`. The `compose` method uses `ComposeKinds` and
+ * `ResolveOptic` to compute the result type at the type level — no overloads
+ * needed for single-optic composition, and zero `any` in signatures.
  *
  * Subtyping lattice:
  *
@@ -21,7 +17,15 @@
  *        \     /
  *        Affine
  *
- * See docs/OPTICS-REDESIGN.md for the full design rationale.
+ * Composition table:
+ *
+ *   Iso   + Iso   = Iso
+ *   Lens  + Lens  = Lens
+ *   Prism + Prism = Prism
+ *   Lens  + Prism = Affine
+ *   Prism + Lens  = Affine
+ *   Iso   + X     = X
+ *   X     + Iso   = X
  */
 
 // ---------------------------------------------------------------------------
@@ -36,51 +40,68 @@ function right<A>(a: A): Either<A, never> {
   return { _tag: "Right", right: a }
 }
 
-function left<E>(e: E): Either<never, E> {
-  return { _tag: "Left", left: e }
-}
-
 function isRight<A, E>(e: Either<A, E>): e is { readonly _tag: "Right"; readonly right: A } {
   return e._tag === "Right"
 }
 
 /** Shared sentinel for "not present" — avoids allocating Error objects on every prism miss. */
-const LEFT_ABSENT: Either<never, Error> = { _tag: "Left", left: new Error("absent") } as Either<never, Error>
+const LEFT_ABSENT: Either<never, Error> = { _tag: "Left", left: new Error("absent") }
 
 // ---------------------------------------------------------------------------
-// Optic — unified base type
-//
-// Type parameters:
-//   GetWhole       — the type we read from
-//   SetWholeBefore — the type we need to write back into (S for Lens/Affine, unknown for Iso/Prism)
-//   SetPiece       — the type we write (usually A)
-//   GetError       — error type for failed get (never for Iso/Lens, Error for Prism/Affine)
-//   SetError       — error type for failed set (never for Iso/Lens/Prism, Error for Affine)
-//   GetPiece       — the type we read out (usually A)
-//   SetWholeAfter  — the whole type after setting (usually S)
+// Optic kind — a string literal type tag
 // ---------------------------------------------------------------------------
 
-/**
- * The fully general optic type, parameterized over get/set error types.
- * Specialized as Iso, Lens, Prism, Affine, and Traversal.
- */
-export interface Optic<GetWhole, SetWholeBefore, SetPiece, GetError, SetError, GetPiece, SetWholeAfter> {
-  readonly getOptic: (s: GetWhole) => Either<GetPiece, GetError>
-  readonly setOptic: (a: SetPiece) => (s: SetWholeBefore) => Either<SetWholeAfter, SetError>
+export type OpticKind = "iso" | "lens" | "prism" | "affine"
 
-  // Composition overloads — most specific first.
-  // TypeScript resolves to the most specific matching overload.
-  // Because Iso <: Lens <: Affine and Iso <: Prism <: Affine,
-  // composing Lens + Prism falls through to the Affine overload.
-  compose<S2, A2>(this: Iso<GetWhole, GetPiece>, that: Iso<GetPiece, A2>): Iso<GetWhole, A2>
-  compose<A2>(this: Lens<GetWhole, GetPiece>, that: Lens<GetPiece, A2>): Lens<GetWhole, A2>
-  compose<A2>(this: Prism<GetWhole, GetPiece>, that: Prism<GetPiece, A2>): Prism<GetWhole, A2>
-  compose<A2>(this: Affine<GetWhole, GetPiece>, that: Affine<GetPiece, A2>): Affine<GetWhole, A2>
-  // Any optic composed with a Traversal yields a Traversal
-  compose<A2>(that: Traversal<GetPiece, A2>): Traversal<GetWhole, A2>
+// ---------------------------------------------------------------------------
+// Type-level composition table
+// ---------------------------------------------------------------------------
+
+export type ComposeKinds<K1 extends OpticKind, K2 extends OpticKind> =
+  K1 extends "iso" ? K2 :
+  K2 extends "iso" ? K1 :
+  K1 extends "lens" ? (K2 extends "lens" ? "lens" : "affine") :
+  K1 extends "prism" ? (K2 extends "prism" ? "prism" : "affine") :
+  "affine"
+
+// ---------------------------------------------------------------------------
+// Resolve kind -> concrete interface
+// ---------------------------------------------------------------------------
+
+export type ResolveOptic<K extends OpticKind, S, A> =
+  K extends "iso" ? Iso<S, A> :
+  K extends "lens" ? Lens<S, A> :
+  K extends "prism" ? Prism<S, A> :
+  K extends "affine" ? Affine<S, A> :
+  never
+
+// ---------------------------------------------------------------------------
+// OpticBase — shared methods, parameterized by kind
+// ---------------------------------------------------------------------------
+
+export interface OpticBase<K extends OpticKind, S, A> {
+  readonly _kind: K
+
+  /** The raw get function (Either-based). Part of the optic contract. */
+  readonly getOptic: (s: S) => Either<A, Error>
+  /** The raw set function (Either-based). Part of the optic contract. */
+  readonly setOptic: (a: A) => (s: S) => Either<S, Error>
+
+  /**
+   * Compose this optic with a Traversal, yielding a Traversal.
+   */
+  compose<B>(that: Traversal<A, B>): Traversal<S, B>
+
+  /**
+   * Compose this optic with another single-target optic.
+   * Result kind is computed at the type level via ComposeKinds — no overloads needed.
+   */
+  compose<K2 extends OpticKind, B>(
+    that: OpticBase<K2, A, B>
+  ): ResolveOptic<ComposeKinds<K, K2>, S, B>
 
   /** Transform the focus value in place. Works on all optic types. */
-  modify(f: (a: GetPiece) => SetPiece): (s: GetWhole & SetWholeBefore) => SetWholeAfter
+  modify(f: (a: A) => A): (s: S) => S
 
   /**
    * Extract the sub-delta for this optic's focus from a parent delta.
@@ -91,25 +112,25 @@ export interface Optic<GetWhole, SetWholeBefore, SetPiece, GetError, SetError, G
 }
 
 // ---------------------------------------------------------------------------
-// Subtype aliases
+// Concrete optic interfaces — each extends OpticBase with its kind tag
 //
-// Each fixes specific type parameters of Optic to encode the capabilities:
-//   - Iso:    total get, whole-independent set
-//   - Lens:   total get, whole-dependent set
-//   - Prism:  partial get (can fail), whole-independent set (has review)
-//   - Affine: partial get (can fail), whole-dependent set
+// No conditional types in the interface bodies — this is what makes
+// compose inference work.
 // ---------------------------------------------------------------------------
 
 /** Isomorphism: total bidirectional conversion. */
-export interface Iso<S, A>
-  extends Optic<S, unknown, A, never, never, A, S> {
+export interface Iso<S, A> extends OpticBase<"iso", S, A> {
   readonly from: (s: S) => A
   readonly to: (a: A) => S
+  readonly get: (s: S) => A
+  readonly set: (a: A, s: S) => S
+  readonly preview: (s: S) => A | null
+  readonly review: (a: A) => S
+  readonly toUpdate: () => (s: S) => A
 }
 
 /** Lens: total get, whole-dependent set. */
-export interface Lens<S, A>
-  extends Optic<S, S, A, never, never, A, S> {
+export interface Lens<S, A> extends OpticBase<"lens", S, A> {
   /** Read the focused value. Always succeeds. */
   readonly get: (s: S) => A
   /** Write the focused value, returning a new whole. */
@@ -119,8 +140,7 @@ export interface Lens<S, A>
 }
 
 /** Prism: partial get, whole-independent set (has review). */
-export interface Prism<S, A>
-  extends Optic<S, unknown, A, Error, never, A, S> {
+export interface Prism<S, A> extends OpticBase<"prism", S, A> {
   /** Try to extract A. Returns null if not present. */
   readonly preview: (s: S) => A | null
   /** Embed A into S. */
@@ -130,13 +150,18 @@ export interface Prism<S, A>
 }
 
 /** Affine/Optional: partial get, whole-dependent set. */
-export interface Affine<S, A>
-  extends Optic<S, S, A, Error, Error, A, S> {
+export interface Affine<S, A> extends OpticBase<"affine", S, A> {
   /** Try to extract A. Returns null if not present. */
   readonly preview: (s: S) => A | null
   /** Write A back if the target exists. Returns S unchanged if target absent. */
   readonly set: (a: A, s: S) => S
 }
+
+/**
+ * `Optic` — convenience alias mapping a kind tag to its concrete interface.
+ * Usage: `Optic<"lens", S, A>` is the same as `Lens<S, A>`.
+ */
+export type Optic<K extends OpticKind, S, A> = ResolveOptic<K, S, A>
 
 /**
  * Traversal: focuses on zero or more targets within a whole.
@@ -145,7 +170,7 @@ export interface Affine<S, A>
  * since it targets multiple values. It has its own interface with:
  *   - getAll: extract all focused values
  *   - modifyAll: transform all focused values in place
- *   - foldMap: fold all focused values with a monoid
+ *   - fold: fold all focused values with a combining function and initial value
  *   - compose: compose with another Traversal or any single-target optic
  */
 export interface Traversal<S, A> {
@@ -166,20 +191,30 @@ export interface Traversal<S, A> {
 }
 
 // ---------------------------------------------------------------------------
-// Builder — single runtime class for all optic types
+// Runtime implementation — single class for all optic types
 // ---------------------------------------------------------------------------
 
 const enum OpticTag { Lens, Prism }
 
-class Builder<GW, SWB, SP, GE, SE, GP, SWA>
-  implements Optic<GW, SWB, SP, GE, SE, GP, SWA>
-{
+/** Runtime mirror of ComposeKinds. */
+function computeComposeKind<K1 extends OpticKind, K2 extends OpticKind>(
+  k1: K1, k2: K2
+): ComposeKinds<K1, K2> {
+  if (k1 === "iso") return k2 as ComposeKinds<K1, K2>
+  if (k2 === "iso") return k1 as ComposeKinds<K1, K2>
+  if (k1 === "lens" && k2 === "lens") return "lens" as ComposeKinds<K1, K2>
+  if (k1 === "prism" && k2 === "prism") return "prism" as ComposeKinds<K1, K2>
+  return "affine" as ComposeKinds<K1, K2>
+}
+
+class OpticImpl<K extends OpticKind, S, A> {
   readonly getDelta?: (parentDelta: unknown) => unknown | undefined
 
   constructor(
+    readonly _kind: K,
     readonly tag: OpticTag,
-    readonly getOptic: (s: GW) => Either<GP, GE>,
-    readonly setOptic: (a: SP) => (s: SWB) => Either<SWA, SE>,
+    readonly getOptic: (s: S) => Either<A, Error>,
+    readonly setOptic: (a: A) => (s: S) => Either<S, Error>,
     getDelta?: (parentDelta: unknown) => unknown | undefined,
   ) {
     if (getDelta) this.getDelta = getDelta
@@ -187,92 +222,104 @@ class Builder<GW, SWB, SP, GE, SE, GP, SWA>
 
   // -- Lens/Iso convenience methods --
 
-  get(s: GW): GP {
+  get(s: S): A {
     const r = this.getOptic(s)
     if (!isRight(r)) throw new Error("get called on a Prism/Affine that failed — use preview instead")
     return r.right
   }
 
-  set(a: SP, s: SWB): SWA {
+  set(a: A, s: S): S {
     const r = this.setOptic(a)(s)
-    // SAFETY: on failure, return whole unchanged. For Lens/Affine SWB≡SWA;
+    // On failure, return whole unchanged. For Lens/Affine S≡S;
     // for Prism/Iso this branch is unreachable (setOptic always succeeds).
-    if (!isRight(r)) return s as unknown as SWA
+    if (!isRight(r)) return s
     return r.right
   }
 
-  from(s: GW): GP { return this.get(s) }
+  from(s: S): A { return this.get(s) }
 
-  to(a: SP): SWA {
-    // SAFETY: meaningful for Prism/Iso only, where SWB=unknown.
-    // setOptic ignores the whole parameter for these types.
-    const r = this.setOptic(a)(undefined as SWB)
+  to(a: A): S {
+    // Meaningful for Prism/Iso only, where setOptic ignores the whole parameter.
+    const r = this.setOptic(a)(undefined as S)
     if (!isRight(r)) throw new Error("to/review failed")
     return r.right
   }
 
-  toUpdate(): (s: GW) => GP { return (s) => this.get(s) }
+  toUpdate(): (s: S) => A { return (s) => this.get(s) }
 
   // -- Prism/Affine convenience methods --
 
-  preview(s: GW): GP | null {
+  preview(s: S): A | null {
     const r = this.getOptic(s)
     return isRight(r) ? r.right : null
   }
 
-  review(a: SP): SWA { return this.to(a) }
+  review(a: A): S { return this.to(a) }
 
-  composeLens<B>(l: Lens<GP, B>): Affine<GW, B> {
+  composeLens<B>(l: Lens<A, B>) {
     return this.compose(l)
   }
 
   // -- Core operations --
 
-  modify(f: (a: GP) => SP): (s: GW & SWB) => SWA {
-    return (s: GW & SWB): SWA => {
+  modify(f: (a: A) => A): (s: S) => S {
+    return (s: S): S => {
       const got = this.getOptic(s)
-      // SAFETY: target absent → return whole unchanged (same reasoning as set())
-      if (!isRight(got)) return s as unknown as SWA
+      if (!isRight(got)) return s
       const r = this.setOptic(f(got.right))(s)
-      if (!isRight(r)) return s as unknown as SWA
+      if (!isRight(r)) return s
       return r.right
     }
   }
 
   // -- Composition --
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Required: TypeScript overloaded method implementations need `any` for variance compatibility
-  compose(that: any): any {
-    // Type-erase self once for composition internals.
-    // Overload signatures on the Optic interface provide full type safety to callers.
-    const selfGet = this.getOptic as (s: unknown) => Either<unknown, unknown>
-    const selfSet = this.setOptic as (a: unknown) => (s: unknown) => Either<unknown, unknown>
-    const selfGetDelta = this.getDelta
-    const selfTag = this.tag
+  //
+  // Two overloads: one for Traversal, one for single-target optics.
+  // The Traversal overload must come first so that objects with both
+  // getAll/modifyAll AND getOptic don't accidentally match the wrong one.
 
-    // Composing with a Traversal (has getAll/modifyAll, no getOptic)
-    if (that !== null && typeof that === "object" && "getAll" in that && "modifyAll" in that && !("getOptic" in that)) {
-      const trav = that as Traversal<unknown, unknown>
-      return _buildTraversal(
-        (s: unknown) => {
+  compose<B>(that: Traversal<A, B>): Traversal<S, B>
+  compose<K2 extends OpticKind, B>(that: OpticBase<K2, A, B>): ResolveOptic<ComposeKinds<K, K2>, S, B>
+  compose(
+    // Implementation signature: broad enough for both overloads.
+    // Type safety is provided by the overload signatures above.
+    that: Traversal<A, unknown> | OpticBase<OpticKind, A, unknown>
+  ): Traversal<S, unknown> | Iso<S, unknown> | Lens<S, unknown> | Prism<S, unknown> | Affine<S, unknown> | OpticImpl<OpticKind, S, unknown> {
+    // Detect Traversal: has getAll/modifyAll but NOT getOptic
+    if (
+      that !== null &&
+      typeof that === "object" &&
+      "getAll" in that &&
+      "modifyAll" in that &&
+      !("getOptic" in that)
+    ) {
+      const trav = that as Traversal<A, unknown>
+      const selfGet = this.getOptic
+      const selfSet = this.setOptic
+      return _buildTraversal<S, unknown>(
+        (s: S) => {
           const got = selfGet(s)
           if (!isRight(got)) return []
           return trav.getAll(got.right)
         },
-        (f: (b: unknown) => unknown) => (s: unknown) => {
+        (f: (b: unknown) => unknown) => (s: S) => {
           const got = selfGet(s)
           if (!isRight(got)) return s
-          const modified = trav.modifyAll(f)(got.right)
-          const r = selfSet(modified)(s)
+          const modified = trav.modifyAll(f as (a: unknown) => unknown)(got.right)
+          const r = selfSet(modified as A)(s)
           return isRight(r) ? r.right : s
         },
       )
     }
 
-    // Composing with another single-target optic (Builder)
-    const otherGet = that.getOptic as (s: unknown) => Either<unknown, unknown>
-    const otherSet = that.setOptic as (a: unknown) => (s: unknown) => Either<unknown, unknown>
-    const otherGetDelta = that.getDelta as ((parentDelta: unknown) => unknown | undefined) | undefined
-    const otherTag = that.tag as OpticTag
+    // Single-target optic composition
+    const other = that as OpticBase<OpticKind, A, unknown>
+    const selfGet = this.getOptic
+    const selfSet = this.setOptic
+    const selfGetDelta = this.getDelta
+    const otherGet = other.getOptic
+    const otherSet = other.setOptic
+    const otherGetDelta = other.getDelta
 
     const composedGetDelta =
       selfGetDelta && otherGetDelta
@@ -284,21 +331,26 @@ class Builder<GW, SWB, SP, GE, SE, GP, SWA>
           ? selfGetDelta
           : undefined
 
-    // "lens" composition: inner set needs the intermediate value from outer get
-    // "prism" composition: inner set is independent of the whole
-    const tag = selfTag === OpticTag.Lens || otherTag === OpticTag.Lens
+    // Derive composition style from the kind tag:
+    // Lens/Affine need the whole for set (lens-style), Iso/Prism don't (prism-style)
+    const selfNeedsWhole = this._kind === "lens" || this._kind === "affine"
+    const otherNeedsWhole = other._kind === "lens" || other._kind === "affine"
+    const resultTag = selfNeedsWhole || otherNeedsWhole
       ? OpticTag.Lens
       : OpticTag.Prism
 
-    if (tag === OpticTag.Lens) {
-      return new Builder(
+    const resultKind = computeComposeKind(this._kind, other._kind)
+
+    if (resultTag === OpticTag.Lens) {
+      return new OpticImpl<OpticKind, S, unknown>(
+        resultKind,
         OpticTag.Lens,
-        (s: unknown) => {
+        (s: S): Either<unknown, Error> => {
           const outer = selfGet(s)
           if (!isRight(outer)) return outer
           return otherGet(outer.right)
         },
-        (b: unknown) => (s: unknown) => {
+        (b: unknown) => (s: S): Either<S, Error> => {
           const outer = selfGet(s)
           if (!isRight(outer)) return LEFT_ABSENT
           const innerSet = otherSet(b)(outer.right)
@@ -308,17 +360,18 @@ class Builder<GW, SWB, SP, GE, SE, GP, SWA>
         composedGetDelta,
       )
     } else {
-      return new Builder(
+      return new OpticImpl<OpticKind, S, unknown>(
+        resultKind,
         OpticTag.Prism,
-        (s: unknown) => {
+        (s: S): Either<unknown, Error> => {
           const outer = selfGet(s)
           if (!isRight(outer)) return outer
           return otherGet(outer.right)
         },
-        (b: unknown) => (_s: unknown) => {
-          const innerSet = otherSet(b)(undefined)
+        (b: unknown) => (_s: S): Either<S, Error> => {
+          const innerSet = otherSet(b)(undefined as A)
           if (!isRight(innerSet)) return innerSet
-          return selfSet(innerSet.right)(undefined)
+          return selfSet(innerSet.right)(undefined as S)
         },
         composedGetDelta,
       )
@@ -338,10 +391,11 @@ class Builder<GW, SWB, SP, GE, SE, GP, SWA>
  *   from(to(a)) === a
  */
 export function isoOf<S, A>(from: (s: S) => A, to: (a: A) => S): Iso<S, A> {
-  return new Builder(
+  return new OpticImpl<"iso", S, A>(
+    "iso",
     OpticTag.Prism, // Iso uses prism composition (set doesn't need whole)
     (s: S) => right(from(s)),
-    (a: A) => (_s: unknown) => right(to(a)),
+    (a: A) => (_s: S) => right(to(a)),
   )
 }
 
@@ -358,7 +412,8 @@ export function lensOf<S, A>(
   set: (a: A, s: S) => S,
   getDelta?: (parentDelta: unknown) => unknown | undefined,
 ): Lens<S, A> {
-  return new Builder(
+  return new OpticImpl<"lens", S, A>(
+    "lens",
     OpticTag.Lens,
     (s: S) => right(get(s)),
     (a: A) => (s: S) => right(set(a, s)),
@@ -377,13 +432,14 @@ export function prismOf<S, A>(
   review: (a: A) => S,
   getDelta?: (parentDelta: unknown) => unknown | undefined,
 ): Prism<S, A> {
-  return new Builder(
+  return new OpticImpl<"prism", S, A>(
+    "prism",
     OpticTag.Prism,
     (s: S): Either<A, Error> => {
       const a = preview(s)
       return a !== null ? right(a) : LEFT_ABSENT
     },
-    (a: A) => (_s: unknown) => right(review(a)),
+    (a: A) => (_s: S) => right(review(a)),
     getDelta,
   )
 }
@@ -398,7 +454,8 @@ export function affineOf<S, A>(
   set: (a: A, s: S) => S,
   getDelta?: (parentDelta: unknown) => unknown | undefined,
 ): Affine<S, A> {
-  return new Builder(
+  return new OpticImpl<"affine", S, A>(
+    "affine",
     OpticTag.Lens, // Affine uses lens composition (set needs whole)
     (s: S): Either<A, Error> => {
       const a = preview(s)
@@ -507,9 +564,13 @@ export function composeLenses<A, B, C, D, E>(
   cd: Lens<C, D>,
   de: Lens<D, E>
 ): Lens<A, E>
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Variance: Lens<A,B> is invariant, so Lens<unknown,unknown> won't accept concrete lenses. Overload signatures provide type safety.
-export function composeLenses(...lenses: Lens<any, any>[]): Lens<any, any> {
-  return lenses.reduce((acc, l) => acc.compose(l) as Lens<any, any>)
+// Implementation: the overload signatures provide full type safety.
+// Lens is invariant, so no concrete Lens type can serve as a uniform accumulator.
+// We cast through OpticImpl internally to chain compose calls.
+export function composeLenses(...lenses: Array<Lens<unknown, unknown>>): Lens<unknown, unknown> {
+  return lenses.reduce(
+    (acc, l) => acc.compose(l)
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -541,15 +602,35 @@ export function at<S>(): {
     k1: K1, k2: K2, k3: K3, k4: K4, k5: K5, k6: K6
   ): Lens<S, S[K1][K2][K3][K4][K5][K6]>
 } {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Variance: building a heterogeneous lens chain requires `any`. Overload signatures provide type safety.
-  return (...keys: string[]): any => {
+  // Variance: Lens is invariant in S, so prop<Record<string, unknown>>() lenses
+  // can't compose directly (source/target mismatch). We use Lens<unknown, unknown>
+  // as a uniform accumulator. The overload signatures above provide full type safety.
+  const anyProp = (key: string): Lens<unknown, unknown> =>
+    lensOf<unknown, unknown>(
+      (s) => (s as Record<string, unknown>)[key],
+      (a, s) => ({ ...(s as Record<string, unknown>), [key]: a }),
+      (parentDelta: unknown): unknown | undefined => {
+        if (parentDelta != null && typeof parentDelta === "object" && "kind" in parentDelta) {
+          const d = parentDelta as { kind: string; value?: unknown; fields?: Record<string, unknown> }
+          if (d.kind === "noop") return undefined
+          if (d.kind === "replace" && d.value != null && typeof d.value === "object") {
+            return { kind: "replace", value: (d.value as Record<string, unknown>)[key] }
+          }
+          if (d.kind === "fields" && d.fields != null) {
+            return d.fields[key]
+          }
+        }
+        return undefined
+      },
+    )
+  return ((...keys: string[]) => {
     if (keys.length === 0) throw new Error("at() requires at least one key")
-    let result: Lens<any, any> = prop<any>()(keys[0]!)
+    let result = anyProp(keys[0]!)
     for (let i = 1; i < keys.length; i++) {
-      result = result.compose(prop<any>()(keys[i]!)) as Lens<any, any>
+      result = result.compose(anyProp(keys[i]!))
     }
     return result
-  }
+  }) as ReturnType<typeof at<S>>
 }
 
 // ---------------------------------------------------------------------------
@@ -724,47 +805,46 @@ function _buildTraversal<S, A>(
         return acc
       }
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Required: overloaded method implementation
-    compose(that: any): any {
-      // Traversal + Traversal
+    compose<B>(
+      that: Traversal<A, B> | OpticBase<OpticKind, A, B>
+    ): Traversal<S, B> {
+      // Traversal + Traversal (has getAll/modifyAll)
       if ("getAll" in that && "modifyAll" in that) {
-        const thatT = that as Traversal<A, unknown>
-        return _buildTraversal(
+        const thatT = that as Traversal<A, B>
+        return _buildTraversal<S, B>(
           (s: S) => {
-            const result: unknown[] = []
+            const result: B[] = []
             for (const a of getAll(s)) {
               for (const b of thatT.getAll(a)) result.push(b)
             }
             return result
           },
-          (f: (b: unknown) => unknown) => modifyAll((a: A): A =>
-            thatT.modifyAll(f)(a) as A
+          (f: (b: B) => B) => modifyAll((a: A): A =>
+            thatT.modifyAll(f)(a)
           ),
         )
       }
       // Traversal + single-target optic (Lens/Prism/Affine/Iso)
-      const otherGet = that.getOptic as (s: unknown) => Either<unknown, unknown>
-      const otherSet = that.setOptic as (a: unknown) => (s: unknown) => Either<unknown, unknown>
-      return _buildTraversal(
+      const optic = that as OpticBase<OpticKind, A, B>
+      const otherGet = optic.getOptic
+      const otherSet = optic.setOptic
+      return _buildTraversal<S, B>(
         (s: S) => {
-          const result: unknown[] = []
+          const result: B[] = []
           for (const a of getAll(s)) {
             const got = otherGet(a)
             if (isRight(got)) result.push(got.right)
           }
           return result
         },
-        (f: (b: unknown) => unknown) => modifyAll((a: A): A => {
+        (f: (b: B) => B) => modifyAll((a: A): A => {
           const got = otherGet(a)
           if (!isRight(got)) return a
           const setResult = otherSet(f(got.right))(a)
-          return (isRight(setResult) ? setResult.right : a) as A
+          return isRight(setResult) ? setResult.right : a
         }),
       )
     },
   }
   return t
 }
-
-// Traversal composition with single-target optics is handled directly in
-// Builder.compose — no monkey-patching needed.
