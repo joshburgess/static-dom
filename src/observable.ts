@@ -96,14 +96,21 @@ export function createSignal<T>(initial: T): Signal<T> {
 /**
  * Derive an UpdateStream from a Signal.
  * Every time the signal changes we emit { prev, next }.
+ *
+ * NOTE: The emitted Update object is reused between emissions to avoid
+ * allocation. Observers must not retain references to it — copy if needed.
  */
 export function toUpdateStream<T>(signal: Signal<T>): UpdateStream<T> {
   return {
     subscribe(observer: Observer<Update<T>>): Unsubscribe {
-      let prev = signal.value
+      // Reusable mutable update object — avoids allocation per emission.
+      // Safe because observers consume it synchronously.
+      const update = { prev: signal.value, next: signal.value } as { prev: T; next: T; delta?: unknown }
       return signal.subscribe(next => {
-        observer({ prev, next })
-        prev = next
+        update.prev = update.next
+        update.next = next
+        update.delta = undefined
+        observer(update as Update<T>)
       })
     },
   }
@@ -123,11 +130,15 @@ export function mapUpdate<A, B>(
 ): UpdateStream<B> {
   return {
     subscribe(observer: Observer<Update<B>>): Unsubscribe {
+      const update = { prev: undefined as B, next: undefined as B } as { prev: B; next: B; delta?: unknown }
       return stream.subscribe(({ prev, next, delta }) => {
         const prevB = project(prev)
         const nextB = project(next)
         if (!eq(prevB, nextB)) {
-          observer({ prev: prevB, next: nextB, delta })
+          update.prev = prevB
+          update.next = nextB
+          update.delta = delta
+          observer(update as Update<B>)
         }
       })
     },

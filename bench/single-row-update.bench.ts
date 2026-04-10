@@ -16,7 +16,7 @@ import { createSignal as solidSignal, createRoot as solidRoot, createEffect } fr
 import type { Setter } from "solid-js"
 import { text, element, array } from "../src/constructors"
 import { incrementalArray } from "../src/incremental"
-import { keyedOps, keyedPatch, type KeyedArrayDelta } from "../src/patch"
+import { keyedOp1, keyedPatch, type KeyedArrayDelta } from "../src/patch"
 import { createSignal, toUpdateStream, type Dispatcher } from "../src/observable"
 import type { Teardown } from "../src/types"
 import { makeRows, type Row } from "./helpers"
@@ -91,7 +91,7 @@ describe(`single row update — ${ROW_COUNT} rows`, () => {
     incrRows = newRows
     incrSignal.setValue({
       rows: incrRows,
-      _delta: keyedOps(keyedPatch(row.id, updated)),
+      _delta: keyedOp1(keyedPatch(row.id, updated)),
     })
   }, {
     setup() {

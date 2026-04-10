@@ -108,42 +108,106 @@ export function element<
   return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
     const el = document.createElement(tag) as HTMLElementTagNameMap[Tag] & Element
 
-    const teardowns: Teardown[] = []
+    const childTeardowns: Teardown[] = []
     const checkShape = validateModelShape(`element<"${tag}">`, initialModel)
 
-    // Wrap updates to validate model shape in dev mode
-    const validatedUpdates: UpdateStream<Model> = __SDOM_DEV__
-      ? {
-          subscribe(observer) {
-            return updates.subscribe((update) => {
-              checkShape(update.next)
-              observer(update)
-            })
-          },
-        }
-      : updates
+    // ── Attr setup: initial values + build per-attr updaters ──
+    // Instead of one subscription per attr (N subscriptions), we build
+    // updater functions at mount time and call them from a single subscription.
+    const attrUpdaters: Array<(prev: Model, next: Model) => void> = []
+    const eventTeardowns: Array<() => void> = []
 
-    // Apply initial attribute values and set up subscriptions
-    for (const attr of attrList) {
-      teardowns.push(
-        mountAttr(attr as SDOMAttr<Model, Msg>, el, initialModel, validatedUpdates, dispatch)
-      )
+    for (const rawAttr of attrList) {
+      const attr = rawAttr as SDOMAttr<Model, Msg>
+      switch (attr.kind) {
+        case "string": {
+          el.setAttribute(attr.name, guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), ""))
+          attrUpdaters.push((_prev, next) => {
+            const v = guard("update", `attr "${attr.name}"`, () => attr.value(next), "")
+            if (el.getAttribute(attr.name) !== v) el.setAttribute(attr.name, v)
+          })
+          break
+        }
+        case "bool": {
+          el.toggleAttribute(attr.name, guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), false))
+          attrUpdaters.push((_prev, next) => {
+            el.toggleAttribute(attr.name, guard("update", `attr "${attr.name}"`, () => attr.value(next), false))
+          })
+          break
+        }
+        case "prop": {
+          ;(el as any)[attr.name] = guard("attach", `prop "${attr.name}"`, () => attr.value(initialModel), "")
+          attrUpdaters.push((_prev, next) => {
+            const v = guard("update", `prop "${attr.name}"`, () => attr.value(next), "")
+            if ((el as any)[attr.name] !== v) (el as any)[attr.name] = v
+          })
+          break
+        }
+        case "style": {
+          ;(el as HTMLElement).style.setProperty(attr.property, guard("attach", `style "${attr.property}"`, () => attr.value(initialModel), ""))
+          attrUpdaters.push((_prev, next) => {
+            ;(el as HTMLElement).style.setProperty(attr.property, guard("update", `style "${attr.property}"`, () => attr.value(next), ""))
+          })
+          break
+        }
+        case "classMap": {
+          const emptyMap: Record<string, boolean> = {}
+          applyClassMap(el, guard("attach", "classMap", () => attr.map(initialModel), emptyMap))
+          attrUpdaters.push((prev, next) => {
+            const prevMap = guard("update", "classMap", () => attr.map(prev), emptyMap)
+            const nextMap = guard("update", "classMap", () => attr.map(next), emptyMap)
+            if (prevMap !== nextMap) applyClassMap(el, nextMap, prevMap)
+          })
+          break
+        }
+        case "event": {
+          // Events don't subscribe to the update stream per-attr — they
+          // update a model ref from the single subscription below.
+          const ref = { current: initialModel }
+          const handler = (event: Event) => {
+            const msg = guard("event", `on "${attr.name}"`, () => attr.handler(event, ref.current), null)
+            if (msg !== null) dispatch(msg)
+          }
+          el.addEventListener(attr.name, handler)
+          // Push a model-ref updater (very cheap — just a ref assign)
+          attrUpdaters.push((_prev, next) => { ref.current = next })
+          eventTeardowns.push(() => el.removeEventListener(attr.name, handler))
+          break
+        }
+      }
     }
 
-    // Mount children — static structure, mounted once
+    // ── Single subscription for all attrs ──
+    // One observer callback that runs all updaters in a tight loop.
+    // This replaces N separate subscriptions (one per attr).
+    let attrUnsub: (() => void) | null = null
+    if (attrUpdaters.length > 0) {
+      attrUnsub = updates.subscribe(({ prev, next }) => {
+        if (__SDOM_DEV__) checkShape(next)
+        for (let i = 0; i < attrUpdaters.length; i++) {
+          attrUpdaters[i]!(prev, next)
+        }
+      })
+    }
+
+    // ── Children: still get the full update stream ──
+    // Children are separate SDOM trees with their own subscriptions.
+    // They subscribe to `updates` directly (not through the attr subscription).
     for (let i = 0; i < children.length; i++) {
       const td = guard("attach", `element<${tag}> child[${i}]`, () =>
-        children[i]!.attach(el, initialModel, validatedUpdates, dispatch),
+        children[i]!.attach(el, initialModel, updates, dispatch),
         { teardown() {} }
       )
-      teardowns.push(td)
+      childTeardowns.push(td)
     }
 
     parent.appendChild(el)
 
     return {
       teardown() {
-        teardowns.forEach(t => t.teardown())
+        attrUnsub?.()
+        eventTeardowns.forEach(fn => fn())
+        childTeardowns.forEach(t => t.teardown())
         el.remove()
       },
     }
@@ -572,82 +636,6 @@ function buildAttrList<Tag extends keyof HTMLElementTagNameMap, Model, Msg>(
   return list
 }
 
-/** Mount a single SDOMAttr onto a DOM element and subscribe to updates. */
-function mountAttr<Model, Msg>(
-  attr: SDOMAttr<Model, Msg>,
-  el: Element,
-  initialModel: Model,
-  updates: UpdateStream<Model>,
-  dispatch: Dispatcher<Msg>
-): Teardown {
-  switch (attr.kind) {
-    case "string": {
-      el.setAttribute(attr.name, guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), ""))
-      const unsub = updates.subscribe(({ next }) => {
-        const v = guard("update", `attr "${attr.name}"`, () => attr.value(next), "")
-        if (el.getAttribute(attr.name) !== v) el.setAttribute(attr.name, v)
-      })
-      return { teardown: unsub }
-    }
-
-    case "bool": {
-      el.toggleAttribute(attr.name, guard("attach", `attr "${attr.name}"`, () => attr.value(initialModel), false))
-      const unsub = updates.subscribe(({ next }) => {
-        el.toggleAttribute(attr.name, guard("update", `attr "${attr.name}"`, () => attr.value(next), false))
-      })
-      return { teardown: unsub }
-    }
-
-    case "prop": {
-      ;(el as any)[attr.name] = guard("attach", `prop "${attr.name}"`, () => attr.value(initialModel), "")
-      const unsub = updates.subscribe(({ next }) => {
-        const v = guard("update", `prop "${attr.name}"`, () => attr.value(next), "")
-        if ((el as any)[attr.name] !== v) {
-          ;(el as any)[attr.name] = v
-        }
-      })
-      return { teardown: unsub }
-    }
-
-    case "style": {
-      ;(el as HTMLElement).style.setProperty(attr.property, guard("attach", `style "${attr.property}"`, () => attr.value(initialModel), ""))
-      const unsub = updates.subscribe(({ next }) => {
-        ;(el as HTMLElement).style.setProperty(attr.property, guard("update", `style "${attr.property}"`, () => attr.value(next), ""))
-      })
-      return { teardown: unsub }
-    }
-
-    case "classMap": {
-      const emptyMap: Record<string, boolean> = {}
-      applyClassMap(el, guard("attach", "classMap", () => attr.map(initialModel), emptyMap))
-      const unsub = updates.subscribe(({ prev, next }) => {
-        const prevMap = guard("update", "classMap", () => attr.map(prev), emptyMap)
-        const nextMap = guard("update", "classMap", () => attr.map(next), emptyMap)
-        if (prevMap !== nextMap) applyClassMap(el, nextMap, prevMap)
-      })
-      return { teardown: unsub }
-    }
-
-    case "event": {
-      let currentModel = initialModel
-      const modelUnsub = updates.subscribe(({ next }) => { currentModel = next })
-
-      const handler = (event: Event) => {
-        const msg = guard("event", `on "${attr.name}"`, () => attr.handler(event, currentModel), null)
-        if (msg !== null) dispatch(msg)
-      }
-
-      el.addEventListener(attr.name, handler)
-
-      return {
-        teardown() {
-          el.removeEventListener(attr.name, handler)
-          modelUnsub()
-        },
-      }
-    }
-  }
-}
 
 function applyClassMap(
   el: Element,

@@ -43,8 +43,11 @@ export type AtomDelta<T> =
   | { readonly kind: "noop" }
   | { readonly kind: "replace"; readonly value: T }
 
+/** Shared singleton — safe because noop is immutable. */
+const NOOP: { readonly kind: "noop" } = Object.freeze({ kind: "noop" })
+
 export function noop(): { readonly kind: "noop" } {
-  return { kind: "noop" }
+  return NOOP
 }
 
 export function replace<T>(value: T): { readonly kind: "replace"; readonly value: T } {
@@ -175,7 +178,7 @@ export function produce<T extends object>(
 
   recipe(proxy as T)
 
-  if (changed.size === 0) return [base, { kind: "noop" }]
+  if (changed.size === 0) return [base, NOOP]
 
   const deltaFields: Partial<Record<keyof T, AtomDelta<any>>> = {}
   for (const key of changed) {
@@ -359,6 +362,14 @@ export function keyedOps<T>(...ops: KeyedOp<T>[]): KeyedArrayDelta<T> {
   return { kind: "ops", ops }
 }
 
+/**
+ * Fast-path constructor for the common case of a single keyed operation.
+ * Avoids the rest-args allocation overhead that `keyedOps` incurs.
+ */
+export function keyedOp1<T>(op: KeyedOp<T>): KeyedArrayDelta<T> {
+  return { kind: "ops", ops: [op] }
+}
+
 // ---------------------------------------------------------------------------
 // Diff utilities
 // ---------------------------------------------------------------------------
@@ -423,6 +434,6 @@ export function diffKeyed<T>(
   // to minimize moves. For now, we skip move detection in diff
   // since the array constructor handles reordering in its reconcile step.
 
-  if (result.length === 0) return noop()
-  return keyedOps(...result)
+  if (result.length === 0) return NOOP
+  return { kind: "ops", ops: result }
 }

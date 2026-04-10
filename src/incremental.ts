@@ -56,6 +56,13 @@ import { makeSDOM, type SDOM, type Teardown, type KeyedItem } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { KeyedArrayDelta, KeyedOp } from "./patch"
 
+/** Runtime check for KeyedArrayDelta shape (since delta comes as `unknown`). */
+function isKeyedArrayDelta(v: unknown): v is KeyedArrayDelta<unknown> {
+  if (v == null || typeof v !== "object") return false
+  const d = v as { kind?: string }
+  return d.kind === "ops" || d.kind === "noop" || d.kind === "replace"
+}
+
 /**
  * An incremental array that consumes keyed deltas for O(k) DOM updates.
  *
@@ -66,7 +73,9 @@ import type { KeyedArrayDelta, KeyedOp } from "./patch"
  * @param containerTag  Wrapper element tag (e.g. "ul", "div").
  * @param getItems      Project model to keyed items (same as `array`).
  * @param getDelta      Extract a keyed array delta from the next model,
- *                      or null to fall back to full diff.
+ *                      or null to fall back to full diff. Optional — if
+ *                      omitted, the array reads deltas from `Update.delta`
+ *                      (set by `programWithDelta`).
  * @param itemSdom      The SDOM template for each item.
  */
 export function incrementalArray<
@@ -76,19 +85,34 @@ export function incrementalArray<
 >(
   containerTag: keyof HTMLElementTagNameMap,
   getItems: (model: Model) => KeyedItem<ItemModel>[],
-  getDelta: (next: Model) => KeyedArrayDelta<ItemModel> | null,
-  itemSdom: SDOM<ItemModel, Msg>
+  getDeltaOrSdom: ((next: Model) => KeyedArrayDelta<ItemModel> | null) | SDOM<ItemModel, Msg>,
+  itemSdomOrUndefined?: SDOM<ItemModel, Msg>
 ): SDOM<Model, Msg> {
+  // Overload: (tag, getItems, itemSdom) or (tag, getItems, getDelta, itemSdom)
+  let getDelta: ((next: Model) => KeyedArrayDelta<ItemModel> | null) | null
+  let itemSdom: SDOM<ItemModel, Msg>
+  if (itemSdomOrUndefined !== undefined) {
+    getDelta = getDeltaOrSdom as (next: Model) => KeyedArrayDelta<ItemModel> | null
+    itemSdom = itemSdomOrUndefined
+  } else {
+    getDelta = null
+    itemSdom = getDeltaOrSdom as SDOM<ItemModel, Msg>
+  }
   return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
     const container = document.createElement(containerTag)
     parent.appendChild(container)
 
-    // Live item tracking
+    // Live item tracking.
+    // observer/observers use a fast path: when there's exactly one subscriber
+    // (the common case), we store it directly and skip Set allocation/iteration.
     const liveItems = new Map<string, {
       wrapper: HTMLElement
       teardown: Teardown
       modelRef: { current: ItemModel }
-      observers: Set<Observer<Update<ItemModel>>>
+      observer: Observer<Update<ItemModel>> | null
+      observers: Set<Observer<Update<ItemModel>>> | null
+      // Reusable mutable update object — avoids allocation per item update
+      update: { prev: ItemModel; next: ItemModel; delta?: unknown }
     }>()
 
     // Ordered key list for position lookups
@@ -99,17 +123,42 @@ export function incrementalArray<
       wrapper.dataset["sdKey"] = key
 
       const modelRef = { current: itemModel }
-      const observers = new Set<Observer<Update<ItemModel>>>()
+      const update = { prev: itemModel, next: itemModel } as { prev: ItemModel; next: ItemModel; delta?: unknown }
+
+      // Item entry is stored before attach so subscribe can find it
+      const entry: (typeof liveItems extends Map<string, infer V> ? V : never) = {
+        wrapper, teardown: { teardown() {} }, modelRef,
+        observer: null, observers: null, update,
+      }
+      liveItems.set(key, entry)
 
       const itemUpdates: UpdateStream<ItemModel> = {
-        subscribe(observer) {
-          observers.add(observer)
-          return () => { observers.delete(observer) }
+        subscribe(obs) {
+          // Fast path: first subscriber stored directly, no Set
+          if (entry.observer === null && entry.observers === null) {
+            entry.observer = obs
+          } else {
+            // Promote to Set
+            if (entry.observers === null) {
+              entry.observers = new Set()
+              if (entry.observer) {
+                entry.observers.add(entry.observer)
+                entry.observer = null
+              }
+            }
+            entry.observers.add(obs)
+          }
+          return () => {
+            if (entry.observer === obs) {
+              entry.observer = null
+            } else if (entry.observers) {
+              entry.observers.delete(obs)
+            }
+          }
         },
       }
 
-      const td = itemSdom.attach(wrapper, itemModel, itemUpdates, dispatch)
-      liveItems.set(key, { wrapper, teardown: td, modelRef, observers })
+      entry.teardown = itemSdom.attach(wrapper, itemModel, itemUpdates, dispatch)
       return wrapper
     }
 
@@ -127,8 +176,15 @@ export function incrementalArray<
       const prev = item.modelRef.current
       if (prev !== newModel) {
         item.modelRef.current = newModel
-        const update = { prev, next: newModel }
-        item.observers.forEach(obs => obs(update))
+        item.update.prev = prev
+        item.update.next = newModel
+        item.update.delta = undefined
+        // Single-observer fast path — direct call, no Set iteration
+        if (item.observer) {
+          item.observer(item.update as Update<ItemModel>)
+        } else if (item.observers) {
+          item.observers.forEach(obs => obs(item.update as Update<ItemModel>))
+        }
       }
     }
 
@@ -242,8 +298,13 @@ export function incrementalArray<
     }
     keyOrder = initialItems.map(i => i.key)
 
-    const unsub = updates.subscribe(({ prev, next }) => {
-      const delta = getDelta(next)
+    const unsub = updates.subscribe(({ prev, next, delta: streamDelta }) => {
+      // Priority: 1) stream delta (from Update.delta), 2) getDelta(next), 3) full reconcile
+      const rawDelta = streamDelta ?? (getDelta ? getDelta(next) : null)
+      // If the stream delta is a KeyedArrayDelta, use it directly.
+      // If it's a RecordDelta with a field pointing to this array, the parent
+      // focus should have already extracted it via lens.getDelta.
+      const delta = isKeyedArrayDelta(rawDelta) ? rawDelta as KeyedArrayDelta<ItemModel> : null
 
       if (delta !== null && delta.kind === "ops") {
         // Incremental path: apply operations directly

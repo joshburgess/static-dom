@@ -147,7 +147,7 @@ export type {
 export {
   noop, replace, applyAtom, applyArrayOp, applyArrayDelta,
   insert, remove, move, patch,
-  keyedInsert, keyedRemove, keyedMove, keyedPatch, keyedOps,
+  keyedInsert, keyedRemove, keyedMove, keyedPatch, keyedOps, keyedOp1,
   ops, diffKeyed,
   fields, applyRecord, fieldDelta, produce,
 } from "./patch"
