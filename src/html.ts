@@ -26,8 +26,8 @@
 
 import { compiled, fragment } from "./constructors"
 import { ATTR_TO_PROP, applyClassMap } from "./constructors"
-import type { SDOM } from "./types"
 import type { Dispatcher } from "./observable"
+import type { ErasedSDOM } from "./shared"
 import { EVENT_RE, camelToKebab, ensureFn, IDL_PROPS } from "./shared"
 
 // ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ const templateCache = new WeakMap<TemplateStringsArray, LitTemplateCache>()
  * parser handles all static structure — this is the fastest path for
  * initial render of static-heavy templates.
  */
-export function html(strings: TemplateStringsArray, ...values: any[]): SDOM<any, any> {
+export function html(strings: TemplateStringsArray, ...values: unknown[]): ErasedSDOM {
   let cache = templateCache.get(strings)
   if (!cache) {
     cache = buildLitTemplate(strings)
@@ -205,7 +205,7 @@ function collectBindings(
 // Create SDOM from cached template + values
 // ---------------------------------------------------------------------------
 
-function createSDOMFromCache(cache: LitTemplateCache, values: any[]): SDOM<any, any> {
+function createSDOMFromCache(cache: LitTemplateCache, values: unknown[]): ErasedSDOM {
   // Check if the result has multiple root nodes
   const rootCount = cache.template.content.childNodes.length
   if (rootCount === 0) {
@@ -222,12 +222,12 @@ function createSDOMFromCache(cache: LitTemplateCache, values: any[]): SDOM<any, 
   return createSingleRootSDom(cache, values)
 }
 
-function createSingleRootSDom(cache: LitTemplateCache, values: any[]): SDOM<any, any> {
-  return compiled((parent, initialModel, dispatch) => {
+function createSingleRootSDom(cache: LitTemplateCache, values: unknown[]): ErasedSDOM {
+  return compiled<unknown, unknown>((parent, initialModel, dispatch) => {
     const clone = cache.template.content.cloneNode(true) as DocumentFragment
     const root = clone.firstChild as Element
 
-    const updaters: Array<(next: any) => void> = []
+    const updaters: Array<(next: unknown) => void> = []
     const eventCleanups: Array<() => void> = []
 
     wireBindings(clone, cache.bindings, values, initialModel, dispatch, updaters, eventCleanups)
@@ -236,7 +236,7 @@ function createSingleRootSDom(cache: LitTemplateCache, values: any[]): SDOM<any,
 
     const n = updaters.length
     return {
-      update(_prev: any, next: any) {
+      update(_prev: unknown, next: unknown) {
         for (let i = 0; i < n; i++) updaters[i]!(next)
       },
       teardown() {
@@ -247,12 +247,12 @@ function createSingleRootSDom(cache: LitTemplateCache, values: any[]): SDOM<any,
   })
 }
 
-function createMultiRootSDom(cache: LitTemplateCache, values: any[]): SDOM<any, any> {
-  return compiled((parent, initialModel, dispatch) => {
+function createMultiRootSDom(cache: LitTemplateCache, values: unknown[]): ErasedSDOM {
+  return compiled<unknown, unknown>((parent, initialModel, dispatch) => {
     const clone = cache.template.content.cloneNode(true) as DocumentFragment
     const nodes: Node[] = Array.from(clone.childNodes)
 
-    const updaters: Array<(next: any) => void> = []
+    const updaters: Array<(next: unknown) => void> = []
     const eventCleanups: Array<() => void> = []
 
     wireBindings(clone, cache.bindings, values, initialModel, dispatch, updaters, eventCleanups)
@@ -262,7 +262,7 @@ function createMultiRootSDom(cache: LitTemplateCache, values: any[]): SDOM<any, 
 
     const n = updaters.length
     return {
-      update(_prev: any, next: any) {
+      update(_prev: unknown, next: unknown) {
         for (let i = 0; i < n; i++) updaters[i]!(next)
       },
       teardown() {
@@ -288,10 +288,10 @@ function resolvePath(root: Node, path: number[]): Node {
 function wireBindings(
   root: Node,
   bindings: LitBinding[],
-  values: any[],
-  model: any,
-  dispatch: Dispatcher<any>,
-  updaters: Array<(next: any) => void>,
+  values: unknown[],
+  model: unknown,
+  dispatch: Dispatcher<unknown>,
+  updaters: Array<(next: unknown) => void>,
   eventCleanups: Array<() => void>,
 ): void {
   for (const binding of bindings) {
@@ -315,14 +315,14 @@ function wireBindings(
 function wireChildBinding(
   placeholder: Text,
   value: unknown,
-  model: any,
-  dispatch: Dispatcher<any>,
-  updaters: Array<(next: any) => void>,
+  model: unknown,
+  dispatch: Dispatcher<unknown>,
+  updaters: Array<(next: unknown) => void>,
   _eventCleanups: Array<() => void>,
 ): void {
   if (typeof value === "function") {
     // Dynamic text: (model) => string
-    const fn = value as (m: any) => string
+    const fn = value as (m: unknown) => string
     let last = fn(model)
     placeholder.textContent = last
     updaters.push((next) => {
@@ -333,10 +333,10 @@ function wireChildBinding(
     placeholder.textContent = value
   } else if (typeof value === "number") {
     placeholder.textContent = String(value)
-  } else if (value !== null && typeof value === "object" && "attach" in (value as any)) {
+  } else if (value !== null && typeof value === "object" && "attach" in (value as object)) {
     // SDOM node — mount it replacing the placeholder
     const parent = placeholder.parentNode!
-    const sdom = value as SDOM<any, any>
+    const _sdom = value as ErasedSDOM
     // We need to remove the placeholder and mount the SDOM node at its position
     parent.removeChild(placeholder)
     // For SDOM nodes in lit-html, we use a container span (lightweight)
@@ -351,20 +351,20 @@ function wireAttrBinding(
   el: Element,
   attrName: string,
   value: unknown,
-  model: any,
-  dispatch: Dispatcher<any>,
-  updaters: Array<(next: any) => void>,
+  model: unknown,
+  dispatch: Dispatcher<unknown>,
+  updaters: Array<(next: unknown) => void>,
   eventCleanups: Array<() => void>,
 ): void {
   // Event handler: onClick, onInput, etc.
   if (EVENT_RE.test(attrName)) {
     const eventName = attrName[2]!.toLowerCase() + attrName.slice(3)
-    const handler = value as (e: Event, m: any) => any
+    const handler = value as (e: Event, m: unknown) => unknown
     const ref = { current: model }
     const listener = (event: Event) => {
       const msg = handler(event, ref.current)
       if (msg !== null) dispatch(msg)
-    }
+      }
     el.addEventListener(eventName, listener)
     eventCleanups.push(() => el.removeEventListener(eventName, listener))
     updaters.push((next) => { ref.current = next })
@@ -376,11 +376,11 @@ function wireAttrBinding(
     const styleObj = value as Record<string, unknown>
     for (const prop in styleObj) {
       const kebab = camelToKebab(prop)
-      const fn = ensureFn(styleObj[prop] as any)
-      let last = fn(model)
+      const fn = ensureFn(styleObj[prop])
+      let last = fn(model) as string | null
       ;(el as HTMLElement).style.setProperty(kebab, last)
       updaters.push((next) => {
-        const v = fn(next)
+        const v = fn(next) as string | null
         if (v !== last) { last = v; (el as HTMLElement).style.setProperty(kebab, v) }
       })
     }
@@ -389,7 +389,7 @@ function wireAttrBinding(
 
   // Class map
   if (attrName === "classes" && typeof value === "function") {
-    const fn = value as (m: any) => Record<string, boolean>
+    const fn = value as (m: unknown) => Record<string, boolean>
     let lastMap = fn(model)
     applyClassMap(el, lastMap)
     updaters.push((next) => {
@@ -418,10 +418,10 @@ function wireAttrBinding(
   if (IDL_PROPS.has(attrName)) {
     const fn = ensureFn(value)
     let last = fn(model)
-    ;(el as any)[attrName] = last
+    Reflect.set(el, attrName, last)
     updaters.push((next) => {
       const v = fn(next)
-      if (v !== last) { last = v; (el as any)[attrName] = v }
+      if (v !== last) { last = v; Reflect.set(el, attrName, v) }
     })
     return
   }
@@ -431,10 +431,10 @@ function wireAttrBinding(
   const fn = ensureFn(value)
   let last = fn(model) as string
   if (propName) {
-    ;(el as any)[propName] = last
+    Reflect.set(el, propName, last)
     updaters.push((next) => {
       const v = fn(next) as string
-      if (v !== last) { last = v; (el as any)[propName] = v }
+      if (v !== last) { last = v; Reflect.set(el, propName, v) }
     })
   } else {
     el.setAttribute(attrName, last)

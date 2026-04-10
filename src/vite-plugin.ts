@@ -24,6 +24,7 @@ interface VitePlugin {
   config?: () => Record<string, unknown>
 }
 
+/** Vite plugin that configures automatic JSX transform for SDOM. */
 export function sdomJsx(): VitePlugin {
   return {
     name: "vite-plugin-sdom-jsx",

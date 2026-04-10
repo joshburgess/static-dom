@@ -46,14 +46,17 @@ export type AtomDelta<T> =
 /** Shared singleton — safe because noop is immutable. */
 const NOOP: { readonly kind: "noop" } = Object.freeze({ kind: "noop" })
 
+/** Create a no-op delta (no change). */
 export function noop(): { readonly kind: "noop" } {
   return NOOP
 }
 
+/** Create a replace delta that swaps the entire value. */
 export function replace<T>(value: T): { readonly kind: "replace"; readonly value: T } {
   return { kind: "replace", value }
 }
 
+/** Apply an AtomDelta to a value, returning the new value. */
 export function applyAtom<T>(value: T, delta: AtomDelta<T>): T {
   return delta.kind === "replace" ? delta.value : value
 }
@@ -165,14 +168,14 @@ export function produce<T extends object>(
   const changed = new Set<keyof T>()
 
   const proxy = new Proxy(copy, {
-    set(_target, prop, value) {
+    set(_target, prop, value: unknown) {
       const key = prop as keyof T
-      ;(copy as any)[key] = value
+      ;(copy as Record<keyof T, unknown>)[key] = value
       changed.add(key)
       return true
     },
     get(_target, prop) {
-      return (copy as any)[prop]
+      return (copy as Record<string | symbol, unknown>)[prop]
     },
   })
 
@@ -180,9 +183,9 @@ export function produce<T extends object>(
 
   if (changed.size === 0) return [base, NOOP]
 
-  const deltaFields: Partial<Record<keyof T, AtomDelta<any>>> = {}
+  const deltaFields = {} as FieldDeltas<T>
   for (const key of changed) {
-    deltaFields[key] = replace(copy[key])
+    (deltaFields as Record<keyof T, AtomDelta<T[keyof T]>>)[key] = replace(copy[key])
   }
 
   return [copy, { kind: "fields", fields: deltaFields as FieldDeltas<T> }]
@@ -219,22 +222,26 @@ export interface ArrayPatch<T> {
   readonly value: T
 }
 
+/** A single operation on an indexed array. */
 export type ArrayOp<T> =
   | ArrayInsert<T>
   | ArrayRemove
   | ArrayMove
   | ArrayPatch<T>
 
-// Constructor helpers
+/** Create an insert operation at a given index. */
 export const insert = <T>(index: number, item: T): ArrayInsert<T> =>
   ({ kind: "insert", index, item })
 
+/** Create a remove operation at a given index. */
 export const remove = (index: number): ArrayRemove =>
   ({ kind: "remove", index })
 
+/** Create a move operation from one index to another. */
 export const move = (from: number, to: number): ArrayMove =>
   ({ kind: "move", from, to })
 
+/** Create a patch (replace) operation at a given index. */
 export const patch = <T>(index: number, value: T): ArrayPatch<T> =>
   ({ kind: "patch", index, value })
 
@@ -252,6 +259,7 @@ export type ArrayDelta<T> =
   | AtomDelta<T[]>
   | { readonly kind: "ops"; readonly ops: readonly ArrayOp<T>[] }
 
+/** Create a structured ArrayDelta from a list of operations. */
 export function ops<T>(...ops: ArrayOp<T>[]): ArrayDelta<T> {
   return { kind: "ops", ops }
 }
@@ -309,6 +317,7 @@ export function applyArrayDelta<T>(arr: readonly T[], delta: ArrayDelta<T>): T[]
  * This is the delta type consumed by `incrementalArray`.
  */
 
+/** Insert a keyed item before another key (or append if `before` is null). */
 export interface KeyedInsert<T> {
   readonly kind: "insert"
   readonly key: string
@@ -317,11 +326,13 @@ export interface KeyedInsert<T> {
   readonly before: string | null
 }
 
+/** Remove a keyed item by key. */
 export interface KeyedRemove {
   readonly kind: "remove"
   readonly key: string
 }
 
+/** Move a keyed item to a new position (before another key, or to end). */
 export interface KeyedMove {
   readonly kind: "move"
   readonly key: string
@@ -329,35 +340,42 @@ export interface KeyedMove {
   readonly before: string | null
 }
 
+/** Replace the value of a keyed item. */
 export interface KeyedPatch<T> {
   readonly kind: "patch"
   readonly key: string
   readonly value: T
 }
 
+/** A single operation on a keyed array. */
 export type KeyedOp<T> =
   | KeyedInsert<T>
   | KeyedRemove
   | KeyedMove
   | KeyedPatch<T>
 
+/** A delta for a keyed array — either atomic or a list of keyed operations. */
 export type KeyedArrayDelta<T> =
   | AtomDelta<T[]>
   | { readonly kind: "ops"; readonly ops: readonly KeyedOp<T>[] }
 
-// Constructor helpers for keyed operations
+/** Create a keyed insert operation. */
 export const keyedInsert = <T>(key: string, item: T, before: string | null = null): KeyedInsert<T> =>
   ({ kind: "insert", key, item, before })
 
+/** Create a keyed remove operation. */
 export const keyedRemove = (key: string): KeyedRemove =>
   ({ kind: "remove", key })
 
+/** Create a keyed move operation. */
 export const keyedMove = (key: string, before: string | null = null): KeyedMove =>
   ({ kind: "move", key, before })
 
+/** Create a keyed patch (replace value) operation. */
 export const keyedPatch = <T>(key: string, value: T): KeyedPatch<T> =>
   ({ kind: "patch", key, value })
 
+/** Create a structured KeyedArrayDelta from a list of keyed operations. */
 export function keyedOps<T>(...ops: KeyedOp<T>[]): KeyedArrayDelta<T> {
   return { kind: "ops", ops }
 }
@@ -385,10 +403,12 @@ const _pooledPatch: { kind: "patch"; key: string; value: unknown } = { kind: "pa
 const _pooledPatchOps: [typeof _pooledPatch] = [_pooledPatch]
 const _pooledPatchDelta: { kind: "ops"; ops: readonly [typeof _pooledPatch] } = { kind: "ops", ops: _pooledPatchOps }
 
+/** Zero-allocation keyed patch. Only valid until the next call — for synchronous consumers only. */
 export function pooledKeyedPatch<T>(key: string, value: T): KeyedArrayDelta<T> {
   _pooledPatch.key = key
   _pooledPatch.value = value
-  return _pooledPatchDelta as unknown as KeyedArrayDelta<T>
+  // Safe: the mutable pooled object is consumed synchronously before reuse
+  return _pooledPatchDelta as KeyedArrayDelta<T>
 }
 
 /** Mutable pooled KeyedRemove. Same safety constraints as `pooledKeyedPatch`. */
@@ -396,9 +416,10 @@ const _pooledRemove: { kind: "remove"; key: string } = { kind: "remove", key: ""
 const _pooledRemoveOps: [typeof _pooledRemove] = [_pooledRemove]
 const _pooledRemoveDelta: { kind: "ops"; ops: readonly [typeof _pooledRemove] } = { kind: "ops", ops: _pooledRemoveOps }
 
+/** Zero-allocation keyed remove. Only valid until the next call — for synchronous consumers only. */
 export function pooledKeyedRemove<T>(key: string): KeyedArrayDelta<T> {
   _pooledRemove.key = key
-  return _pooledRemoveDelta as unknown as KeyedArrayDelta<T>
+  return _pooledRemoveDelta as KeyedArrayDelta<T>
 }
 
 /** Mutable pooled KeyedInsert. Same safety constraints as `pooledKeyedPatch`. */
@@ -406,11 +427,12 @@ const _pooledInsert: { kind: "insert"; key: string; item: unknown; before: strin
 const _pooledInsertOps: [typeof _pooledInsert] = [_pooledInsert]
 const _pooledInsertDelta: { kind: "ops"; ops: readonly [typeof _pooledInsert] } = { kind: "ops", ops: _pooledInsertOps }
 
+/** Zero-allocation keyed insert. Only valid until the next call — for synchronous consumers only. */
 export function pooledKeyedInsert<T>(key: string, item: T, before: string | null = null): KeyedArrayDelta<T> {
   _pooledInsert.key = key
   _pooledInsert.item = item
   _pooledInsert.before = before
-  return _pooledInsertDelta as unknown as KeyedArrayDelta<T>
+  return _pooledInsertDelta as KeyedArrayDelta<T>
 }
 
 // ---------------------------------------------------------------------------
@@ -438,12 +460,12 @@ export function pooledKeyedInsert<T>(key: string, item: T, before: string | null
 export function diffRecord<T extends object>(prev: T, next: T): RecordDelta<T> {
   if (prev === next) return NOOP
 
-  const deltaFields: Partial<Record<keyof T, AtomDelta<any>>> = {}
+  const deltaFields = {} as FieldDeltas<T>
   let hasChanges = false
 
   for (const key in next) {
     if (prev[key] !== next[key]) {
-      deltaFields[key] = replace(next[key])
+      (deltaFields as Record<string, AtomDelta<unknown>>)[key] = replace(next[key])
       hasChanges = true
     }
   }
@@ -451,12 +473,12 @@ export function diffRecord<T extends object>(prev: T, next: T): RecordDelta<T> {
   // Detect removed keys (rare in immutable update patterns, but correct)
   for (const key in prev) {
     if (!(key in next)) {
-      deltaFields[key] = replace(undefined as any)
+      (deltaFields as Record<string, AtomDelta<unknown>>)[key] = replace(undefined)
       hasChanges = true
     }
   }
 
-  return hasChanges ? { kind: "fields", fields: deltaFields as FieldDeltas<T> } : NOOP
+  return hasChanges ? { kind: "fields", fields: deltaFields } : NOOP
 }
 
 /**

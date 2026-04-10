@@ -10,9 +10,20 @@ import { text, staticText, ATTR_TO_PROP } from "./constructors"
 import type { SDOM } from "./types"
 
 // ---------------------------------------------------------------------------
+// Erased SDOM type — used at JSX/template boundaries where Model and Msg
+// are not statically known. Analogous to React.ReactElement's use of `any`.
+// This is the ONLY place in the codebase where `any` is used for SDOM types.
+// ---------------------------------------------------------------------------
+
+/** Type-erased SDOM used at JSX/template boundaries where Model and Msg are not statically known. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ErasedSDOM = SDOM<any, any>
+
+// ---------------------------------------------------------------------------
 // IDL properties — routed to `attrs` for direct property assignment
 // ---------------------------------------------------------------------------
 
+/** Set of HTML IDL property names that should be set via direct property assignment. */
 export const IDL_PROPS = new Set([
   // Form elements
   "value", "checked", "disabled", "readOnly", "multiple", "selected",
@@ -43,8 +54,10 @@ export const IDL_PROPS = new Set([
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Regex matching event handler prop names like `onClick`, `onInput`. */
 export const EVENT_RE = /^on[A-Z]/
 
+/** Convert a camelCase string to kebab-case (e.g. `backgroundColor` → `background-color`). */
 export function camelToKebab(s: string): string {
   return s.replace(/[A-Z]/g, m => "-" + m.toLowerCase())
 }
@@ -61,28 +74,35 @@ export function isStaticFn(fn: Function): boolean {
   return STATIC_VALUE in fn
 }
 
-/** Get the static value from a function marked by ensureFn. */
-export function staticValueOf(fn: Function): any {
-  return (fn as any)[STATIC_VALUE]
+/** A function branded with a static value by ensureFn. */
+interface StaticFnBrand {
+  [STATIC_VALUE]: unknown
 }
 
-/** Wrap a static value in a constant function. */
-export function ensureFn<T>(v: T | ((...args: any[]) => T)): (...args: any[]) => T {
-  if (typeof v === "function") return v as (...args: any[]) => T
-  const fn = () => v
-  ;(fn as any)[STATIC_VALUE] = v
+/** Get the static value from a function marked by ensureFn. */
+export function staticValueOf(fn: Function): unknown {
+  return (fn as unknown as StaticFnBrand)[STATIC_VALUE]
+}
+
+/** Wrap a static value in a constant function, or return an existing function as-is. */
+export function ensureFn<T>(v: T | ((...args: unknown[]) => T)): (...args: unknown[]) => T {
+  if (typeof v === "function") return v as (...args: unknown[]) => T
+  const fn = (() => v) as ((...args: unknown[]) => T) & StaticFnBrand
+  fn[STATIC_VALUE] = v
   return fn
 }
 
-export function isSDOMNode(x: unknown): x is SDOM<any, any> {
+/** Check whether a value is an SDOM node (has an `attach` method). */
+export function isSDOMNode(x: unknown): boolean {
   return x !== null && typeof x === "object" && "attach" in x &&
-    typeof (x as any).attach === "function"
+    typeof (x as { attach: unknown }).attach === "function"
 }
 
 // ---------------------------------------------------------------------------
 // Prop classification
 // ---------------------------------------------------------------------------
 
+/** Classify a JSX/hyperscript props object into attrs, rawAttrs, on, style, and classes. */
 export function classifyProps(props: Record<string, unknown>): Record<string, unknown> {
   const attrs: Record<string, unknown> = {}
   const rawAttrs: Record<string, unknown> = {}
@@ -108,9 +128,9 @@ export function classifyProps(props: Record<string, unknown>): Record<string, un
 
     if (key === "style" && typeof val === "object" && val !== null) {
       style = {}
-      for (const k in val as Record<string, unknown>) {
-        const sv = (val as Record<string, unknown>)[k]
-        style[camelToKebab(k)] = ensureFn(sv)
+      const styleObj = val as Record<string, unknown>
+      for (const k in styleObj) {
+        style[camelToKebab(k)] = ensureFn(styleObj[k])
       }
       continue
     }
@@ -147,19 +167,21 @@ export function classifyProps(props: Record<string, unknown>): Record<string, un
 // Children normalization
 // ---------------------------------------------------------------------------
 
-export function normalizeChild(child: unknown): SDOM<any, any> | null {
+/** Normalize a single child value into an SDOM node, or null if skippable. */
+export function normalizeChild(child: unknown): ErasedSDOM | null {
   if (child === null || child === undefined || typeof child === "boolean") return null
-  if (isSDOMNode(child)) return child
-  if (typeof child === "function") return text(child as (m: any) => string)
+  if (isSDOMNode(child)) return child as ErasedSDOM
+  if (typeof child === "function") return text(child as (m: unknown) => string)
   if (typeof child === "string") return staticText(child)
   if (typeof child === "number") return staticText(String(child))
   return null
 }
 
-export function normalizeChildren(children: unknown): SDOM<any, any>[] {
+/** Normalize a children value (single or array) into an array of SDOM nodes. */
+export function normalizeChildren(children: unknown): ErasedSDOM[] {
   if (children === undefined || children === null) return []
   if (Array.isArray(children)) {
-    const result: SDOM<any, any>[] = []
+    const result: ErasedSDOM[] = []
     for (const child of children) {
       const node = normalizeChild(child)
       if (node !== null) result.push(node)
@@ -177,15 +199,17 @@ export function normalizeChildren(children: unknown): SDOM<any, any>[] {
 /** Symbol marking an SDOM node as carrying a compilable template spec. */
 export const _TEMPLATE_SPEC = Symbol("sdom.templateSpec")
 
+/** A compilable template spec produced by JSX/hyperscript prop classification. */
 export interface JsxSpec {
   tag: string
   classified: Record<string, unknown>
   children: JsxChildSpec[]
 }
 
+/** A classified child within a JsxSpec — static text, dynamic text, or nested element. */
 export type JsxChildSpec =
   | { kind: "static"; text: string }
-  | { kind: "dynamic"; fn: (m: any) => string }
+  | { kind: "dynamic"; fn: (m: unknown) => string }
   | { kind: "element"; spec: JsxSpec }
 
 /**
@@ -220,9 +244,9 @@ export function tryBuildChildSpec(child: unknown): JsxChildSpec | null | false {
   if (child === null || child === undefined || typeof child === "boolean") return false
   if (typeof child === "string") return { kind: "static", text: child }
   if (typeof child === "number") return { kind: "static", text: String(child) }
-  if (typeof child === "function") return { kind: "dynamic", fn: child as (m: any) => string }
-  if (isSDOMNode(child) && (child as any)[_TEMPLATE_SPEC] !== undefined) {
-    return { kind: "element", spec: (child as any)[_TEMPLATE_SPEC] }
+  if (typeof child === "function") return { kind: "dynamic", fn: child as (m: unknown) => string }
+  if (isSDOMNode(child) && _TEMPLATE_SPEC in (child as object)) {
+    return { kind: "element", spec: (child as Record<symbol, JsxSpec>)[_TEMPLATE_SPEC]! }
   }
   return null // opaque SDOM node — not compilable
 }

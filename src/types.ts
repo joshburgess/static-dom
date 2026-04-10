@@ -260,6 +260,12 @@ export interface SDOM<Model, out Msg> {
 const _FOCUS_TARGET: unique symbol = Symbol("sdom.focusTarget")
 const _FOCUS_LENS: unique symbol = Symbol("sdom.focusLens")
 
+/** Brand interface for SDOM nodes carrying focus-fusion metadata. */
+interface FocusFusionBrand {
+  [_FOCUS_TARGET]?: unknown
+  [_FOCUS_LENS]?: unknown
+}
+
 /**
  * Internal helper: given an `attach` function, produce a full SDOM<M, Msg>
  * with all the combinator methods wired up.
@@ -277,8 +283,9 @@ export function makeSDOM<Model, Msg>(
       // Focus fusion: if this SDOM was itself created by .focus(), compose
       // the lenses into one and eliminate the intermediate subscription layer.
       // a.focus(L1).focus(L2) → a.focus(L2.compose(L1)) — one observer, not two.
-      const innerTarget = (sdom as any)[_FOCUS_TARGET] as SDOM<any, Msg> | undefined
-      const innerLens = (sdom as any)[_FOCUS_LENS] as Lens<Model, any> | undefined
+      const branded = sdom as SDOM<Model, Msg> & FocusFusionBrand
+      const innerTarget = branded[_FOCUS_TARGET] as SDOM<unknown, Msg> | undefined
+      const innerLens = branded[_FOCUS_LENS] as Lens<Model, unknown> | undefined
       if (innerTarget !== undefined && innerLens !== undefined) {
         return innerTarget.focus(lensOuter.compose(innerLens))
       }
@@ -319,8 +326,9 @@ export function makeSDOM<Model, Msg>(
       })
 
       // Tag the result for future fusion
-      ;(result as any)[_FOCUS_TARGET] = sdom
-      ;(result as any)[_FOCUS_LENS] = lensOuter
+      const fusionBranded = result as SDOM<Outer, Msg> & FocusFusionBrand
+      fusionBranded[_FOCUS_TARGET] = sdom
+      fusionBranded[_FOCUS_LENS] = lensOuter
       return result
     },
 
@@ -415,9 +423,11 @@ export interface ArrayContext {
 // ---------------------------------------------------------------------------
 
 /** Infer the Model type of an SDOM. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Required: `any` in conditional type inference position; `unknown` fails due to SDOM's contravariant Msg parameter
 export type ModelOf<S> = S extends SDOM<infer M, any> ? M : never
 
 /** Infer the Msg type of an SDOM. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Required: `any` in conditional type inference position; `unknown` fails due to SDOM's covariant Model parameter
 export type MsgOf<S> = S extends SDOM<any, infer Msg> ? Msg : never
 
 /**

@@ -82,7 +82,7 @@ export function resetDevWarnings(): void {
 // ---------------------------------------------------------------------------
 
 /** Shared no-op — avoids allocating a new `() => {}` per node in production. */
-const VALIDATION_NOOP: (...args: any[]) => void = () => {}
+const VALIDATION_NOOP: (...args: unknown[]) => void = () => {}
 
 /**
  * Validate that an element's children array length is static.

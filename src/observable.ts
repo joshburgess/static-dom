@@ -54,6 +54,7 @@ export interface Signal<T> extends ReadonlySignal<T> {
 // `attach` can do equality checks per-leaf without storing its own last-seen.
 // ---------------------------------------------------------------------------
 
+/** An update event carrying the previous and next values, plus an optional delta. */
 export interface Update<T> {
   readonly prev: T
   readonly next: T
@@ -105,12 +106,12 @@ export function toUpdateStream<T>(signal: Signal<T>): UpdateStream<T> {
     subscribe(observer: Observer<Update<T>>): Unsubscribe {
       // Reusable mutable update object — avoids allocation per emission.
       // Safe because observers consume it synchronously.
-      const update = { prev: signal.value, next: signal.value } as { prev: T; next: T; delta?: unknown }
+      const update: { prev: T; next: T; delta: unknown | undefined } = { prev: signal.value, next: signal.value, delta: undefined }
       return signal.subscribe(next => {
         update.prev = update.next
         update.next = next
         update.delta = undefined
-        observer(update as Update<T>)
+        observer(update)
       })
     },
   }
@@ -130,7 +131,7 @@ export function mapUpdate<A, B>(
 ): UpdateStream<B> {
   return {
     subscribe(observer: Observer<Update<B>>): Unsubscribe {
-      const update = { prev: undefined as B, next: undefined as B } as { prev: B; next: B; delta?: unknown }
+      const update: { prev: B; next: B; delta: unknown | undefined } = { prev: undefined as B, next: undefined as B, delta: undefined }
       return stream.subscribe(({ prev, next, delta }) => {
         const prevB = project(prev)
         const nextB = project(next)
@@ -138,7 +139,7 @@ export function mapUpdate<A, B>(
           update.prev = prevB
           update.next = nextB
           update.delta = delta
-          observer(update as Update<B>)
+          observer(update)
         }
       })
     },

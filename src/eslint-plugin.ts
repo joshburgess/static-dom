@@ -136,6 +136,7 @@ export const noDynamicChildren: Rule = {
 // Plugin export
 // ---------------------------------------------------------------------------
 
+/** ESLint rules for SDOM JSX best practices. */
 export const rules = {
   "no-dynamic-children": noDynamicChildren,
 } as const

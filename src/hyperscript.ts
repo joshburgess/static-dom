@@ -22,6 +22,7 @@ import type { SDOM } from "./types"
 import {
   classifyProps, normalizeChildren, tryBuildChildSpecs,
   _TEMPLATE_SPEC,
+  type ErasedSDOM,
   type JsxSpec,
 } from "./shared"
 import { compileSpecCloned } from "./jsx-runtime"
@@ -30,9 +31,10 @@ import { compileSpecCloned } from "./jsx-runtime"
 // Child type
 // ---------------------------------------------------------------------------
 
+/** Valid child types for hyperscript `h()` calls. */
 export type HChild =
-  | SDOM<any, any>
-  | ((model: any) => string)
+  | ErasedSDOM
+  | ((model: unknown) => string)
   | string
   | number
   | boolean
@@ -60,7 +62,7 @@ export function h(
   tag: string,
   props?: Record<string, unknown> | null,
   children?: HChild[],
-): SDOM<any, any> {
+): ErasedSDOM {
   const allProps = props ? { ...props } : {}
   if (children && children.length > 0) {
     allProps.children = children
@@ -72,13 +74,14 @@ export function h(
     const classified = classifyProps(allProps)
     const spec: JsxSpec = { tag, classified, children: childSpecs }
     const sdom = compileSpecCloned(spec)
-    ;(sdom as any)[_TEMPLATE_SPEC] = spec
+    ;(sdom as ErasedSDOM & Record<symbol, unknown>)[_TEMPLATE_SPEC] = spec
     return sdom
   }
 
   // Fallback to element() when children include opaque SDOM nodes
   const attrInput = classifyProps(allProps)
   const normalizedChildren = normalizeChildren(allProps.children)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- element() requires specific tag/attr types; dynamic dispatch erases them
   return element(tag as any, attrInput as any, normalizedChildren)
 }
 
@@ -86,8 +89,8 @@ export function h(
 // Fragment
 // ---------------------------------------------------------------------------
 
-/** Group children without a wrapper element. */
-export function frag(children: HChild[]): SDOM<any, any> {
+/** Group children into a fragment without a wrapper element. */
+export function frag(children: HChild[]): ErasedSDOM {
   return fragment(normalizeChildren(children))
 }
 
@@ -99,6 +102,8 @@ function tag(name: string) {
   return (props?: Record<string, unknown> | null, children?: HChild[]) =>
     h(name, props, children)
 }
+
+/** Shorthand tag helpers — each creates an SDOM element for the corresponding HTML tag. */
 
 // Layout
 export const div = tag("div")

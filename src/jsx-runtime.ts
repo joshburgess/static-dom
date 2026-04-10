@@ -26,6 +26,7 @@ import type { Dispatcher } from "./observable"
 import {
   classifyProps, normalizeChildren, tryBuildChildSpecs,
   _TEMPLATE_SPEC,
+  type ErasedSDOM,
   type JsxSpec,
 } from "./shared"
 import { buildTemplate, instantiateTemplate, type TemplateCache } from "./template"
@@ -34,6 +35,7 @@ import { buildTemplate, instantiateTemplate, type TemplateCache } from "./templa
 // Fragment
 // ---------------------------------------------------------------------------
 
+/** Symbol used as the JSX element type for `<></>` fragments. */
 export const Fragment = Symbol.for("sdom.fragment")
 
 // ---------------------------------------------------------------------------
@@ -55,12 +57,12 @@ export const Fragment = Symbol.for("sdom.fragment")
  *
  * Skips event cleanup array allocation when the spec has no events.
  */
-export function compileSpec(spec: JsxSpec): SDOM<any, any> {
+export function compileSpec(spec: JsxSpec): ErasedSDOM {
   // Pre-check once: does this spec tree contain any events?
   const hasEvents = specHasEvents(spec)
 
   return compiled((parent, initialModel, dispatch) => {
-    const updaters: Array<(next: any) => void> = []
+    const updaters: Array<(next: unknown) => void> = []
     const eventCleanups: Array<() => void> | null = hasEvents ? [] : null
     const el = buildSpecElement(spec, initialModel, dispatch, updaters, eventCleanups)
     parent.appendChild(el)
@@ -98,13 +100,13 @@ function specHasEvents(spec: JsxSpec): boolean {
  * Use this explicitly for templates with many static elements and few
  * dynamic bindings.
  */
-export function compileSpecCloned(spec: JsxSpec): SDOM<any, any> {
+export function compileSpecCloned(spec: JsxSpec): ErasedSDOM {
   let cache: TemplateCache | null = null
 
   return compiled((parent, initialModel, dispatch) => {
     if (!cache) cache = buildTemplate(spec)
 
-    const updaters: Array<(next: any) => void> = []
+    const updaters: Array<(next: unknown) => void> = []
     const eventCleanups: Array<() => void> = []
     const el = instantiateTemplate(cache, initialModel, dispatch, updaters, eventCleanups)
     parent.appendChild(el)
@@ -128,9 +130,9 @@ export function compileSpecCloned(spec: JsxSpec): SDOM<any, any> {
 
 function buildSpecElement(
   spec: JsxSpec,
-  model: any,
-  dispatch: Dispatcher<any>,
-  updaters: Array<(next: any) => void>,
+  model: unknown,
+  dispatch: Dispatcher<unknown>,
+  updaters: Array<(next: unknown) => void>,
   eventCleanups: Array<() => void> | null,
 ): Element {
   const el = document.createElement(spec.tag)
@@ -138,26 +140,26 @@ function buildSpecElement(
 
   // IDL properties
   if (c.attrs) {
-    for (const [name, fn] of Object.entries(c.attrs as Record<string, (m: any) => any>)) {
+    for (const [name, fn] of Object.entries(c.attrs as Record<string, (m: unknown) => unknown>)) {
       let last = fn(model)
-      ;(el as any)[name] = last
+      Reflect.set(el, name, last)
       updaters.push((next) => {
         const v = fn(next)
-        if (v !== last) { last = v; (el as any)[name] = v }
+        if (v !== last) { last = v; Reflect.set(el, name, v) }
       })
     }
   }
 
   // Raw attributes
   if (c.rawAttrs) {
-    for (const [name, fn] of Object.entries(c.rawAttrs as Record<string, (m: any) => string>)) {
+    for (const [name, fn] of Object.entries(c.rawAttrs as Record<string, (m: unknown) => string>)) {
       const propName = ATTR_TO_PROP[name]
       let last = fn(model)
       if (propName) {
-        ;(el as any)[propName] = last
+        Reflect.set(el, propName, last)
         updaters.push((next) => {
           const v = fn(next)
-          if (v !== last) { last = v; (el as any)[propName] = v }
+          if (v !== last) { last = v; Reflect.set(el, propName, v) }
         })
       } else {
         el.setAttribute(name, last)
@@ -171,7 +173,7 @@ function buildSpecElement(
 
   // Style
   if (c.style) {
-    for (const [prop, fn] of Object.entries(c.style as Record<string, (m: any) => string>)) {
+    for (const [prop, fn] of Object.entries(c.style as Record<string, (m: unknown) => string>)) {
       let last = fn(model)
       ;(el as HTMLElement).style.setProperty(prop, last)
       updaters.push((next) => {
@@ -183,7 +185,7 @@ function buildSpecElement(
 
   // Class map
   if (c.classes) {
-    const fn = c.classes as (m: any) => Record<string, boolean>
+    const fn = c.classes as (m: unknown) => Record<string, boolean>
     let lastMap = fn(model)
     applyClassMap(el, lastMap)
     updaters.push((next) => {
@@ -200,7 +202,7 @@ function buildSpecElement(
     for (const [eventName, handler] of Object.entries(c.on as Record<string, Function>)) {
       const ref = { current: model }
       const listener = (event: Event) => {
-        const msg = (handler as (e: Event, m: any) => any)(event, ref.current)
+        const msg = (handler as (e: Event, m: unknown) => unknown)(event, ref.current)
         if (msg !== null) dispatch(msg)
       }
       el.addEventListener(eventName, listener)
@@ -239,11 +241,15 @@ function buildSpecElement(
 // jsx / jsxs
 // ---------------------------------------------------------------------------
 
+/**
+ * JSX automatic runtime entry point.
+ * Called by the compiler for single-child elements.
+ */
 export function jsx(
-  type: string | symbol | ((props: Record<string, unknown>) => SDOM<any, any>),
+  type: string | symbol | ((props: Record<string, unknown>) => ErasedSDOM),
   props: Record<string, unknown>,
   _key?: string,
-): SDOM<any, any> {
+): ErasedSDOM {
   // Fragment
   if (type === Fragment) {
     return fragment(normalizeChildren(props.children))
@@ -251,7 +257,7 @@ export function jsx(
 
   // Function component (Show, For, Optional, or user-defined)
   if (typeof type === "function") {
-    return (type as (props: Record<string, unknown>) => SDOM<any, any>)(props)
+    return (type as (props: Record<string, unknown>) => ErasedSDOM)(props)
   }
 
   // At this point type is string | symbol — only strings are valid element tags
@@ -263,13 +269,14 @@ export function jsx(
     const classified = classifyProps(props)
     const spec: JsxSpec = { tag, classified, children: childSpecs }
     const sdom = compileSpecCloned(spec)
-    ;(sdom as any)[_TEMPLATE_SPEC] = spec
+    ;(sdom as ErasedSDOM & Record<symbol, unknown>)[_TEMPLATE_SPEC] = spec
     return sdom
   }
 
   // Fall back to element() when children include opaque SDOM nodes
   const attrInput = classifyProps(props)
   const children = normalizeChildren(props.children)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- element() requires specific tag/attr types; dynamic JSX dispatch erases them
   return element(tag as any, attrInput as any, children)
 }
 
@@ -295,13 +302,13 @@ export { jsx as jsxs }
  * // view: SDOM<Model, Msg>
  * ```
  */
-export function typed<M, Msg = never>(sdom: SDOM<any, any>): SDOM<M, Msg> {
+export function typed<M, Msg = never>(sdom: ErasedSDOM): SDOM<M, Msg> {
   return sdom as SDOM<M, Msg>
 }
 
 type SDOMChild =
-  | SDOM<any, any>
-  | ((model: any) => string)
+  | ErasedSDOM
+  | ((model: unknown) => string)
   | string
   | number
   | boolean
@@ -319,13 +326,14 @@ type SDOMChild =
  * </Show>
  * ```
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Public JSX component: M defaults to `any` so users don't need explicit type args
 export function Show<M = any>(props: {
   when: (model: M) => boolean
   children?: SDOMChild | SDOMChild[]
-}): SDOM<M, any> {
+}): ErasedSDOM {
   const children = normalizeChildren(props.children)
   const inner = children.length === 1 ? children[0]! : fragment(children)
-  return inner.showIf(props.when) as SDOM<M, any>
+  return inner.showIf(props.when) as ErasedSDOM
 }
 
 /**
@@ -338,18 +346,20 @@ export function Show<M = any>(props: {
  * </For>
  * ```
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Public JSX component: M/Item default to `any` for inference
 export function For<M = any, Item = any>(props: {
   each: (model: M) => KeyedItem<Item>[]
   children?: SDOMChild | SDOMChild[]
   tag?: string
-}): SDOM<M, any> {
+}): ErasedSDOM {
   const children = normalizeChildren(props.children)
   const itemTemplate = children.length === 1 ? children[0]! : fragment(children)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- array() requires concrete types; JSX erases them
   return array(
     (props.tag ?? "div") as keyof HTMLElementTagNameMap,
     props.each as (model: any) => KeyedItem<any>[],
     itemTemplate,
-  ) as SDOM<M, any>
+  ) as ErasedSDOM
 }
 
 /**
@@ -362,27 +372,41 @@ export function For<M = any, Item = any>(props: {
  * </Optional>
  * ```
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Public JSX component: S/A default to `any` for inference
 export function Optional<S = any, A = any>(props: {
   prism: Prism<S, A> | Affine<S, A>
   children?: SDOMChild | SDOMChild[]
-}): SDOM<S, any> {
+}): ErasedSDOM {
   const children = normalizeChildren(props.children)
   const inner = children.length === 1 ? children[0]! : fragment(children)
-  return optional(props.prism as Prism<any, any>, inner) as SDOM<S, any>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- optional() requires concrete types; JSX erases them
+  return optional(props.prism as Prism<any, any>, inner) as ErasedSDOM
 }
 
 // ---------------------------------------------------------------------------
 // JSX type namespace
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// JSX type namespace — public-facing types
+//
+// `any` is required in these types for variance: user-provided functions like
+// `(m: MyModel) => m.name` must be assignable to the prop types. Using
+// `unknown` would break this because (m: MyModel) => T is not assignable
+// to (m: unknown) => T due to contravariance.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Variance: user functions (m: M) => T must be assignable
 type AttrValue<T> = ((model: any) => T) | T
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Variance: user event handlers must be assignable
 type EventHandler<E extends Event = Event> =
   (event: E, model: any) => unknown | null
 
 /** Writable, non-method properties of an element interface. */
 type WritableProps<El> = {
   [K in keyof El as
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Required for type-level method filtering
     El[K] extends (...args: any[]) => any ? never :
     K extends string ? K : never
   ]?: El[K] extends string ? AttrValue<string>
@@ -400,6 +424,7 @@ type EventProps = {
 interface CommonProps {
   class?: AttrValue<string>
   className?: AttrValue<string>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Variance: user functions must be assignable
   classes?: (model: any) => Record<string, boolean>
   style?: Record<string, AttrValue<string>>
   children?: SDOMChild | SDOMChild[]
@@ -411,11 +436,14 @@ interface DataAriaProps {
   [attr: `aria-${string}`]: AttrValue<string> | undefined
 }
 
+/** JSX type namespace — defines intrinsic elements and type constraints for JSX expressions. */
 export declare namespace JSX {
-  type Element = SDOM<any, any>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- JSX.Element must accept any SDOM (same pattern as React)
+  type Element = ErasedSDOM
 
   type ElementType =
     | keyof IntrinsicElements
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Function components accept any props
     | ((props: any) => Element)
 
   interface ElementChildrenAttribute {

@@ -83,8 +83,9 @@ describe("lens", () => {
     expect(updated.name).toBe("Alice") // unchanged
   })
 
-  it("toUpdate returns the get function", () => {
-    expect(nameLens.toUpdate()).toBe(nameLens.get)
+  it("toUpdate returns a function equivalent to get", () => {
+    const fn = nameLens.toUpdate()
+    expect(fn(user)).toBe(nameLens.get(user))
   })
 
   it("getDelta extracts sub-delta when provided", () => {

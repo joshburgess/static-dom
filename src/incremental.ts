@@ -55,7 +55,7 @@
 import { makeSDOM, type SDOM, type Teardown, type KeyedItem } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { KeyedArrayDelta, KeyedOp } from "./patch"
-import { lis } from "./constructors"
+import { lis } from "./reconcile"
 
 // ---------------------------------------------------------------------------
 // Fast-patch handler — allows programWithDelta to bypass subscription chain

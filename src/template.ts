@@ -40,12 +40,12 @@ export interface TemplateCache {
 type NodeWalker = (root: Node) => Node
 
 export type TemplateBinding =
-  | { kind: "prop"; walk: NodeWalker; name: string; fn: (m: any) => any }
-  | { kind: "rawAttr"; walk: NodeWalker; name: string; propName: string | undefined; fn: (m: any) => string }
-  | { kind: "style"; walk: NodeWalker; prop: string; fn: (m: any) => string }
-  | { kind: "classMap"; walk: NodeWalker; fn: (m: any) => Record<string, boolean> }
+  | { kind: "prop"; walk: NodeWalker; name: string; fn: (m: unknown) => unknown }
+  | { kind: "rawAttr"; walk: NodeWalker; name: string; propName: string | undefined; fn: (m: unknown) => string }
+  | { kind: "style"; walk: NodeWalker; prop: string; fn: (m: unknown) => string }
+  | { kind: "classMap"; walk: NodeWalker; fn: (m: unknown) => Record<string, boolean> }
   | { kind: "event"; walk: NodeWalker; eventName: string; handler: Function }
-  | { kind: "dynamicText"; walk: NodeWalker; fn: (m: any) => string }
+  | { kind: "dynamicText"; walk: NodeWalker; fn: (m: unknown) => string }
 
 // ---------------------------------------------------------------------------
 // Walker compilation
@@ -146,9 +146,9 @@ function buildHtml(
   let html = `<${tag}`
 
   // Collect dynamic rawAttrs — static ones get baked into the HTML
-  let dynamicRawAttrs: Record<string, (m: any) => string> | null = null
+  let dynamicRawAttrs: Record<string, (m: unknown) => string> | null = null
   if (c.rawAttrs) {
-    for (const [name, fn] of Object.entries(c.rawAttrs as Record<string, (m: any) => string>)) {
+    for (const [name, fn] of Object.entries(c.rawAttrs as Record<string, (m: unknown) => string>)) {
       if (isStaticFn(fn)) {
         html += ` ${name}="${escapeHtml(String(staticValueOf(fn)))}"`
       } else {
@@ -159,10 +159,10 @@ function buildHtml(
   }
 
   // Collect dynamic styles — static ones get baked into a style attribute
-  let dynamicStyles: Record<string, (m: any) => string> | null = null
+  let dynamicStyles: Record<string, (m: unknown) => string> | null = null
   if (c.style) {
     const staticParts: string[] = []
-    for (const [prop, fn] of Object.entries(c.style as Record<string, (m: any) => string>)) {
+    for (const [prop, fn] of Object.entries(c.style as Record<string, (m: unknown) => string>)) {
       if (isStaticFn(fn)) {
         staticParts.push(`${prop}: ${staticValueOf(fn)}`)
       } else {
@@ -184,7 +184,7 @@ function buildHtml(
   // IDL properties (always bindings — baking into HTML attrs is unreliable
   // due to IDL/attribute divergence for boolean props, value, etc.)
   if (c.attrs) {
-    for (const [name, fn] of Object.entries(c.attrs as Record<string, (m: any) => any>)) {
+    for (const [name, fn] of Object.entries(c.attrs as Record<string, (m: unknown) => unknown>)) {
       bindings.push({ kind: "prop", walk, name, fn })
     }
   }
@@ -205,7 +205,7 @@ function buildHtml(
 
   // Class map (always dynamic)
   if (c.classes) {
-    bindings.push({ kind: "classMap", walk, fn: c.classes as (m: any) => Record<string, boolean> })
+    bindings.push({ kind: "classMap", walk, fn: c.classes as (m: unknown) => Record<string, boolean> })
   }
 
   // Events (always bindings)
@@ -272,9 +272,9 @@ function buildHtml(
  */
 export function instantiateTemplate(
   cache: TemplateCache,
-  model: any,
-  dispatch: Dispatcher<any>,
-  updaters: Array<(next: any) => void>,
+  model: unknown,
+  dispatch: Dispatcher<unknown>,
+  updaters: Array<(next: unknown) => void>,
   eventCleanups: Array<() => void>,
 ): Element {
   const clone = cache.template.content.cloneNode(true) as DocumentFragment
@@ -287,10 +287,10 @@ export function instantiateTemplate(
       case "prop": {
         const { name, fn } = binding
         let last = fn(model)
-        ;(node as any)[name] = last
+        Reflect.set(node, name, last)
         updaters.push((next) => {
           const v = fn(next)
-          if (v !== last) { last = v; (node as any)[name] = v }
+          if (v !== last) { last = v; Reflect.set(node, name, v) }
         })
         break
       }
@@ -298,10 +298,10 @@ export function instantiateTemplate(
         const { name, propName, fn } = binding
         let last = fn(model)
         if (propName) {
-          ;(node as any)[propName] = last
+          Reflect.set(node, propName, last)
           updaters.push((next) => {
             const v = fn(next)
-            if (v !== last) { last = v; (node as any)[propName] = v }
+            if (v !== last) { last = v; Reflect.set(node, propName, v) }
           })
         } else {
           ;(node as Element).setAttribute(name, last)
@@ -339,7 +339,7 @@ export function instantiateTemplate(
         const { eventName, handler } = binding
         const ref = { current: model }
         const listener = (event: Event) => {
-          const msg = (handler as (e: Event, m: any) => any)(event, ref.current)
+          const msg = (handler as (e: Event, m: unknown) => unknown)(event, ref.current)
           if (msg !== null) dispatch(msg)
         }
         ;(node as Element).addEventListener(eventName, listener)

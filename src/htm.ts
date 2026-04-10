@@ -22,10 +22,10 @@
  */
 
 import { element, fragment } from "./constructors"
-import type { SDOM } from "./types"
 import {
   classifyProps, normalizeChildren, tryBuildChildSpecs,
   _TEMPLATE_SPEC,
+  type ErasedSDOM,
   type JsxSpec,
 } from "./shared"
 import { compileSpecCloned } from "./jsx-runtime"
@@ -68,7 +68,7 @@ const shapeCache = new WeakMap<TemplateStringsArray, ParsedShape>()
  * SDOM nodes. The parse result is cached per call site, so subsequent
  * calls only pay the cost of merging in new dynamic values.
  */
-export function html(strings: TemplateStringsArray, ...values: any[]): SDOM<any, any> {
+export function html(strings: TemplateStringsArray, ...values: unknown[]): ErasedSDOM {
   let shape = shapeCache.get(strings)
   if (!shape) {
     shape = parse(strings)
@@ -81,21 +81,21 @@ export function html(strings: TemplateStringsArray, ...values: any[]): SDOM<any,
 // Build SDOM from parsed shape + values
 // ---------------------------------------------------------------------------
 
-function buildFromShape(shape: ParsedShape, values: any[]): SDOM<any, any> {
+function buildFromShape(shape: ParsedShape, values: unknown[]): ErasedSDOM {
   const nodes = shape.nodes.map(n => buildNode(n, values))
   if (nodes.length === 1) return nodes[0]!
   return fragment(nodes)
 }
 
-function buildNode(node: ParsedNode, values: any[]): SDOM<any, any> {
+function buildNode(node: ParsedNode, values: unknown[]): ErasedSDOM {
   switch (node.type) {
     case "text":
-      return { attach: makeStaticTextAttach(node.value) } as any
+      return { attach: makeStaticTextAttach(node.value) } as unknown as ErasedSDOM
 
     case "dynamicText": {
       const val = values[node.index]
       // If it's an SDOM node, return it directly
-      if (val !== null && typeof val === "object" && "attach" in val) return val
+      if (val !== null && typeof val === "object" && "attach" in val) return val as ErasedSDOM
       // Otherwise delegate to h()-like path
       return buildElement("span", {}, [node], values)
     }
@@ -109,7 +109,7 @@ function buildNode(node: ParsedNode, values: any[]): SDOM<any, any> {
       if (node.children.length > 0) {
         props.children = node.children.map(c => buildNode(c, values))
       }
-      return comp(props) as SDOM<any, any>
+      return comp(props) as ErasedSDOM
     }
 
     case "element":
@@ -121,8 +121,8 @@ function buildElement(
   tag: string,
   props: Record<string, unknown>,
   children: ParsedNode[],
-  values: any[],
-): SDOM<any, any> {
+  values: unknown[],
+): ErasedSDOM {
   const allProps: Record<string, unknown> = { ...props }
 
   if (children.length > 0) {
@@ -142,17 +142,18 @@ function buildElement(
     const classified = classifyProps(allProps)
     const spec: JsxSpec = { tag, classified, children: childSpecs }
     const sdom = compileSpecCloned(spec)
-    ;(sdom as any)[_TEMPLATE_SPEC] = spec
+    ;(sdom as unknown as Record<symbol, unknown>)[_TEMPLATE_SPEC] = spec
     return sdom
   }
 
   // Fallback
   const attrInput = classifyProps(allProps)
   const normalizedChildren = normalizeChildren(allProps.children)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `element` expects a specific tag literal type and classified prop shape, but both are dynamically constructed at this boundary
   return element(tag as any, attrInput as any, normalizedChildren)
 }
 
-function resolveProps(parsedProps: ParsedProp[], values: any[]): Record<string, unknown> {
+function resolveProps(parsedProps: ParsedProp[], values: unknown[]): Record<string, unknown> {
   const result: Record<string, unknown> = {}
   for (const p of parsedProps) {
     switch (p.kind) {
@@ -175,7 +176,7 @@ function resolveProps(parsedProps: ParsedProp[], values: any[]): Record<string, 
 }
 
 function makeStaticTextAttach(text: string) {
-  return (parent: Node, _model: any, _updates: any, _dispatch: any) => {
+  return (parent: Node, _model: unknown, _updates: unknown, _dispatch: unknown) => {
     const node = document.createTextNode(text)
     parent.appendChild(node)
     return { teardown() { node.remove() } }

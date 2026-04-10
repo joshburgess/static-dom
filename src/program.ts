@@ -26,6 +26,7 @@ import { diffSubs, type Sub } from "./subscription"
 // Program types
 // ---------------------------------------------------------------------------
 
+/** Configuration for `program` — the simplest Elm-style program runner. */
 export interface ProgramConfig<Model, Msg> {
   /** The root DOM node to mount into. */
   container: Element
@@ -42,6 +43,7 @@ export interface ProgramConfig<Model, Msg> {
   onUpdate?: (msg: Msg, prev: Model, next: Model) => void
 }
 
+/** Handle returned by program runners. Use to dispatch messages, read state, or tear down. */
 export interface ProgramHandle<Model, Msg> {
   /** Programmatically dispatch a message (e.g. from tests or external events). */
   dispatch: Dispatcher<Msg>
@@ -130,6 +132,7 @@ export const batchCmd =
   dispatch =>
     cmds.forEach(cmd => cmd(dispatch))
 
+/** Configuration for `programWithEffects` — update returns `[Model, Cmd]`. */
 export interface EffectProgramConfig<Model, Msg> {
   container: Element
   init: [Model, Cmd<Msg>]
@@ -183,6 +186,7 @@ export function programWithEffects<Model, Msg>(
 // programWithDelta
 // ---------------------------------------------------------------------------
 
+/** Configuration for `programWithDelta` — update returns a structured delta for incremental updates. */
 export interface DeltaProgramConfig<Model, Msg> {
   container: Element
   init: Model
@@ -321,6 +325,7 @@ export function programWithDelta<Model, Msg>(
 // programWithSub — pure update + Elm-style subscriptions
 // ---------------------------------------------------------------------------
 
+/** Configuration for `programWithSub` — pure update + Elm-style subscriptions. */
 export interface SubProgramConfig<Model, Msg> {
   container: Element
   init: Model
@@ -378,6 +383,7 @@ export function programWithSub<Model, Msg>(
 // elmProgram — Cmd + Sub (the full Elm architecture)
 // ---------------------------------------------------------------------------
 
+/** Configuration for `elmProgram` — the full Elm architecture with Cmd + Sub. */
 export interface ElmProgramConfig<Model, Msg> {
   container: Element
   init: [Model, Cmd<Msg>]

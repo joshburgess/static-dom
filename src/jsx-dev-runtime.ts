@@ -7,17 +7,18 @@
  */
 
 import { jsx, Fragment } from "./jsx-runtime"
-import type { SDOM } from "./types"
+import type { ErasedSDOM } from "./shared"
 
 export { Fragment }
 
+/** JSX development runtime entry point — delegates to production runtime. */
 export function jsxDEV(
-  type: string | symbol | ((props: Record<string, unknown>) => SDOM<any, any>),
+  type: string | symbol | ((props: Record<string, unknown>) => ErasedSDOM),
   props: Record<string, unknown>,
   _key?: string,
   _isStatic?: boolean,
   _source?: { fileName?: string; lineNumber?: number; columnNumber?: number },
   _self?: unknown,
-): SDOM<any, any> {
+): ErasedSDOM {
   return jsx(type, props, _key)
 }
