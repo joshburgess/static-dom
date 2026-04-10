@@ -37,7 +37,7 @@ nodes, attributes) update in place, directly, with no intermediate representatio
 - `errors.ts` — error boundaries with `setErrorHandler`, `setGuardEnabled`
 - `dev.ts` — dev mode with `setDevMode`, shape validation
 - `delegation.ts` — event delegation with `createDelegator`
-- Tests: 127 tests across 15 test files
+- Tests: 200 tests across 20 test files
 - Benchmarks: 3 scenarios (single-row, attr-update, initial-render) vs React,
   Preact, Inferno, and Solid.js, in both happy-dom and real Chromium
 
@@ -83,13 +83,23 @@ changed" React lifecycle into the `UpdateStream<Model>` that SDOM expects.
 
 ## Layer 3: Elm architecture adapter — `@sdom/elm`
 
-**Status: partially done**
+**Status: substantially complete**
 
 `programWithEffects` in Layer 1 already handles the `[Model, Cmd]` return
-from update. What Layer 3 would add:
+from update. Layer 3 adds the subscription system.
 
-- [ ] **`Sub<Msg>`** — a subscription type (interval timers, websockets, keyboard, etc.)
-  that integrates with the update loop
+### What's done
+
+- `Sub<Msg>` — subscription type with key-based diffing
+- Built-in subscriptions: `interval`, `animationFrame`, `onWindow`, `onDocument`
+- `noneSub` / `batchSub` — combinators for composing subscriptions
+- `programWithSub` — pure update loop + Elm-style subscriptions
+- `elmProgram` — full Elm runtime (Cmd + Sub)
+- Subscription diffing: starts new subs, stops removed subs by key after each update
+- Tests: 11 tests covering sub constructors, diffing, programWithSub, elmProgram
+
+### What could still be added
+
 - [ ] **`Cmd<Msg>`** — a richer command type with built-in HTTP, random, ports
 - [ ] **Navigation** — URL-based routing that feeds into the update loop
 - [ ] **Ports** — typed JS interop matching Elm's port system
@@ -116,8 +126,8 @@ from update. What Layer 3 would add:
 
 ### What could still be added
 
-- [ ] Incremental `optional` (delta-aware mount/unmount)
-- [ ] Incremental `focus` (skip unchanged subtrees via delta inspection)
+- [x] Incremental `optional` (delta-aware mount/unmount)
+- [x] Incremental `focus` (skip unchanged subtrees via delta inspection) — already done via `lens.getDelta`
 - [ ] Automatic delta inference from model diffing
 
 ---
@@ -137,10 +147,13 @@ from update. What Layer 3 would add:
 - `jsx-dev-runtime.ts` — dev runtime delegating to production (future: source locations)
 - `vite-plugin.ts` — minimal Vite plugin configuring esbuild's `jsx: "automatic"` mode
 - Tests: 26 tests covering all prop types, children, fragments, and integration
+- Compiled template optimization: auto-detects compilable subtrees and generates
+  `compiled()` nodes with fused single-observer updates instead of per-attr subscriptions
+- Tests: 17 additional tests for compiled templates
 
 ### What could still be added
 
-- [ ] Compile-time optimization (converting `jsx()` calls into direct `compiled()` templates)
+- [x] Compile-time optimization (converting `jsx()` calls into direct `compiled()` templates)
 - [ ] Model/Msg type parameter flow through JSX
 - [ ] Custom JSX components for `array`, `optional`, etc.
 - [ ] SWC/esbuild standalone plugins (non-Vite bundlers)
@@ -151,9 +164,9 @@ from update. What Layer 3 would add:
 ## Summary
 
 ```
-Layer 5  @sdom/jsx         — JSX runtime & build tooling            [in progress]  ← YOU ARE HERE
+Layer 5  @sdom/jsx         — JSX runtime & build tooling            [substantially complete]
 Layer 4  @sdom/incremental — Delta-based updates                    [substantially complete]
-Layer 3  @sdom/elm         — Full Elm architecture on top of SDOM   [partially done]
+Layer 3  @sdom/elm         — Full Elm architecture on top of SDOM   [substantially complete]
 Layer 2  @sdom/react       — React boundary component               [complete]
 Layer 1  @sdom/core        — Core library                           [complete]
 ```

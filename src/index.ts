@@ -134,8 +134,12 @@ export { createSignal, toUpdateStream, mapUpdate, contramapDispatcher } from "./
 export { text, staticText, element, array, indexedArray, optional, component, compiled, fragment, wrapChannel, lis } from "./constructors"
 
 // Program runners
-export type { ProgramConfig, ProgramHandle, EffectProgramConfig, DeltaProgramConfig, Cmd } from "./program"
-export { program, programWithEffects, programWithDelta, noCmd, batchCmd } from "./program"
+export type { ProgramConfig, ProgramHandle, EffectProgramConfig, DeltaProgramConfig, SubProgramConfig, ElmProgramConfig, Cmd } from "./program"
+export { program, programWithEffects, programWithDelta, programWithSub, elmProgram, noCmd, batchCmd } from "./program"
+
+// Subscriptions (Elm-style)
+export type { Sub } from "./subscription"
+export { noneSub, batchSub, interval, animationFrame, onWindow, onDocument } from "./subscription"
 
 // Incremental (delta-based updates)
 export { incrementalArray } from "./incremental"

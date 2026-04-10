@@ -180,16 +180,31 @@ export interface Prism<S, A> {
   readonly review: (a: A) => S
   /** Compose with a lens focusing inside A. */
   composeLens<B>(l: Lens<A, B>): Prism<S, B>
+  /**
+   * Extract the sub-delta for this prism's focus from a parent delta.
+   * Returns `undefined` if the delta doesn't apply or the target didn't change.
+   * This enables `optional` to skip mount/unmount checks and inner updates
+   * when deltas indicate the focused field is unchanged.
+   */
+  getDelta?: (parentDelta: unknown) => unknown | undefined
 }
 
 export function prism<S, A>(
   preview: (s: S) => A | null,
-  review: (a: A) => S
+  review: (a: A) => S,
+  getDelta?: (parentDelta: unknown) => unknown | undefined
 ): Prism<S, A> {
-  return {
+  const base = {
     preview,
     review,
     composeLens<B>(l: Lens<A, B>): Prism<S, B> {
+      const composedGetDelta =
+        getDelta && l.getDelta
+          ? (parentDelta: unknown) => {
+              const mid = getDelta(parentDelta)
+              return mid !== undefined ? l.getDelta!(mid) : undefined
+            }
+          : getDelta
       return prism(
         (s: S) => {
           const a = preview(s)
@@ -200,10 +215,16 @@ export function prism<S, A>(
           // Prism composition with Lens for dispatch direction requires
           // an existing S or a default A. Use `withDefault` variant below.
           throw new Error("Cannot review a composed Prism<S,B> without a default A")
-        }
+        },
+        composedGetDelta
       )
     },
   }
+  // Only attach getDelta when defined — exactOptionalPropertyTypes
+  if (getDelta) {
+    return { ...base, getDelta } as Prism<S, A>
+  }
+  return base as Prism<S, A>
 }
 
 /**
@@ -237,6 +258,19 @@ export function nullablePrism<S>(): <K extends keyof S>(
       (s: S) => (s[key] != null ? (s[key] as NonNullable<S[K]>) : null),
       (_a: NonNullable<S[K]>) => {
         throw new Error("nullablePrism review not supported without full S context")
+      },
+      (parentDelta: unknown): unknown | undefined => {
+        if (parentDelta != null && typeof parentDelta === "object" && "kind" in parentDelta) {
+          const d = parentDelta as { kind: string; value?: unknown; fields?: Record<string, unknown> }
+          if (d.kind === "noop") return undefined
+          if (d.kind === "replace" && d.value != null && typeof d.value === "object") {
+            return { kind: "replace", value: (d.value as Record<string, unknown>)[key as string] }
+          }
+          if (d.kind === "fields" && d.fields != null) {
+            return d.fields[key as string]
+          }
+        }
+        return undefined
       }
     )
 }

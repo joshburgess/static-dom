@@ -20,6 +20,7 @@
 import { createSignal, toUpdateStream, type Dispatcher, type Observer, type Update, type Unsubscribe, type UpdateStream } from "./observable"
 import type { SDOM, Teardown } from "./types"
 import { _tryFastPatch } from "./incremental"
+import { diffSubs, type Sub } from "./subscription"
 
 // ---------------------------------------------------------------------------
 // Program types
@@ -310,6 +311,117 @@ export function programWithDelta<Model, Msg>(
       return _tryFastPatch(key, value)
     },
     teardown() {
+      viewTeardown?.teardown()
+      viewTeardown = null
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// programWithSub — pure update + Elm-style subscriptions
+// ---------------------------------------------------------------------------
+
+export interface SubProgramConfig<Model, Msg> {
+  container: Element
+  init: Model
+  update: (msg: Msg, model: Model) => Model
+  view: SDOM<Model, Msg>
+  /** Map model to active subscriptions. Called after every update. */
+  subscriptions: (model: Model) => Sub<Msg>[]
+  onUpdate?: (msg: Msg, prev: Model, next: Model) => void
+}
+
+/**
+ * Like `program`, but with Elm-style subscriptions.
+ *
+ * After each model update, `subscriptions(model)` is called and the
+ * runtime diffs the result against currently active subscriptions —
+ * starting new ones and stopping removed ones by key.
+ */
+export function programWithSub<Model, Msg>(
+  config: SubProgramConfig<Model, Msg>
+): ProgramHandle<Model, Msg> {
+  const { container, init, update, view, subscriptions, onUpdate } = config
+
+  const modelSignal = createSignal(init)
+  const updates = toUpdateStream(modelSignal)
+  const activeSubs = new Map<string, Teardown>()
+
+  let viewTeardown: Teardown | null = null
+
+  const dispatch: Dispatcher<Msg> = (msg: Msg) => {
+    const prev = modelSignal.value
+    const next = update(msg, prev)
+    onUpdate?.(msg, prev, next)
+    modelSignal.setValue(next)
+    diffSubs(activeSubs, subscriptions(next), dispatch)
+  }
+
+  viewTeardown = view.attach(container, init, updates, dispatch)
+
+  // Start initial subscriptions
+  diffSubs(activeSubs, subscriptions(init), dispatch)
+
+  return {
+    dispatch,
+    getModel: () => modelSignal.value,
+    teardown() {
+      for (const td of activeSubs.values()) td.teardown()
+      activeSubs.clear()
+      viewTeardown?.teardown()
+      viewTeardown = null
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// elmProgram — Cmd + Sub (the full Elm architecture)
+// ---------------------------------------------------------------------------
+
+export interface ElmProgramConfig<Model, Msg> {
+  container: Element
+  init: [Model, Cmd<Msg>]
+  update: (msg: Msg, model: Model) => [Model, Cmd<Msg>]
+  view: SDOM<Model, Msg>
+  subscriptions: (model: Model) => Sub<Msg>[]
+  onUpdate?: (msg: Msg, prev: Model, next: Model) => void
+}
+
+/**
+ * The full Elm runtime: Cmd for async effects + Sub for subscriptions.
+ *
+ * Combines `programWithEffects` and `programWithSub`.
+ */
+export function elmProgram<Model, Msg>(
+  config: ElmProgramConfig<Model, Msg>
+): ProgramHandle<Model, Msg> {
+  const { container, init: [initModel, initCmd], update, view, subscriptions, onUpdate } = config
+
+  const modelSignal = createSignal(initModel)
+  const updates = toUpdateStream(modelSignal)
+  const activeSubs = new Map<string, Teardown>()
+
+  let viewTeardown: Teardown | null = null
+
+  const dispatch: Dispatcher<Msg> = (msg: Msg) => {
+    const prev = modelSignal.value
+    const [next, cmd] = update(msg, prev)
+    onUpdate?.(msg, prev, next)
+    modelSignal.setValue(next)
+    cmd(dispatch)
+    diffSubs(activeSubs, subscriptions(next), dispatch)
+  }
+
+  viewTeardown = view.attach(container, initModel, updates, dispatch)
+  initCmd(dispatch)
+  diffSubs(activeSubs, subscriptions(initModel), dispatch)
+
+  return {
+    dispatch,
+    getModel: () => modelSignal.value,
+    teardown() {
+      for (const td of activeSubs.values()) td.teardown()
+      activeSubs.clear()
       viewTeardown?.teardown()
       viewTeardown = null
     },

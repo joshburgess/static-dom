@@ -19,8 +19,9 @@
  * and delegates to the existing constructors.
  */
 
-import { element, text, staticText, fragment } from "./constructors"
+import { element, text, staticText, fragment, compiled, ATTR_TO_PROP, applyClassMap } from "./constructors"
 import type { SDOM } from "./types"
+import type { Dispatcher } from "./observable"
 
 // ---------------------------------------------------------------------------
 // IDL properties — routed to `attrs` for direct property assignment
@@ -170,6 +171,204 @@ function normalizeChildren(children: unknown): SDOM<any, any>[] {
 export const Fragment = Symbol.for("sdom.fragment")
 
 // ---------------------------------------------------------------------------
+// Compiled template support
+//
+// When all children of a jsx() call are "compilable" (strings, numbers,
+// functions, or other jsx-created elements), we generate a compiled()
+// node with a single subscription instead of element() with per-attr
+// and per-child subscriptions. This is the JSX equivalent of hand-
+// writing a compiled() template.
+// ---------------------------------------------------------------------------
+
+const _JSX_SPEC = Symbol("sdom.jsxSpec")
+
+interface JsxSpec {
+  tag: string
+  classified: Record<string, unknown>
+  children: JsxChildSpec[]
+}
+
+type JsxChildSpec =
+  | { kind: "static"; text: string }
+  | { kind: "dynamic"; fn: (m: any) => string }
+  | { kind: "element"; spec: JsxSpec }
+
+/**
+ * Try to build compilable child specs from raw children.
+ * Returns null if any child is not compilable (e.g., a pre-existing SDOM node).
+ */
+function tryBuildChildSpecs(children: unknown): JsxChildSpec[] | null {
+  if (children === undefined || children === null) return []
+
+  if (Array.isArray(children)) {
+    const specs: JsxChildSpec[] = []
+    for (const child of children) {
+      const spec = tryBuildChildSpec(child)
+      if (spec === null) return null // not compilable
+      if (spec !== false) specs.push(spec)
+    }
+    return specs
+  }
+
+  const spec = tryBuildChildSpec(children)
+  if (spec === null) return null
+  if (spec === false) return []
+  return [spec]
+}
+
+/**
+ * Try to classify a single child for compilation.
+ * Returns false for skippable children (null/undefined/boolean),
+ * null for non-compilable children, or a JsxChildSpec.
+ */
+function tryBuildChildSpec(child: unknown): JsxChildSpec | null | false {
+  if (child === null || child === undefined || typeof child === "boolean") return false
+  if (typeof child === "string") return { kind: "static", text: child }
+  if (typeof child === "number") return { kind: "static", text: String(child) }
+  if (typeof child === "function") return { kind: "dynamic", fn: child as (m: any) => string }
+  if (isSDOMNode(child) && (child as any)[_JSX_SPEC] !== undefined) {
+    return { kind: "element", spec: (child as any)[_JSX_SPEC] }
+  }
+  return null // opaque SDOM node — not compilable
+}
+
+/**
+ * Build a compiled() SDOM node from a JsxSpec.
+ * All dynamic values share a single subscription.
+ */
+function compileSpec(spec: JsxSpec): SDOM<any, any> {
+  return compiled((parent, initialModel, dispatch) => {
+    const updaters: Array<(next: any) => void> = []
+    const eventCleanups: Array<() => void> = []
+    const el = buildSpecElement(spec, initialModel, dispatch, updaters, eventCleanups)
+    parent.appendChild(el)
+
+    const n = updaters.length
+    return {
+      update(_prev, next) {
+        for (let i = 0; i < n; i++) updaters[i]!(next)
+      },
+      teardown() {
+        for (const cleanup of eventCleanups) cleanup()
+        el.remove()
+      },
+    }
+  })
+}
+
+/**
+ * Recursively build a DOM element from a JsxSpec, collecting update
+ * functions and event cleanups along the way.
+ */
+function buildSpecElement(
+  spec: JsxSpec,
+  model: any,
+  dispatch: Dispatcher<any>,
+  updaters: Array<(next: any) => void>,
+  eventCleanups: Array<() => void>,
+): HTMLElement {
+  const el = document.createElement(spec.tag)
+  const c = spec.classified
+
+  // IDL properties (attrs — direct property assignment)
+  if (c.attrs) {
+    for (const [name, fn] of Object.entries(c.attrs as Record<string, (m: any) => any>)) {
+      let last = fn(model)
+      ;(el as any)[name] = last
+      updaters.push((next) => {
+        const v = fn(next)
+        if (v !== last) { last = v; (el as any)[name] = v }
+      })
+    }
+  }
+
+  // Raw attributes (setAttribute / property reflection)
+  if (c.rawAttrs) {
+    for (const [name, fn] of Object.entries(c.rawAttrs as Record<string, (m: any) => string>)) {
+      const propName = ATTR_TO_PROP[name]
+      let last = fn(model)
+      if (propName) {
+        ;(el as any)[propName] = last
+        updaters.push((next) => {
+          const v = fn(next)
+          if (v !== last) { last = v; (el as any)[propName] = v }
+        })
+      } else {
+        el.setAttribute(name, last)
+        updaters.push((next) => {
+          const v = fn(next)
+          if (v !== last) { last = v; el.setAttribute(name, v) }
+        })
+      }
+    }
+  }
+
+  // Style
+  if (c.style) {
+    for (const [prop, fn] of Object.entries(c.style as Record<string, (m: any) => string>)) {
+      let last = fn(model)
+      ;(el as HTMLElement).style.setProperty(prop, last)
+      updaters.push((next) => {
+        const v = fn(next)
+        if (v !== last) { last = v; (el as HTMLElement).style.setProperty(prop, v) }
+      })
+    }
+  }
+
+  // Class map
+  if (c.classes) {
+    const fn = c.classes as (m: any) => Record<string, boolean>
+    let lastMap = fn(model)
+    applyClassMap(el, lastMap)
+    updaters.push((next) => {
+      const nextMap = fn(next)
+      if (nextMap !== lastMap) {
+        applyClassMap(el, nextMap, lastMap)
+        lastMap = nextMap
+      }
+    })
+  }
+
+  // Events
+  if (c.on) {
+    for (const [eventName, handler] of Object.entries(c.on as Record<string, Function>)) {
+      const ref = { current: model }
+      const listener = (event: Event) => {
+        const msg = (handler as (e: Event, m: any) => any)(event, ref.current)
+        if (msg !== null) dispatch(msg)
+      }
+      el.addEventListener(eventName, listener)
+      eventCleanups.push(() => el.removeEventListener(eventName, listener))
+      updaters.push((next) => { ref.current = next })
+    }
+  }
+
+  // Children
+  for (const child of spec.children) {
+    switch (child.kind) {
+      case "static":
+        el.appendChild(document.createTextNode(child.text))
+        break
+      case "dynamic": {
+        let last = child.fn(model)
+        const textNode = document.createTextNode(last)
+        el.appendChild(textNode)
+        updaters.push((next) => {
+          const v = child.fn(next)
+          if (v !== last) { last = v; textNode.textContent = v }
+        })
+        break
+      }
+      case "element":
+        el.appendChild(buildSpecElement(child.spec, model, dispatch, updaters, eventCleanups))
+        break
+    }
+  }
+
+  return el
+}
+
+// ---------------------------------------------------------------------------
 // jsx / jsxs
 // ---------------------------------------------------------------------------
 
@@ -182,6 +381,19 @@ export function jsx(
     return fragment(normalizeChildren(props.children))
   }
 
+  // Try to build a compiled template when all children are compilable
+  if (typeof type === "string") {
+    const childSpecs = tryBuildChildSpecs(props.children)
+    if (childSpecs !== null) {
+      const classified = classifyProps(props)
+      const spec: JsxSpec = { tag: type, classified, children: childSpecs }
+      const sdom = compileSpec(spec)
+      ;(sdom as any)[_JSX_SPEC] = spec
+      return sdom
+    }
+  }
+
+  // Fall back to element() when children include opaque SDOM nodes
   const attrInput = classifyProps(props)
   const children = normalizeChildren(props.children)
   return element(type as any, attrInput as any, children)

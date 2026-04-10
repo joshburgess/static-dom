@@ -720,7 +720,22 @@ export function optional<Model, SubModel, Msg>(
       const fragment = document.createDocumentFragment()
       const subUpdates: UpdateStream<SubModel> = {
         subscribe(observer) {
-          return updates.subscribe(({ prev, next }) => {
+          return updates.subscribe(({ prev, next, delta }) => {
+            // Delta fast path: skip if prism's target didn't change
+            if (delta !== undefined && prism.getDelta) {
+              const innerDelta = prism.getDelta(delta)
+              if (innerDelta === undefined) return
+              const nextSub = prism.preview(next)
+              if (nextSub !== null) {
+                observer({
+                  prev: prism.preview(prev) ?? subModel,
+                  next: nextSub,
+                  delta: innerDelta,
+                })
+              }
+              return
+            }
+            // Slow path: reference equality
             const prevSub = prism.preview(prev)
             const nextSub = prism.preview(next)
             if (nextSub !== null && prevSub !== nextSub) {
@@ -745,7 +760,13 @@ export function optional<Model, SubModel, Msg>(
       mount(currentSubModel)
     }
 
-    const unsub = updates.subscribe(({ next }) => {
+    const unsub = updates.subscribe(({ next, delta }) => {
+      // Delta fast path: skip mount/unmount check if field unchanged
+      if (delta !== undefined && prism.getDelta) {
+        const innerDelta = prism.getDelta(delta)
+        if (innerDelta === undefined) return
+      }
+
       const nextSub = prism.preview(next)
       const wasPresent = currentSubModel !== null
       const isPresent = nextSub !== null
@@ -1098,7 +1119,8 @@ function buildAttrList<Tag extends keyof HTMLElementTagNameMap, Model, Msg>(
 }
 
 
-function applyClassMap(
+/** @internal Exported for jsx-runtime compiled templates. */
+export function applyClassMap(
   el: Element,
   nextMap: Record<string, boolean>,
   prevMap?: Record<string, boolean>
