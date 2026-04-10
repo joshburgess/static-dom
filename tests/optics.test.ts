@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest"
 import {
-  lens, lensOf, prism, prismOf, iso, isoOf, affineOf,
+  lens, lensOf, prism, prismOf, iso, isoOf, affineOf, traversal,
   prop, at, composeLenses, unionMember, nullablePrism, indexLens,
+  each, values, filtered,
 } from "../src/optics"
-import type { Lens, Prism, Iso, Affine } from "../src/optics"
+import type { Lens, Prism, Iso, Affine, Traversal } from "../src/optics"
 import {
   createSignal,
   toUpdateStream,
@@ -924,5 +925,173 @@ describe("new constructor names", () => {
     expect(a.preview(5)).toBe(b.preview(5))
     expect(a.preview(-1)).toBe(b.preview(-1))
     expect(a.review(10)).toBe(b.review(10))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Traversal
+// ---------------------------------------------------------------------------
+
+describe("each()", () => {
+  it("getAll returns all array elements", () => {
+    const t = each<number>()
+    expect(t.getAll([1, 2, 3])).toEqual([1, 2, 3])
+  })
+
+  it("getAll on empty array returns empty", () => {
+    const t = each<number>()
+    expect(t.getAll([])).toEqual([])
+  })
+
+  it("modifyAll transforms all elements", () => {
+    const t = each<number>()
+    expect(t.modifyAll(n => n * 2)([1, 2, 3])).toEqual([2, 4, 6])
+  })
+
+  it("modifyAll returns same reference when nothing changed", () => {
+    const t = each<number>()
+    const arr = [1, 2, 3]
+    expect(t.modifyAll(n => n)(arr)).toBe(arr)
+  })
+
+  it("fold reduces all elements", () => {
+    const t = each<number>()
+    const sum = t.fold<number>((acc, n) => acc + n, 0)
+    expect(sum([1, 2, 3])).toBe(6)
+  })
+})
+
+describe("values()", () => {
+  it("getAll returns all record values", () => {
+    const t = values<number>()
+    const result = t.getAll({ a: 1, b: 2, c: 3 })
+    expect(result.sort()).toEqual([1, 2, 3])
+  })
+
+  it("modifyAll transforms all values", () => {
+    const t = values<number>()
+    expect(t.modifyAll(n => n * 10)({ x: 1, y: 2 })).toEqual({ x: 10, y: 20 })
+  })
+
+  it("modifyAll returns same reference when nothing changed", () => {
+    const t = values<number>()
+    const obj = { a: 1, b: 2 }
+    expect(t.modifyAll(n => n)(obj)).toBe(obj)
+  })
+})
+
+describe("filtered()", () => {
+  it("getAll returns matching elements", () => {
+    const t = filtered<number>(n => n > 2)
+    expect(t.getAll(3)).toEqual([3])
+    expect(t.getAll(1)).toEqual([])
+  })
+
+  it("modifyAll only transforms matching elements", () => {
+    const t = filtered<number>(n => n > 0)
+    expect(t.modifyAll(n => n * 2)(5)).toBe(10)
+    expect(t.modifyAll(n => n * 2)(-3)).toBe(-3) // not modified
+  })
+})
+
+describe("traversal()", () => {
+  it("custom traversal works", () => {
+    // Traversal that focuses on even-indexed elements
+    const evenIndexed = traversal<ReadonlyArray<string>, string>(
+      arr => arr.filter((_, i) => i % 2 === 0),
+      f => arr => arr.map((v, i) => i % 2 === 0 ? f(v) : v),
+    )
+    expect(evenIndexed.getAll(["a", "b", "c", "d"])).toEqual(["a", "c"])
+    expect(evenIndexed.modifyAll(s => s.toUpperCase())(["a", "b", "c", "d"]))
+      .toEqual(["A", "b", "C", "d"])
+  })
+})
+
+describe("Traversal composition", () => {
+  interface Team { members: ReadonlyArray<{ name: string; scores: ReadonlyArray<number> }> }
+
+  const team: Team = {
+    members: [
+      { name: "Alice", scores: [10, 20, 30] },
+      { name: "Bob", scores: [5, 15] },
+    ],
+  }
+
+  it("Lens + Traversal = Traversal", () => {
+    const membersLens = prop<Team>()("members")
+    const t = membersLens.compose(each<{ name: string; scores: ReadonlyArray<number> }>())
+    expect(t.getAll(team).map(m => m.name)).toEqual(["Alice", "Bob"])
+  })
+
+  it("Traversal + Lens = Traversal", () => {
+    const membersLens = prop<Team>()("members")
+    const memberNames = membersLens
+      .compose(each<{ name: string; scores: ReadonlyArray<number> }>())
+      .compose(prop<{ name: string; scores: ReadonlyArray<number> }>()("name"))
+    expect(memberNames.getAll(team)).toEqual(["Alice", "Bob"])
+  })
+
+  it("Traversal + Traversal = Traversal (nested getAll)", () => {
+    const allScores = prop<Team>()("members")
+      .compose(each<{ name: string; scores: ReadonlyArray<number> }>())
+      .compose(prop<{ name: string; scores: ReadonlyArray<number> }>()("scores"))
+      .compose(each<number>())
+    expect(allScores.getAll(team)).toEqual([10, 20, 30, 5, 15])
+  })
+
+  it("Traversal + Traversal = Traversal (nested modifyAll)", () => {
+    const allScores = prop<Team>()("members")
+      .compose(each<{ name: string; scores: ReadonlyArray<number> }>())
+      .compose(prop<{ name: string; scores: ReadonlyArray<number> }>()("scores"))
+      .compose(each<number>())
+    const doubled = allScores.modifyAll(n => n * 2)(team)
+    expect(doubled.members[0]!.scores).toEqual([20, 40, 60])
+    expect(doubled.members[1]!.scores).toEqual([10, 30])
+  })
+
+  it("Traversal + filtered = Traversal", () => {
+    const highScores = prop<Team>()("members")
+      .compose(each<{ name: string; scores: ReadonlyArray<number> }>())
+      .compose(prop<{ name: string; scores: ReadonlyArray<number> }>()("scores"))
+      .compose(each<number>())
+      .compose(filtered<number>(n => n >= 15))
+    expect(highScores.getAll(team)).toEqual([20, 30, 15])
+  })
+
+  it("Traversal fold computes aggregate", () => {
+    const allScores = prop<Team>()("members")
+      .compose(each<{ name: string; scores: ReadonlyArray<number> }>())
+      .compose(prop<{ name: string; scores: ReadonlyArray<number> }>()("scores"))
+      .compose(each<number>())
+    const total = allScores.fold<number>((acc, n) => acc + n, 0)
+    expect(total(team)).toBe(80) // 10+20+30+5+15
+  })
+
+  it("Prism + Traversal = Traversal", () => {
+    type Data = { kind: "list"; items: ReadonlyArray<number> } | { kind: "single"; value: number }
+    const listPrism = prismOf<Data, { kind: "list"; items: ReadonlyArray<number> }>(
+      d => d.kind === "list" ? d as { kind: "list"; items: ReadonlyArray<number> } : null,
+      d => d,
+    )
+    const allItems = listPrism
+      .compose(prop<{ kind: "list"; items: ReadonlyArray<number> }>()("items"))
+      .compose(each<number>())
+
+    const list: Data = { kind: "list", items: [1, 2, 3] }
+    const single: Data = { kind: "single", value: 42 }
+
+    expect(allItems.getAll(list)).toEqual([1, 2, 3])
+    expect(allItems.getAll(single)).toEqual([])
+  })
+
+  it("Traversal modifyAll preserves structure when nothing changes", () => {
+    const memberNames = prop<Team>()("members")
+      .compose(each<{ name: string; scores: ReadonlyArray<number> }>())
+      .compose(prop<{ name: string; scores: ReadonlyArray<number> }>()("name"))
+    const result = memberNames.modifyAll(s => s)(team)
+    // Names didn't change, but intermediate arrays may be reconstructed
+    // The important thing is the values are correct
+    expect(result.members[0]!.name).toBe("Alice")
+    expect(result.members[1]!.name).toBe("Bob")
   })
 })

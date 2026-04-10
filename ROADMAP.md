@@ -15,8 +15,13 @@ nodes, attributes) update in place, directly, with no intermediate representatio
 
 - `observable.ts` — typed `Signal<T>`, `UpdateStream<T>`, `Dispatcher<Msg>`,
   `mapUpdate` (the fine-grained subscription primitive)
-- `optics.ts` — `Lens<S,A>`, `Prism<S,A>`, `Iso<S,A>`, `prop()`, `composeLenses`,
-  `unionMember`, `indexLens`
+- `optics.ts` — unified `Optic` base type with structural subtyping:
+  - `Iso<S,A>`, `Lens<S,A>`, `Prism<S,A>`, `Affine<S,A>` as subtype aliases
+  - Composition via method overloads: Lens+Prism=Affine, Iso+Lens=Lens, etc.
+  - `modify()` on all optic types
+  - `at<S>()("field1", "field2", ...)` path selectors (up to 6 levels)
+  - `prop()`, `composeLenses`, `unionMember`, `nullablePrism` (now returns Affine), `indexLens`
+  - Delta propagation via `getDelta` on all optics
 - `types.ts` — `SDOM<Model, Msg>` type with method combinators (`focus`, `mapMsg`,
   `contramap`, `showIf`), focus fusion (`_FOCUS_TARGET`/`_FOCUS_LENS`), `makeSDOM`
 - `constructors.ts` — `text`, `staticText`, `element`, `array`, `indexedArray`,
@@ -37,9 +42,9 @@ nodes, attributes) update in place, directly, with no intermediate representatio
 - `errors.ts` — error boundaries with `setErrorHandler`, `setGuardEnabled`
 - `dev.ts` — dev mode with `setDevMode`, shape validation
 - `delegation.ts` — event delegation with `createDelegator`
-- Tests: 200 tests across 20 test files
-- Benchmarks: 3 scenarios (single-row, attr-update, initial-render) vs React,
-  Preact, Inferno, and Solid.js, in both happy-dom and real Chromium
+- Tests: 387 tests across 32 test files
+- Benchmarks: 6 scenarios (single-row, attr-update, initial-render, focus-chain,
+  compiled-templates, array-reorder) vs React, Preact, Inferno, and Solid.js
 
 ---
 

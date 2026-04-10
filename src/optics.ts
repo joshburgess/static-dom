@@ -44,6 +44,9 @@ function isRight<A, E>(e: Either<A, E>): e is { readonly _tag: "Right"; readonly
   return e._tag === "Right"
 }
 
+/** Shared sentinel for "not present" — avoids allocating Error objects on every prism miss. */
+const LEFT_ABSENT: Either<never, Error> = { _tag: "Left", left: new Error("absent") } as any
+
 // ---------------------------------------------------------------------------
 // Optic — unified base type
 //
@@ -69,6 +72,8 @@ export interface Optic<GetWhole, SetWholeBefore, SetPiece, GetError, SetError, G
   compose<A2>(this: Lens<GetWhole, GetPiece>, that: Lens<GetPiece, A2>): Lens<GetWhole, A2>
   compose<A2>(this: Prism<GetWhole, GetPiece>, that: Prism<GetPiece, A2>): Prism<GetWhole, A2>
   compose<A2>(this: Affine<GetWhole, GetPiece>, that: Affine<GetPiece, A2>): Affine<GetWhole, A2>
+  // Any optic composed with a Traversal yields a Traversal
+  compose<A2>(that: Traversal<GetPiece, A2>): Traversal<GetWhole, A2>
 
   /** Transform the focus value in place. Works on all optic types. */
   modify(f: (a: GetPiece) => SetPiece): (s: GetWhole & SetWholeBefore) => SetWholeAfter
@@ -129,6 +134,33 @@ export interface Affine<S, A>
   readonly set: (a: A, s: S) => S
 }
 
+/**
+ * Traversal: focuses on zero or more targets within a whole.
+ *
+ * Unlike Iso/Lens/Prism/Affine, a Traversal is not modeled as getOptic/setOptic
+ * since it targets multiple values. It has its own interface with:
+ *   - getAll: extract all focused values
+ *   - modifyAll: transform all focused values in place
+ *   - foldMap: fold all focused values with a monoid
+ *   - compose: compose with another Traversal or any single-target optic
+ */
+export interface Traversal<S, A> {
+  /** Extract all focused values. */
+  readonly getAll: (s: S) => ReadonlyArray<A>
+  /** Transform all focused values, returning a new whole. */
+  readonly modifyAll: (f: (a: A) => A) => (s: S) => S
+  /** Fold all focused values using a combining function and initial value. */
+  readonly fold: <R>(f: (acc: R, a: A) => R, initial: R) => (s: S) => R
+  /** Compose with another Traversal. */
+  compose<B>(that: Traversal<A, B>): Traversal<S, B>
+  /** Compose with a Lens to traverse then focus. */
+  compose<B>(that: Lens<A, B>): Traversal<S, B>
+  /** Compose with a Prism to traverse then filter. */
+  compose<B>(that: Prism<A, B>): Traversal<S, B>
+  /** Compose with an Affine. */
+  compose<B>(that: Affine<A, B>): Traversal<S, B>
+}
+
 // ---------------------------------------------------------------------------
 // Builder — single runtime class for all optic types
 // ---------------------------------------------------------------------------
@@ -178,7 +210,7 @@ class Builder<GW, SWB, SP, GE, SE, GP, SWA>
         },
         (b: any) => (s: any) => {
           const outer = (self as Builder<any, any, any, any, any, any, any>).getOptic(s)
-          if (!isRight(outer)) return left(new Error("Cannot set through failed get"))
+          if (!isRight(outer)) return LEFT_ABSENT
           const innerSet = that.setOptic(b)(outer.right)
           if (!isRight(innerSet)) return innerSet
           return (self as Builder<any, any, any, any, any, any, any>).setOptic(innerSet.right)(s)
@@ -331,7 +363,7 @@ export function prismOf<S, A>(
     OpticTag.Prism,
     (s: S) => {
       const a = preview(s)
-      return a !== null ? right(a) : left(new Error("Prism: target not present"))
+      return a !== null ? right(a) : LEFT_ABSENT
     },
     (a: A) => (_s: unknown) => right(review(a)),
     getDelta,
@@ -352,7 +384,7 @@ export function affineOf<S, A>(
     OpticTag.Lens, // Affine uses lens composition (set needs whole)
     (s: S) => {
       const a = preview(s)
-      return a !== null ? right(a) : left(new Error("Affine: target not present"))
+      return a !== null ? right(a) : LEFT_ABSENT
     },
     (a: A) => (s: S) => right(set(a, s)),
     getDelta,
@@ -579,4 +611,167 @@ export function indexLens<A>(index: number): Lens<ReadonlyArray<A>, A> {
       return copy as A[]
     }
   )
+}
+
+// ---------------------------------------------------------------------------
+// Traversal constructors
+// ---------------------------------------------------------------------------
+
+/**
+ * Construct a Traversal from getAll and modifyAll functions.
+ */
+export function traversal<S, A>(
+  getAll: (s: S) => ReadonlyArray<A>,
+  modifyAll: (f: (a: A) => A) => (s: S) => S,
+): Traversal<S, A> {
+  return _buildTraversal(getAll, modifyAll)
+}
+
+/**
+ * Traversal that focuses on every element of an array.
+ *
+ * Usage:
+ *   const allNames = prop<Model>()("users").compose(each<User>()).compose(prop<User>()("name"))
+ *   allNames.getAll(model) // ["Alice", "Bob", ...]
+ *   allNames.modifyAll(s => s.toUpperCase())(model) // uppercases all names
+ */
+export function each<A>(): Traversal<ReadonlyArray<A>, A> {
+  return _buildTraversal<ReadonlyArray<A>, A>(
+    (arr) => arr,
+    (f) => (arr) => {
+      let changed = false
+      const result = arr.map(a => {
+        const b = f(a)
+        if (b !== a) changed = true
+        return b
+      })
+      return changed ? result : arr
+    },
+  )
+}
+
+/**
+ * Traversal that focuses on values of a Record/object.
+ *
+ * Usage:
+ *   const allValues = values<number>()
+ *   allValues.getAll({ a: 1, b: 2 }) // [1, 2]
+ */
+export function values<A>(): Traversal<Readonly<Record<string, A>>, A> {
+  return _buildTraversal<Readonly<Record<string, A>>, A>(
+    (obj) => Object.values(obj),
+    (f) => (obj) => {
+      let changed = false
+      const result: Record<string, A> = {}
+      for (const k of Object.keys(obj)) {
+        const v = obj[k]!
+        const b = f(v)
+        if (b !== v) changed = true
+        result[k] = b
+      }
+      return changed ? result : obj
+    },
+  )
+}
+
+/**
+ * Traversal that filters elements by a predicate.
+ *
+ * Usage:
+ *   const adults = each<User>().compose(filtered<User>(u => u.age >= 18))
+ */
+export function filtered<A>(predicate: (a: A) => boolean): Traversal<A, A> {
+  return _buildTraversal<A, A>(
+    (a) => predicate(a) ? [a] : [],
+    (f) => (a) => predicate(a) ? f(a) : a,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Internal Traversal builder
+// ---------------------------------------------------------------------------
+
+function _buildTraversal<S, A>(
+  getAll: (s: S) => ReadonlyArray<A>,
+  modifyAll: (f: (a: A) => A) => (s: S) => S,
+): Traversal<S, A> {
+  const t: Traversal<S, A> = {
+    getAll,
+    modifyAll,
+    fold<R>(f: (acc: R, a: A) => R, initial: R) {
+      return (s: S) => {
+        let acc = initial
+        for (const a of getAll(s)) acc = f(acc, a)
+        return acc
+      }
+    },
+    compose(that: any): any {
+      // Composing with another Traversal
+      if ("getAll" in that && "modifyAll" in that) {
+        return _buildTraversal(
+          (s: any) => {
+            const as = getAll(s)
+            const result: any[] = []
+            for (const a of as) {
+              for (const b of that.getAll(a)) result.push(b)
+            }
+            return result
+          },
+          (f: any) => modifyAll((a: any) => that.modifyAll(f)(a)),
+        )
+      }
+      // Composing with a single-target optic (Lens/Prism/Affine/Iso)
+      // These have getOptic/setOptic on the Builder
+      return _buildTraversal(
+        (s: any) => {
+          const as = getAll(s)
+          const result: any[] = []
+          for (const a of as) {
+            const got = that.getOptic(a)
+            if (isRight(got)) result.push(got.right)
+          }
+          return result
+        },
+        (f: any) => modifyAll((a: any) => {
+          const got = that.getOptic(a)
+          if (!isRight(got)) return a
+          const setResult = that.setOptic(f(got.right))(a)
+          return isRight(setResult) ? setResult.right : a
+        }),
+      )
+    },
+  }
+  return t
+}
+
+// ---------------------------------------------------------------------------
+// Compose single-target optic into Traversal (for Optic.compose(Traversal))
+// ---------------------------------------------------------------------------
+
+// We need to handle the case where a single-target optic composes with a Traversal.
+// This is handled by the Optic.compose overload, but the Builder.compose method
+// needs to detect Traversals and delegate appropriately.
+
+// Patch Builder.compose to handle Traversal targets
+const _originalCompose = Builder.prototype.compose
+Builder.prototype.compose = function(this: any, that: any): any {
+  // If `that` is a Traversal (has getAll/modifyAll but no getOptic)
+  if ("getAll" in that && "modifyAll" in that && !("getOptic" in that)) {
+    const self = this
+    return _buildTraversal(
+      (s: any) => {
+        const got = self.getOptic(s)
+        if (!isRight(got)) return []
+        return that.getAll(got.right)
+      },
+      (f: any) => (s: any) => {
+        const got = self.getOptic(s)
+        if (!isRight(got)) return s
+        const modified = that.modifyAll(f)(got.right)
+        const setResult = (self as Builder<any, any, any, any, any, any, any>).setOptic(modified)(s)
+        return isRight(setResult) ? setResult.right : s
+      },
+    )
+  }
+  return _originalCompose.call(this, that)
 }
