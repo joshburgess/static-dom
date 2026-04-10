@@ -75,31 +75,31 @@ function makeModel(tick: number): Model {
 // Total: ~5 subscriptions (one per element with dynamic attrs).
 // ---------------------------------------------------------------------------
 
-const elementChainView = element<Model, never>("div", {
+const elementChainView = element<"div", Model, never>("div", {
   rawAttrs: {
     class: (m) => m.f0,
     "data-value": (m) => m.f1,
   },
 }, [
-  element<Model, never>("div", {
+  element<"div", Model, never>("div", {
     rawAttrs: {
       class: (m) => m.f2,
       "data-value": (m) => m.f3,
     },
   }, [
-    element<Model, never>("div", {
+    element<"div", Model, never>("div", {
       rawAttrs: {
         class: (m) => m.f4,
         "data-value": (m) => m.f5,
       },
     }, [
-      element<Model, never>("div", {
+      element<"div", Model, never>("div", {
         rawAttrs: {
           class: (m) => m.f6,
           "data-value": (m) => m.f7,
         },
       }, [
-        element<Model, never>("div", {
+        element<"div", Model, never>("div", {
           rawAttrs: {
             class: (m) => m.f8,
             "data-value": (m) => m.f9,

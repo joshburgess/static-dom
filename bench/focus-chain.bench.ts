@@ -112,29 +112,27 @@ const LEAF_COUNT = 100
  * Create a text node that reads from the leaf string, focused through
  * the given number of levels from the root.
  */
-function makeLeafAt1(): typeof textNode {
+function makeLeafAt1() {
   // 1-level focus: root → l1, then read l2...l20.leaf as a single text fn
-  const textNode = text<L1, never>((m) =>
+  return text<L1>((m) =>
     m.l2.l3.l4.l5.l6.l7.l8.l9.l10.l11.l12.l13.l14.l15.l16.l17.l18.l19.l20.leaf
   ).focus(prop<RootModel>()("l1"))
-  return textNode
 }
 
-function makeLeafAt5(): ReturnType<typeof text<L5, never>> {
+function makeLeafAt5() {
   // 5-level focus: root → l1 → l2 → l3 → l4 → l5
-  const textNode = text<L5, never>((m) =>
+  return text<L5>((m) =>
     m.l6.l7.l8.l9.l10.l11.l12.l13.l14.l15.l16.l17.l18.l19.l20.leaf
   ).focus(prop<L4>()("l5"))
     .focus(prop<L3>()("l4"))
     .focus(prop<L2>()("l3"))
     .focus(prop<L1>()("l2"))
     .focus(prop<RootModel>()("l1"))
-  return textNode
 }
 
-function makeLeafAt10(): ReturnType<typeof text<L10, never>> {
+function makeLeafAt10() {
   // 10-level focus: root → l1 → ... → l10
-  const textNode = text<L10, never>((m) =>
+  return text<L10>((m) =>
     m.l11.l12.l13.l14.l15.l16.l17.l18.l19.l20.leaf
   ).focus(prop<L9>()("l10"))
     .focus(prop<L8>()("l9"))
@@ -146,12 +144,11 @@ function makeLeafAt10(): ReturnType<typeof text<L10, never>> {
     .focus(prop<L2>()("l3"))
     .focus(prop<L1>()("l2"))
     .focus(prop<RootModel>()("l1"))
-  return textNode
 }
 
-function makeLeafAt20(): ReturnType<typeof text<L20, never>> {
+function makeLeafAt20() {
   // 20-level focus: root → l1 → ... → l20
-  const textNode = text<L20, never>((m) => m.leaf)
+  return text<L20>((m) => m.leaf)
     .focus(prop<L19>()("l20"))
     .focus(prop<L18>()("l19"))
     .focus(prop<L17>()("l18"))
@@ -172,7 +169,6 @@ function makeLeafAt20(): ReturnType<typeof text<L20, never>> {
     .focus(prop<L2>()("l3"))
     .focus(prop<L1>()("l2"))
     .focus(prop<RootModel>()("l1"))
-  return textNode
 }
 
 // ---------------------------------------------------------------------------

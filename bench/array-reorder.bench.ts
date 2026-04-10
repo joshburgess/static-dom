@@ -39,11 +39,11 @@ const REMOVE_COUNT = 100
 // Shared SDOM row template
 // ---------------------------------------------------------------------------
 
-const rowView = element<Row, never>("tr", {}, [
-  element<Row, never>("td", {
+const rowView = element<"tr", Row, never>("tr", {}, [
+  element<"td", Row, never>("td", {
     rawAttrs: { class: (m) => m.selected ? "selected" : "" },
-  }, [text((m) => m.id)]),
-  element<Row, never>("td", {}, [text((m) => m.label)]),
+  }, [text<Row>((m) => m.id)]),
+  element<"td", Row, never>("td", {}, [text<Row>((m) => m.label)]),
 ])
 
 // ---------------------------------------------------------------------------
