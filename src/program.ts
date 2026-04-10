@@ -17,7 +17,7 @@
  * separate from the UI description concern.
  */
 
-import { createSignal, toUpdateStream, type Dispatcher } from "./observable"
+import { createSignal, toUpdateStream, type Dispatcher, type Observer, type Update, type Unsubscribe, type UpdateStream } from "./observable"
 import type { SDOM, Teardown } from "./types"
 
 // ---------------------------------------------------------------------------
@@ -160,6 +160,75 @@ export function programWithEffects<Model, Msg>(
   return {
     dispatch,
     getModel: () => modelSignal.value,
+    teardown() {
+      viewTeardown?.teardown()
+      viewTeardown = null
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// programWithDelta
+// ---------------------------------------------------------------------------
+
+export interface DeltaProgramConfig<Model, Msg> {
+  container: Element
+  init: Model
+  /**
+   * Like a normal update, but also returns a structured delta describing
+   * what changed. The delta is threaded through the UpdateStream so that
+   * `focus` (via lens.getDelta) can skip unchanged subtrees in O(1).
+   *
+   * Return `undefined` as the delta to fall back to reference-equality checks.
+   */
+  update: (msg: Msg, model: Model) => [Model, unknown | undefined]
+  view: SDOM<Model, Msg>
+  onUpdate?: (msg: Msg, prev: Model, next: Model, delta: unknown | undefined) => void
+}
+
+/**
+ * Like `program`, but the update function returns `[Model, Delta?]`.
+ *
+ * The delta is attached to each Update emission so that `focus` can
+ * use `lens.getDelta(delta)` to decide whether a subtree needs updating
+ * without running `lens.get()`. This is the glue that makes the
+ * incremental lambda calculus layer pay off end-to-end.
+ */
+export function programWithDelta<Model, Msg>(
+  config: DeltaProgramConfig<Model, Msg>
+): ProgramHandle<Model, Msg> {
+  const { container, init, update, view, onUpdate } = config
+
+  // We can't use toUpdateStream here because we need to attach deltas.
+  // Instead, we build a custom UpdateStream that carries the delta.
+  let current = init
+  const observers = new Set<Observer<Update<Model>>>()
+
+  const deltaUpdates: UpdateStream<Model> = {
+    subscribe(observer: Observer<Update<Model>>): Unsubscribe {
+      observers.add(observer)
+      return () => observers.delete(observer)
+    },
+  }
+
+  let viewTeardown: Teardown | null = null
+
+  const dispatch: Dispatcher<Msg> = (msg: Msg) => {
+    const prev = current
+    const [next, delta] = update(msg, prev)
+    onUpdate?.(msg, prev, next, delta)
+    current = next
+    const updatePayload: Update<Model> = delta !== undefined
+      ? { prev, next, delta }
+      : { prev, next }
+    observers.forEach(obs => obs(updatePayload))
+  }
+
+  viewTeardown = view.attach(container, init, deltaUpdates, dispatch)
+
+  return {
+    dispatch,
+    getModel: () => current,
     teardown() {
       viewTeardown?.teardown()
       viewTeardown = null

@@ -56,6 +56,136 @@ export function applyAtom<T>(value: T, delta: AtomDelta<T>): T {
 }
 
 // ---------------------------------------------------------------------------
+// RecordDelta — per-field changes to an object type
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-field change descriptors for a record type T.
+ * Each field is optional — absent means "no change to this field".
+ */
+export type FieldDeltas<T> = {
+  readonly [K in keyof T]?: AtomDelta<T[K]>
+}
+
+/**
+ * A delta for a record/object type T.
+ *
+ * - `noop`: nothing changed
+ * - `replace`: the entire value was replaced
+ * - `fields`: specific fields changed (others unchanged)
+ *
+ * The `fields` variant is the incremental sweet spot — it tells
+ * `focus` which sub-slices actually changed, allowing subtrees
+ * to skip their updates entirely.
+ */
+export type RecordDelta<T> =
+  | { readonly kind: "noop" }
+  | { readonly kind: "replace"; readonly value: T }
+  | { readonly kind: "fields"; readonly fields: FieldDeltas<T> }
+
+/** Construct a fields delta. */
+export function fields<T>(changes: FieldDeltas<T>): RecordDelta<T> {
+  return { kind: "fields", fields: changes }
+}
+
+/** Apply a RecordDelta to a value. */
+export function applyRecord<T extends object>(value: T, delta: RecordDelta<T>): T {
+  switch (delta.kind) {
+    case "noop":
+      return value
+    case "replace":
+      return delta.value
+    case "fields": {
+      const result = { ...value }
+      for (const key in delta.fields) {
+        const fieldDelta = delta.fields[key]
+        if (fieldDelta && fieldDelta.kind === "replace") {
+          result[key] = fieldDelta.value
+        }
+      }
+      return result
+    }
+  }
+}
+
+/**
+ * Check whether a RecordDelta touches a specific field.
+ *
+ * Returns:
+ *   - The field's AtomDelta if the field was changed
+ *   - undefined if the field was NOT changed
+ *   - `{ kind: "replace", value }` if the entire record was replaced
+ *     (in which case every field implicitly changed)
+ */
+export function fieldDelta<T, K extends keyof T>(
+  delta: RecordDelta<T>,
+  key: K
+): AtomDelta<T[K]> | undefined {
+  switch (delta.kind) {
+    case "noop":
+      return undefined
+    case "replace":
+      return { kind: "replace", value: delta.value[key] }
+    case "fields":
+      return delta.fields[key]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// produce — proxy-based delta generation for records
+// ---------------------------------------------------------------------------
+
+/**
+ * Produce a new record and its delta from imperative mutations.
+ *
+ * Creates a shallow proxy that tracks which top-level properties
+ * were assigned. After the recipe runs, returns the new object and
+ * a RecordDelta describing what changed.
+ *
+ * NOTE: Only tracks shallow property assignments. For nested changes,
+ * assign a new value to the property (e.g. `draft.items = [...draft.items, x]`).
+ *
+ * @example
+ * ```typescript
+ * const [next, delta] = produce(model, draft => {
+ *   draft.count = model.count + 1
+ *   draft.items = [...model.items, newItem]
+ * })
+ * // delta = { kind: "fields", fields: { count: replace(1), items: replace([...]) } }
+ * ```
+ */
+export function produce<T extends object>(
+  base: T,
+  recipe: (draft: T) => void
+): [T, RecordDelta<T>] {
+  const copy = { ...base } as T
+  const changed = new Set<keyof T>()
+
+  const proxy = new Proxy(copy, {
+    set(_target, prop, value) {
+      const key = prop as keyof T
+      ;(copy as any)[key] = value
+      changed.add(key)
+      return true
+    },
+    get(_target, prop) {
+      return (copy as any)[prop]
+    },
+  })
+
+  recipe(proxy as T)
+
+  if (changed.size === 0) return [base, { kind: "noop" }]
+
+  const deltaFields: Partial<Record<keyof T, AtomDelta<any>>> = {}
+  for (const key of changed) {
+    deltaFields[key] = replace(copy[key])
+  }
+
+  return [copy, { kind: "fields", fields: deltaFields as FieldDeltas<T> }]
+}
+
+// ---------------------------------------------------------------------------
 // ArrayOp — individual operations on an array
 // ---------------------------------------------------------------------------
 

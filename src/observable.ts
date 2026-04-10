@@ -57,6 +57,13 @@ export interface Signal<T> extends ReadonlySignal<T> {
 export interface Update<T> {
   readonly prev: T
   readonly next: T
+  /**
+   * Optional structured delta describing what changed between prev and next.
+   * When present, consumers (like `focus`) can inspect it to skip unchanged
+   * subtrees without calling `get` on every lens. The type is intentionally
+   * `unknown` at this layer — concrete delta types are in patch.ts.
+   */
+  readonly delta?: unknown
 }
 
 /** The stream type that `attach` consumes. */
@@ -116,11 +123,11 @@ export function mapUpdate<A, B>(
 ): UpdateStream<B> {
   return {
     subscribe(observer: Observer<Update<B>>): Unsubscribe {
-      return stream.subscribe(({ prev, next }) => {
+      return stream.subscribe(({ prev, next, delta }) => {
         const prevB = project(prev)
         const nextB = project(next)
         if (!eq(prevB, nextB)) {
-          observer({ prev: prevB, next: nextB })
+          observer({ prev: prevB, next: nextB, delta })
         }
       })
     },

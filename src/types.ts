@@ -264,10 +264,29 @@ export function makeSDOM<Model, Msg>(
 
     focus<Outer>(lensOuter: Lens<Outer, Model>): SDOM<Outer, Msg> {
       return makeSDOM<Outer, Msg>((parent, initialOuter, outerUpdates, dispatch) => {
-        // Project updates to only fire when the focused slice changes
+        // Project updates to only fire when the focused slice changes.
+        // When a structured delta is available and the lens has getDelta,
+        // we can check whether this field changed without calling get().
         const innerUpdates: UpdateStream<Model> = {
           subscribe(observer) {
-            return outerUpdates.subscribe(({ prev, next }) => {
+            return outerUpdates.subscribe(({ prev, next, delta }) => {
+              // Fast path: if we have a delta and the lens can inspect it,
+              // check whether this slice was touched at all.
+              if (delta !== undefined && lensOuter.getDelta) {
+                const innerDelta = lensOuter.getDelta(delta)
+                if (innerDelta === undefined) {
+                  // Delta says this field didn't change — skip entirely
+                  return
+                }
+                // Field changed — propagate with the sub-delta
+                observer({
+                  prev: lensOuter.get(prev),
+                  next: lensOuter.get(next),
+                  delta: innerDelta,
+                })
+                return
+              }
+              // Slow path: reference equality check
               const prevInner = lensOuter.get(prev)
               const nextInner = lensOuter.get(next)
               if (prevInner !== nextInner) {

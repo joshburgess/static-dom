@@ -5,6 +5,8 @@ import {
   applyArrayOp, applyArrayDelta,
   keyedInsert, keyedRemove, keyedPatch, keyedOps,
   diffKeyed,
+  fields, applyRecord, fieldDelta, produce,
+  type RecordDelta,
 } from "../src/patch"
 
 describe("AtomDelta", () => {
@@ -119,5 +121,116 @@ describe("diffKeyed", () => {
     expect(kinds).toContain("remove") // c removed
     expect(kinds).toContain("insert") // d inserted
     expect(kinds).toContain("patch")  // a patched
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────
+// RecordDelta
+// ─────────────────────────────────────────────────────────────────────
+
+describe("RecordDelta", () => {
+  interface Model { count: number; name: string; items: string[] }
+
+  it("noop returns original", () => {
+    const m: Model = { count: 1, name: "a", items: [] }
+    expect(applyRecord(m, { kind: "noop" })).toBe(m)
+  })
+
+  it("replace returns new value", () => {
+    const m: Model = { count: 1, name: "a", items: [] }
+    const next: Model = { count: 99, name: "z", items: ["x"] }
+    expect(applyRecord(m, { kind: "replace", value: next })).toBe(next)
+  })
+
+  it("fields replaces only specified fields", () => {
+    const m: Model = { count: 1, name: "a", items: ["x"] }
+    const result = applyRecord(m, fields<Model>({ count: replace(42) }))
+    expect(result).toEqual({ count: 42, name: "a", items: ["x"] })
+  })
+
+  it("fields noop on a field leaves it unchanged", () => {
+    const m: Model = { count: 1, name: "a", items: [] }
+    const result = applyRecord(m, fields<Model>({ count: noop() }))
+    expect(result).toEqual(m)
+  })
+
+  it("fields replaces multiple fields", () => {
+    const m: Model = { count: 1, name: "a", items: [] }
+    const result = applyRecord(m, fields<Model>({
+      count: replace(10),
+      name: replace("b"),
+    }))
+    expect(result).toEqual({ count: 10, name: "b", items: [] })
+  })
+})
+
+describe("fieldDelta", () => {
+  interface Model { count: number; name: string }
+
+  it("returns undefined for noop", () => {
+    expect(fieldDelta<Model, "count">({ kind: "noop" }, "count")).toBeUndefined()
+  })
+
+  it("extracts field value from replace", () => {
+    const delta: RecordDelta<Model> = { kind: "replace", value: { count: 5, name: "x" } }
+    expect(fieldDelta(delta, "count")).toEqual({ kind: "replace", value: 5 })
+    expect(fieldDelta(delta, "name")).toEqual({ kind: "replace", value: "x" })
+  })
+
+  it("extracts field delta from fields variant", () => {
+    const delta = fields<Model>({ count: replace(42) })
+    expect(fieldDelta(delta, "count")).toEqual({ kind: "replace", value: 42 })
+    expect(fieldDelta(delta, "name")).toBeUndefined()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────
+// produce
+// ─────────────────────────────────────────────────────────────────────
+
+describe("produce", () => {
+  interface Model { count: number; name: string; active: boolean }
+
+  it("returns noop when nothing changes", () => {
+    const m: Model = { count: 1, name: "a", active: true }
+    const [next, delta] = produce(m, _draft => {})
+    expect(next).toBe(m) // same reference
+    expect(delta).toEqual({ kind: "noop" })
+  })
+
+  it("tracks a single field change", () => {
+    const m: Model = { count: 1, name: "a", active: true }
+    const [next, delta] = produce(m, draft => {
+      draft.count = 42
+    })
+    expect(next).toEqual({ count: 42, name: "a", active: true })
+    expect(next).not.toBe(m)
+    expect(delta.kind).toBe("fields")
+    if (delta.kind !== "fields") return
+    expect(delta.fields.count).toEqual({ kind: "replace", value: 42 })
+    expect(delta.fields.name).toBeUndefined()
+    expect(delta.fields.active).toBeUndefined()
+  })
+
+  it("tracks multiple field changes", () => {
+    const m: Model = { count: 1, name: "a", active: true }
+    const [next, delta] = produce(m, draft => {
+      draft.count = 10
+      draft.name = "b"
+    })
+    expect(next).toEqual({ count: 10, name: "b", active: true })
+    expect(delta.kind).toBe("fields")
+    if (delta.kind !== "fields") return
+    expect(delta.fields.count).toEqual({ kind: "replace", value: 10 })
+    expect(delta.fields.name).toEqual({ kind: "replace", value: "b" })
+    expect(delta.fields.active).toBeUndefined()
+  })
+
+  it("reads current values through proxy", () => {
+    const m: Model = { count: 1, name: "a", active: true }
+    const [next, _delta] = produce(m, draft => {
+      draft.count = draft.count + 1
+    })
+    expect(next.count).toBe(2)
   })
 })

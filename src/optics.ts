@@ -36,6 +36,13 @@ export interface Lens<S, A> {
   compose<B>(other: Lens<A, B>): Lens<S, B>
   /** Lift this lens to work on { prev, next } pairs (used in `mapUpdate`). */
   toUpdate(): (s: S) => A  // convenience alias of `get` for mapUpdate usage
+  /**
+   * Extract the sub-delta for this lens's focus from a parent delta.
+   * Returns `undefined` if the delta doesn't apply or isn't structured.
+   * This enables O(1) delta propagation through `focus` — a RecordDelta
+   * with a `fields` variant can tell child lenses whether their field changed.
+   */
+  getDelta?: (parentDelta: unknown) => unknown | undefined
 }
 
 /**
@@ -43,21 +50,38 @@ export interface Lens<S, A> {
  */
 export function lens<S, A>(
   get: (s: S) => A,
-  set: (a: A, s: S) => S
+  set: (a: A, s: S) => S,
+  getDelta?: (parentDelta: unknown) => unknown | undefined
 ): Lens<S, A> {
-  return {
+  const base = {
     get,
     set,
     compose<B>(other: Lens<A, B>): Lens<S, B> {
+      const composedGetDelta =
+        getDelta && other.getDelta
+          ? (parentDelta: unknown) => {
+              const mid = getDelta(parentDelta)
+              return mid !== undefined ? other.getDelta!(mid) : undefined
+            }
+          : getDelta && !other.getDelta
+            ? getDelta
+            : undefined
       return lens(
         (s: S) => other.get(get(s)),
-        (b: B, s: S) => set(other.set(b, get(s)), s)
+        (b: B, s: S) => set(other.set(b, get(s)), s),
+        composedGetDelta
       )
     },
     toUpdate() {
       return get
     },
   }
+  // Only attach getDelta when defined — exactOptionalPropertyTypes
+  // forbids assigning `undefined` to an optional property.
+  if (getDelta) {
+    return { ...base, getDelta } as Lens<S, A>
+  }
+  return base as Lens<S, A>
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +106,26 @@ export function prop<S>(): <K extends keyof S>(key: K) => Lens<S, S[K]> {
         const result = { ...s }
         result[key] = a
         return result
+      },
+      (parentDelta: unknown): unknown | undefined => {
+        // Extract the sub-delta for this field from a RecordDelta.
+        // Returns undefined if the delta doesn't apply to this field.
+        if (
+          parentDelta != null &&
+          typeof parentDelta === "object" &&
+          "kind" in parentDelta
+        ) {
+          const d = parentDelta as { kind: string; value?: unknown; fields?: Record<string, unknown> }
+          if (d.kind === "noop") return undefined
+          if (d.kind === "replace" && d.value != null && typeof d.value === "object") {
+            // Entire record replaced — extract the field value as an atom replace
+            return { kind: "replace", value: (d.value as Record<string, unknown>)[key as string] }
+          }
+          if (d.kind === "fields" && d.fields != null) {
+            return d.fields[key as string]
+          }
+        }
+        return undefined
       }
     )
 }

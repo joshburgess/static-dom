@@ -127,18 +127,20 @@ export { createSignal, toUpdateStream, mapUpdate, contramapDispatcher } from "./
 export { text, staticText, element, array, optional, component, fragment, wrapChannel } from "./constructors"
 
 // Program runners
-export type { ProgramConfig, ProgramHandle, EffectProgramConfig, Cmd } from "./program"
-export { program, programWithEffects, noCmd, batchCmd } from "./program"
+export type { ProgramConfig, ProgramHandle, EffectProgramConfig, DeltaProgramConfig, Cmd } from "./program"
+export { program, programWithEffects, programWithDelta, noCmd, batchCmd } from "./program"
 
 // Incremental (delta-based updates)
 export { incrementalArray } from "./incremental"
 export type {
   AtomDelta, ArrayOp, ArrayDelta, ArrayInsert, ArrayRemove, ArrayMove, ArrayPatch,
   KeyedOp, KeyedArrayDelta, KeyedInsert, KeyedRemove, KeyedMove, KeyedPatch,
+  RecordDelta, FieldDeltas,
 } from "./patch"
 export {
   noop, replace, applyAtom, applyArrayOp, applyArrayDelta,
   insert, remove, move, patch,
   keyedInsert, keyedRemove, keyedMove, keyedPatch, keyedOps,
   ops, diffKeyed,
+  fields, applyRecord, fieldDelta, produce,
 } from "./patch"
