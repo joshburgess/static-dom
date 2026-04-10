@@ -1,13 +1,11 @@
 /**
  * optics.ts
  *
- * Unified optics using a tagged-kind approach with `OpticKind` string literal
- * tags and a type-level composition table (`ComposeKinds`).
+ * Unified optics using Effect-style HKT simulation with type lambdas.
  *
- * Each optic kind (Iso, Lens, Prism, Affine) is a concrete named interface
- * extending `OpticBase<K, S, A>`. The `compose` method uses `ComposeKinds` and
- * `ResolveOptic` to compute the result type at the type level — no overloads
- * needed for single-optic composition, and zero `any` in signatures.
+ * Each optic kind is a TypeLambda interface whose `Target` field computes
+ * the concrete type when "applied" via `Kind<F, S, A>`. Composition uses
+ * `ComposeOptics<F, G>` to compute the result type lambda at the type level.
  *
  * Subtyping lattice:
  *
@@ -48,57 +46,105 @@ function isRight<A, E>(e: Either<A, E>): e is { readonly _tag: "Right"; readonly
 const LEFT_ABSENT: Either<never, Error> = { _tag: "Left", left: new Error("absent") }
 
 // ---------------------------------------------------------------------------
-// Optic kind — a string literal type tag
+// HKT Foundation — Effect-style type lambda encoding
 // ---------------------------------------------------------------------------
 
-export type OpticKind = "iso" | "lens" | "prism" | "affine"
+/**
+ * Base interface for optic type lambdas.
+ *
+ * Each optic kind defines an interface extending this with a `Target` field
+ * that references `this["S"]` and `this["A"]` to compute the concrete type.
+ * `Kind<F, S, A>` "applies" the lambda by intersecting with `{S: S, A: A}`
+ * and reading `Target`.
+ */
+export interface OpticTypeLambda {
+  readonly S: unknown
+  readonly A: unknown
+  readonly Target: unknown
+}
+
+/**
+ * Apply an optic type lambda to concrete type arguments.
+ *
+ * @example
+ * ```typescript
+ * type Result = Kind<LensTypeLambda, User, string>
+ * //   ^? Lens<User, string>
+ * ```
+ */
+export type Kind<F extends OpticTypeLambda, S, A> =
+  (F & { readonly S: S; readonly A: A })["Target"]
 
 // ---------------------------------------------------------------------------
-// Type-level composition table
+// Concrete type lambdas — one per optic kind
 // ---------------------------------------------------------------------------
 
-export type ComposeKinds<K1 extends OpticKind, K2 extends OpticKind> =
-  K1 extends "iso" ? K2 :
-  K2 extends "iso" ? K1 :
-  K1 extends "lens" ? (K2 extends "lens" ? "lens" : "affine") :
-  K1 extends "prism" ? (K2 extends "prism" ? "prism" : "affine") :
-  "affine"
+/** Type lambda for Iso: `Kind<IsoTypeLambda, S, A>` = `Iso<S, A>` */
+export interface IsoTypeLambda extends OpticTypeLambda {
+  readonly Target: Iso<this["S"], this["A"]>
+}
+
+/** Type lambda for Lens: `Kind<LensTypeLambda, S, A>` = `Lens<S, A>` */
+export interface LensTypeLambda extends OpticTypeLambda {
+  readonly Target: Lens<this["S"], this["A"]>
+}
+
+/** Type lambda for Prism: `Kind<PrismTypeLambda, S, A>` = `Prism<S, A>` */
+export interface PrismTypeLambda extends OpticTypeLambda {
+  readonly Target: Prism<this["S"], this["A"]>
+}
+
+/** Type lambda for Affine: `Kind<AffineTypeLambda, S, A>` = `Affine<S, A>` */
+export interface AffineTypeLambda extends OpticTypeLambda {
+  readonly Target: Affine<this["S"], this["A"]>
+}
 
 // ---------------------------------------------------------------------------
-// Resolve kind -> concrete interface
+// Composition table — maps pairs of type lambdas to the result type lambda
 // ---------------------------------------------------------------------------
 
-export type ResolveOptic<K extends OpticKind, S, A> =
-  K extends "iso" ? Iso<S, A> :
-  K extends "lens" ? Lens<S, A> :
-  K extends "prism" ? Prism<S, A> :
-  K extends "affine" ? Affine<S, A> :
-  never
+/**
+ * Type-level composition of optic type lambdas.
+ *
+ * Mirrors the subtyping lattice: composing with Iso preserves kind,
+ * same-kind composition preserves kind, cross-kind yields Affine.
+ */
+export type ComposeOptics<F extends OpticTypeLambda, G extends OpticTypeLambda> =
+  F extends IsoTypeLambda ? G :
+  G extends IsoTypeLambda ? F :
+  F extends LensTypeLambda ? (G extends LensTypeLambda ? LensTypeLambda : AffineTypeLambda) :
+  F extends PrismTypeLambda ? (G extends PrismTypeLambda ? PrismTypeLambda : AffineTypeLambda) :
+  AffineTypeLambda
 
 // ---------------------------------------------------------------------------
-// OpticBase — shared methods, parameterized by kind
+// OpticBase — shared methods, parameterized by type lambda
 // ---------------------------------------------------------------------------
 
-export interface OpticBase<K extends OpticKind, S, A> {
-  readonly _kind: K
+/**
+ * Base interface for all single-target optics, parameterized by a type lambda F.
+ *
+ * The compose method uses ComposeOptics to compute the result type at the
+ * type level — one signature handles all kind combinations.
+ */
+export interface OpticBase<F extends OpticTypeLambda, S, A> {
+  /** Phantom discriminant — provides structural distinction between optic kinds. */
+  readonly _F?: F
 
   /** The raw get function (Either-based). Part of the optic contract. */
   readonly getOptic: (s: S) => Either<A, Error>
   /** The raw set function (Either-based). Part of the optic contract. */
   readonly setOptic: (a: A) => (s: S) => Either<S, Error>
 
-  /**
-   * Compose this optic with a Traversal, yielding a Traversal.
-   */
+  /** Compose this optic with a Traversal, yielding a Traversal. */
   compose<B>(that: Traversal<A, B>): Traversal<S, B>
 
   /**
    * Compose this optic with another single-target optic.
-   * Result kind is computed at the type level via ComposeKinds — no overloads needed.
+   * Result kind is computed at the type level via ComposeOptics.
    */
-  compose<K2 extends OpticKind, B>(
-    that: OpticBase<K2, A, B>
-  ): ResolveOptic<ComposeKinds<K, K2>, S, B>
+  compose<G extends OpticTypeLambda, B>(
+    that: OpticBase<G, A, B>
+  ): Kind<ComposeOptics<F, G>, S, B>
 
   /** Transform the focus value in place. Works on all optic types. */
   modify(f: (a: A) => A): (s: S) => S
@@ -112,14 +158,11 @@ export interface OpticBase<K extends OpticKind, S, A> {
 }
 
 // ---------------------------------------------------------------------------
-// Concrete optic interfaces — each extends OpticBase with its kind tag
-//
-// No conditional types in the interface bodies — this is what makes
-// compose inference work.
+// Concrete optic interfaces — each extends OpticBase with its type lambda
 // ---------------------------------------------------------------------------
 
 /** Isomorphism: total bidirectional conversion. */
-export interface Iso<S, A> extends OpticBase<"iso", S, A> {
+export interface Iso<S, A> extends OpticBase<IsoTypeLambda, S, A> {
   readonly from: (s: S) => A
   readonly to: (a: A) => S
   readonly get: (s: S) => A
@@ -130,7 +173,7 @@ export interface Iso<S, A> extends OpticBase<"iso", S, A> {
 }
 
 /** Lens: total get, whole-dependent set. */
-export interface Lens<S, A> extends OpticBase<"lens", S, A> {
+export interface Lens<S, A> extends OpticBase<LensTypeLambda, S, A> {
   /** Read the focused value. Always succeeds. */
   readonly get: (s: S) => A
   /** Write the focused value, returning a new whole. */
@@ -140,7 +183,7 @@ export interface Lens<S, A> extends OpticBase<"lens", S, A> {
 }
 
 /** Prism: partial get, whole-independent set (has review). */
-export interface Prism<S, A> extends OpticBase<"prism", S, A> {
+export interface Prism<S, A> extends OpticBase<PrismTypeLambda, S, A> {
   /** Try to extract A. Returns null if not present. */
   readonly preview: (s: S) => A | null
   /** Embed A into S. */
@@ -150,18 +193,45 @@ export interface Prism<S, A> extends OpticBase<"prism", S, A> {
 }
 
 /** Affine/Optional: partial get, whole-dependent set. */
-export interface Affine<S, A> extends OpticBase<"affine", S, A> {
+export interface Affine<S, A> extends OpticBase<AffineTypeLambda, S, A> {
   /** Try to extract A. Returns null if not present. */
   readonly preview: (s: S) => A | null
   /** Write A back if the target exists. Returns S unchanged if target absent. */
   readonly set: (a: A, s: S) => S
 }
 
-/**
- * `Optic` — convenience alias mapping a kind tag to its concrete interface.
- * Usage: `Optic<"lens", S, A>` is the same as `Lens<S, A>`.
- */
+// ---------------------------------------------------------------------------
+// Backward-compatible type aliases
+// ---------------------------------------------------------------------------
+
+/** String-literal optic kind tags — backward compat. */
+export type OpticKind = "iso" | "lens" | "prism" | "affine"
+
+/** Map a string kind tag to its type lambda. */
+export type KindToLambda<K extends OpticKind> =
+  K extends "iso" ? IsoTypeLambda :
+  K extends "lens" ? LensTypeLambda :
+  K extends "prism" ? PrismTypeLambda :
+  K extends "affine" ? AffineTypeLambda :
+  never
+
+/** Compose string-based kind tags. Backward compat wrapper over ComposeOptics. */
+export type ComposeKinds<K1 extends OpticKind, K2 extends OpticKind> =
+  ComposeOptics<KindToLambda<K1>, KindToLambda<K2>> extends IsoTypeLambda ? "iso" :
+  ComposeOptics<KindToLambda<K1>, KindToLambda<K2>> extends LensTypeLambda ? "lens" :
+  ComposeOptics<KindToLambda<K1>, KindToLambda<K2>> extends PrismTypeLambda ? "prism" :
+  ComposeOptics<KindToLambda<K1>, KindToLambda<K2>> extends AffineTypeLambda ? "affine" :
+  "affine"
+
+/** Resolve a string kind tag to a concrete optic type. Backward compat. */
+export type ResolveOptic<K extends OpticKind, S, A> = Kind<KindToLambda<K>, S, A>
+
+/** Convenience alias: `Optic<"lens", S, A>` = `Lens<S, A>`. */
 export type Optic<K extends OpticKind, S, A> = ResolveOptic<K, S, A>
+
+// ---------------------------------------------------------------------------
+// Traversal
+// ---------------------------------------------------------------------------
 
 /**
  * Traversal: focuses on zero or more targets within a whole.
@@ -196,9 +266,9 @@ export interface Traversal<S, A> {
 
 const enum OpticTag { Lens, Prism }
 
-class OpticImpl<K extends OpticKind, S, A> {
-  /** Phantom — exists only at the type level for structural discrimination. */
-  declare readonly _kind: K
+class OpticImpl<F extends OpticTypeLambda, S, A> {
+  /** Phantom — structural discrimination via the type lambda. */
+  declare readonly _F?: F
 
   readonly getDelta?: (parentDelta: unknown) => unknown | undefined
 
@@ -221,8 +291,6 @@ class OpticImpl<K extends OpticKind, S, A> {
 
   set(a: A, s: S): S {
     const r = this.setOptic(a)(s)
-    // On failure, return whole unchanged. For Lens/Affine S≡S;
-    // for Prism/Iso this branch is unreachable (setOptic always succeeds).
     if (!isRight(r)) return s
     return r.right
   }
@@ -230,7 +298,6 @@ class OpticImpl<K extends OpticKind, S, A> {
   from(s: S): A { return this.get(s) }
 
   to(a: A): S {
-    // Meaningful for Prism/Iso only, where setOptic ignores the whole parameter.
     const r = this.setOptic(a)(undefined as S)
     if (!isRight(r)) throw new Error("to/review failed")
     return r.right
@@ -264,18 +331,12 @@ class OpticImpl<K extends OpticKind, S, A> {
   }
 
   // -- Composition --
-  //
-  // Two overloads: one for Traversal, one for single-target optics.
-  // The Traversal overload must come first so that objects with both
-  // getAll/modifyAll AND getOptic don't accidentally match the wrong one.
 
   compose<B>(that: Traversal<A, B>): Traversal<S, B>
-  compose<K2 extends OpticKind, B>(that: OpticBase<K2, A, B>): ResolveOptic<ComposeKinds<K, K2>, S, B>
+  compose<G extends OpticTypeLambda, B>(that: OpticBase<G, A, B>): Kind<ComposeOptics<F, G>, S, B>
   compose(
-    // Implementation signature: broad enough for both overloads.
-    // Type safety is provided by the overload signatures above.
-    that: Traversal<A, unknown> | OpticBase<OpticKind, A, unknown>
-  ): Traversal<S, unknown> | Iso<S, unknown> | Lens<S, unknown> | Prism<S, unknown> | Affine<S, unknown> | OpticImpl<OpticKind, S, unknown> {
+    that: Traversal<A, unknown> | OpticBase<OpticTypeLambda, A, unknown>
+  ): Traversal<S, unknown> | Iso<S, unknown> | Lens<S, unknown> | Prism<S, unknown> | Affine<S, unknown> | OpticImpl<OpticTypeLambda, S, unknown> {
     // Detect Traversal: has getAll/modifyAll but NOT getOptic
     if (
       that !== null &&
@@ -304,8 +365,8 @@ class OpticImpl<K extends OpticKind, S, A> {
     }
 
     // Single-target optic composition
-    const other = that as OpticBase<OpticKind, A, unknown>
-    const otherImpl = other as OpticImpl<OpticKind, A, unknown>
+    const other = that as OpticBase<OpticTypeLambda, A, unknown>
+    const otherImpl = other as OpticImpl<OpticTypeLambda, A, unknown>
     const selfGet = this.getOptic
     const selfSet = this.setOptic
     const selfGetDelta = this.getDelta
@@ -329,7 +390,7 @@ class OpticImpl<K extends OpticKind, S, A> {
       : OpticTag.Prism
 
     if (resultTag === OpticTag.Lens) {
-      return new OpticImpl<OpticKind, S, unknown>(
+      return new OpticImpl<OpticTypeLambda, S, unknown>(
         OpticTag.Lens,
         (s: S): Either<unknown, Error> => {
           const outer = selfGet(s)
@@ -346,7 +407,7 @@ class OpticImpl<K extends OpticKind, S, A> {
         composedGetDelta,
       )
     } else {
-      return new OpticImpl<OpticKind, S, unknown>(
+      return new OpticImpl<OpticTypeLambda, S, unknown>(
         OpticTag.Prism,
         (s: S): Either<unknown, Error> => {
           const outer = selfGet(s)
@@ -376,7 +437,7 @@ class OpticImpl<K extends OpticKind, S, A> {
  *   from(to(a)) === a
  */
 export function isoOf<S, A>(from: (s: S) => A, to: (a: A) => S): Iso<S, A> {
-  return new OpticImpl<"iso", S, A>(
+  return new OpticImpl<IsoTypeLambda, S, A>(
     OpticTag.Prism, // Iso uses prism composition (set doesn't need whole)
     (s: S) => right(from(s)),
     (a: A) => (_s: S) => right(to(a)),
@@ -396,7 +457,7 @@ export function lensOf<S, A>(
   set: (a: A, s: S) => S,
   getDelta?: (parentDelta: unknown) => unknown | undefined,
 ): Lens<S, A> {
-  return new OpticImpl<"lens", S, A>(
+  return new OpticImpl<LensTypeLambda, S, A>(
     OpticTag.Lens,
     (s: S) => right(get(s)),
     (a: A) => (s: S) => right(set(a, s)),
@@ -415,7 +476,7 @@ export function prismOf<S, A>(
   review: (a: A) => S,
   getDelta?: (parentDelta: unknown) => unknown | undefined,
 ): Prism<S, A> {
-  return new OpticImpl<"prism", S, A>(
+  return new OpticImpl<PrismTypeLambda, S, A>(
     OpticTag.Prism,
     (s: S): Either<A, Error> => {
       const a = preview(s)
@@ -436,7 +497,7 @@ export function affineOf<S, A>(
   set: (a: A, s: S) => S,
   getDelta?: (parentDelta: unknown) => unknown | undefined,
 ): Affine<S, A> {
-  return new OpticImpl<"affine", S, A>(
+  return new OpticImpl<AffineTypeLambda, S, A>(
     OpticTag.Lens, // Affine uses lens composition (set needs whole)
     (s: S): Either<A, Error> => {
       const a = preview(s)
@@ -545,9 +606,6 @@ export function composeLenses<A, B, C, D, E>(
   cd: Lens<C, D>,
   de: Lens<D, E>
 ): Lens<A, E>
-// Implementation: the overload signatures provide full type safety.
-// Lens is invariant, so no concrete Lens type can serve as a uniform accumulator.
-// We cast through OpticImpl internally to chain compose calls.
 export function composeLenses(...lenses: Array<Lens<unknown, unknown>>): Lens<unknown, unknown> {
   return lenses.reduce(
     (acc, l) => acc.compose(l)
@@ -787,7 +845,7 @@ function _buildTraversal<S, A>(
       }
     },
     compose<B>(
-      that: Traversal<A, B> | OpticBase<OpticKind, A, B>
+      that: Traversal<A, B> | OpticBase<OpticTypeLambda, A, B>
     ): Traversal<S, B> {
       // Traversal + Traversal (has getAll/modifyAll)
       if ("getAll" in that && "modifyAll" in that) {
@@ -806,7 +864,7 @@ function _buildTraversal<S, A>(
         )
       }
       // Traversal + single-target optic (Lens/Prism/Affine/Iso)
-      const optic = that as OpticBase<OpticKind, A, B>
+      const optic = that as OpticBase<OpticTypeLambda, A, B>
       const otherGet = optic.getOptic
       const otherSet = optic.setOptic
       return _buildTraversal<S, B>(
