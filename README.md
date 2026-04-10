@@ -276,8 +276,6 @@ Layer 2  React boundary component                [complete]
 Layer 1  Core library                            [complete]
 ```
 
-See [ROADMAP.md](./ROADMAP.md) for details on each layer.
-
 ## License
 
 MIT

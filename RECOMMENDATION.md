@@ -159,9 +159,15 @@ updates. Items never reorder — additions and removals happen at the end only.
 
 ## Row Templates
 
-For most cases, `element()` chains or JSX are fine. For performance-critical
-list rows, a hand-written `compiled()` template eliminates per-field observer
-subscriptions:
+**JSX and `h()` already use template cloning by default.** Both go through
+`compileSpecCloned`, which builds a `<template>` element once and clones it
+via `cloneNode(true)` for each instance. This means JSX/`h()` rows already
+get fast initial rendering — you don't need to do anything special.
+
+The only remaining advantage of hand-written `compiled()` is **hand-optimized
+update logic**: direct field comparisons instead of generic updater closures.
+This matters when you have thousands of rows being updated frequently and
+want to squeeze out the last bit of per-update overhead.
 
 ```typescript
 import { compiled } from "static-dom"
@@ -192,14 +198,14 @@ const rowView = compiled<Row, never>((parent, model, _dispatch) => {
 })
 ```
 
-This is 4-6x faster than `element()` chains because it has a single observer
-instead of one per leaf. Paired with `incrementalArray`, it reaches 177k
+Paired with `incrementalArray`, hand-written `compiled()` reaches 177k
 ops/sec — within 14% of Solid.
 
-**Use for:** Hot-path list rows in large tables.
+**Use for:** Extreme cases — 10k+ row tables with frequent targeted updates
+where you've profiled and the generic update path is the bottleneck.
 
-**Don't bother for:** Non-list components, infrequently-updated views, small
-lists. The `element()`/JSX path is cleaner and the difference doesn't matter.
+**Don't bother for:** Most apps. JSX/`h()` with template cloning is already
+fast and much more maintainable.
 
 ---
 
