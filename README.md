@@ -32,7 +32,7 @@ export default defineConfig({ plugins: [sdomJsx()] })
 Then write views as JSX:
 
 ```tsx
-import { typed, Show } from "static-dom/jsx-runtime"
+import { typed } from "static-dom/jsx-runtime"
 import { program } from "static-dom"
 
 interface Model { count: number }
