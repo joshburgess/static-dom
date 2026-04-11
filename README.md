@@ -151,30 +151,27 @@ Choose a list constructor based on your update pattern:
 
 `incrementalArray` skips reconciliation entirely — O(1) per update regardless of list size. See [RECOMMENDATION.md](./RECOMMENDATION.md) for detailed guidance.
 
-## Optics
+## Focusing on sub-models
 
-Built-in optics for focusing components on sub-models. The type system tracks composition automatically:
-
-```
-       Iso
-     /     \
-  Lens     Prism
-     \     /
-     Affine
-       |
-    Traversal
-```
+Components often operate on a slice of the app model. Use `.focus()` with a path to zoom in:
 
 ```typescript
-import { prop, at, each, prismOf, nullablePrism } from "static-dom"
+import { at } from "static-dom"
+
+// at() builds a type-safe path into your model
+const nameLens = at<AppModel>()("user", "profile", "name")
+// Lens<AppModel, string> — reads and writes model.user.profile.name
 
 // Focus a reusable component on a sub-model
-const nameInput = stringInput.focus(prop<User>()("name"))
+const nameInput = stringInput.focus(nameLens)
+```
 
-// Deep path access
-const deepLens = at<AppModel>()("user", "profile", "name")
+Under the hood, `at()` and `prop()` build **lenses** — composable accessors from the optics tradition. You don't need to know optics to use them, but the full system is there if you want it: `Iso`, `Lens`, `Prism`, `Affine`, and `Traversal` with type-safe composition.
 
-// Traverse all elements
+```typescript
+import { prop, each } from "static-dom"
+
+// Compose optics to traverse nested structures
 const allNames = prop<Model>()("users").compose(each<User>()).compose(prop<User>()("name"))
 allNames.getAll(model) // ["Alice", "Bob"]
 ```
