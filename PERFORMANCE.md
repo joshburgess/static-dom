@@ -1,14 +1,14 @@
-# SDOM Performance Architecture
+# static-dom Performance Architecture
 
-This document describes the optimization techniques used in SDOM, their
+This document describes the optimization techniques used in static-dom, their
 origins, and how they compose into the tiered performance model.
 
 ## Core principle
 
-SDOM's foundational insight (from Phil Freeman's purescript-sdom) is that most
+static-dom's foundational insight (from Phil Freeman's purescript-sdom) is that most
 UI updates don't change DOM structure — they change text, attributes, and
 classes. By fixing the DOM tree at mount time and only patching leaf values,
-SDOM eliminates the virtual DOM diff entirely.
+static-dom eliminates the virtual DOM diff entirely.
 
 This means update cost is proportional to **what changed**, not **tree size**.
 A single row update in a 1,000-row table patches one text node — O(1), not
@@ -46,7 +46,7 @@ entirely, avoiding function calls and array allocations for elements without
 attributes or children.
 
 Inferno uses more granular flags (`VNodeFlags`, `ChildFlags`) to classify
-vnodes for optimized diffing. SDOM's approach is simpler because there's no
+vnodes for optimized diffing. static-dom's approach is simpler because there's no
 diff — the flags just gate whether to run updaters.
 
 **File:** `src/constructors.ts` — `element()` function, flag computation.
@@ -65,7 +65,7 @@ model → composedLens → subscription → updater.
 
 Subscription containers store the first observer directly in a field (`observer`)
 instead of allocating a `Set`. Only when a second subscriber arrives does the
-Set get created. Since most SDOM nodes have exactly one subscriber, this avoids
+Set get created. Since most static-dom nodes have exactly one subscriber, this avoids
 Set allocation and iteration overhead for the common case.
 
 **File:** `src/incremental.ts` — `ItemEntry` type, `src/program.ts` — `deltaUpdates`.
@@ -88,7 +88,7 @@ Most.js achieves performance by fusing stream operators — eliminating
 intermediate allocations and function calls by composing operations at
 subscription time rather than at event time.
 
-SDOM applies this principle via `_fastPatchHandler`: when `programWithDelta`
+static-dom applies this principle via `_fastPatchHandler`: when `programWithDelta`
 sees a single-item keyed patch delta, it short-circuits the entire subscription
 chain and calls the handler directly:
 
@@ -123,7 +123,7 @@ dispatch, bypassing the model transformation entirely.
 ### `compiled()` fused templates (from Inferno.js)
 
 Inferno's compiler generates optimized `createVNode` calls with pre-classified
-flags. SDOM's `compiled()` constructor takes a similar approach: the user
+flags. static-dom's `compiled()` constructor takes a similar approach: the user
 provides a single function that creates DOM nodes and returns an `update`
 callback. This fuses all per-element overhead into one observer:
 
@@ -155,7 +155,7 @@ it uses the Longest Increasing Subsequence algorithm to compute the minimum
 number of DOM moves needed to reorder elements. This is O(n log n) vs the
 naive O(n) approach that may perform unnecessary moves.
 
-Inferno pioneered this approach in the vdom world; SDOM applies it to its
+Inferno pioneered this approach in the vdom world; static-dom applies it to its
 keyed array reconciliation.
 
 **File:** `src/constructors.ts` — `lis()`.
@@ -208,9 +208,9 @@ Tier 3 — patchItem + compiled + disabled guards
         (1 observer per item), disabled runtime checks
 ```
 
-## Architectural boundary: SDOM vs Solid
+## Architectural boundary: static-dom vs Solid
 
-SDOM's architecture passes whole model objects through a subscription chain:
+static-dom's architecture passes whole model objects through a subscription chain:
 
 ```
 model change → signal → observer → lens.get → subscription → updaters → DOM
@@ -222,13 +222,13 @@ Solid.js wires each leaf value to its DOM node at creation time:
 signal change → effect → DOM
 ```
 
-The fundamental difference: SDOM does a Map lookup + model object comparison
+The fundamental difference: static-dom does a Map lookup + model object comparison
 per update. Solid does a direct function call. In happy-dom (where DOM writes
 are ~20ns), this difference is ~50x. In a real browser (where DOM writes are
 ~1-5us), both frameworks are bottlenecked by the same single DOM write, and
 the gap compresses to ~1.25x.
 
-SDOM's architecture trades per-update overhead for simplicity: the whole-model
+static-dom's architecture trades per-update overhead for simplicity: the whole-model
 approach means components are plain functions from model to leaf values, with
 no signal wiring, no dependency tracking, and no reactive graph. This makes
 the programming model simpler and components more testable, at the cost of a

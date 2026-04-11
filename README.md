@@ -96,7 +96,7 @@ All authoring styles produce the same runtime code — pick whichever you prefer
 
 ## Architecture
 
-SDOM uses the Elm architecture: a model, messages, and a pure update function.
+static-dom uses the Elm architecture: a model, messages, and a pure update function.
 
 ```typescript
 program({
@@ -178,7 +178,7 @@ allNames.getAll(model) // ["Alice", "Bob"]
 
 ## React interop
 
-Drop SDOM subtrees into existing React apps:
+Drop static-dom subtrees into existing React apps:
 
 ```tsx
 import { SDOMBoundary } from "static-dom/react"
@@ -195,7 +195,7 @@ function App({ model, onMsg }) {
 
 ## Performance
 
-On targeted updates (single row in a 1,000-row table), SDOM's incremental path reaches 88% of Solid.js throughput while using a simpler whole-model architecture — no signals, no dependency tracking. On bulk attribute updates, the basic `array()` path beats Solid by 17%.
+On targeted updates (single row in a 1,000-row table), static-dom's incremental path reaches 88% of Solid.js throughput while using a simpler whole-model architecture — no signals, no dependency tracking. On bulk attribute updates, the basic `array()` path beats Solid by 17%.
 
 See [BENCHMARKS.md](./BENCHMARKS.md) for full results and [RECOMMENDATION.md](./RECOMMENDATION.md) for tuning guidance.
 

@@ -1,4 +1,4 @@
-# SDOM Benchmarks
+# static-dom Benchmarks
 
 All results collected on Chromium via Playwright, using Vitest's bench runner (Tinybench).
 
@@ -38,10 +38,10 @@ attribute setting, text content, and DOM tree assembly throughput.
 | solid | 99 | 1.04x | Per-row createEffect + signals |
 | preact | 48 | 2.14x | |
 | react | 46 | 2.26x | |
-| sdom (production) | 37 | 2.78x | element()/text() constructors, guards off |
-| sdom (dev) | 37 | 2.78x | Guards + dev mode on |
-| **sdom (jsx + cloning)** | **31** | **3.28x** | Template cloning — innerHTML + static attr baking (default) |
-| sdom (jsx createElement) | 28 | 3.70x | Legacy direct createElement path |
+| static-dom (production) | 37 | 2.78x | element()/text() constructors, guards off |
+| static-dom (dev) | 37 | 2.78x | Guards + dev mode on |
+| **static-dom (jsx + cloning)** | **31** | **3.28x** | Template cloning — innerHTML + static attr baking (default) |
+| static-dom (jsx createElement) | 28 | 3.70x | Legacy direct createElement path |
 
 **Takeaway:** Template cloning (now the default for JSX/h/html/htm) is 12.5% faster
 than the legacy createElement path for initial render with simple row templates. The
@@ -54,36 +54,36 @@ cloning's advantage grows to ~38%.
 ### Single Row Update — 1k rows
 
 Update one row's label in a 1k-row table. Tests the cost of detecting and applying a
-single change. This is SDOM's strongest scenario — keyed array reconciliation fans out
+single change. This is static-dom's strongest scenario — keyed array reconciliation fans out
 updates per-item, so only the changed row's observers fire.
 
-**SDOM variant guide:**
+**static-dom variant guide:**
 
 | Variant | Technique |
 |---|---|
-| sdom | Standard `array()` with same-structure fast path |
-| sdom (incremental) | `incrementalArray` with keyed deltas — O(1) per patch, no reconciliation |
-| sdom (compiled) | `programWithDelta` fast-path + element row template |
-| sdom (indexed) | `indexedArray` — non-keyed positional patching, no Map overhead |
-| sdom (direct-patch) | `patchItem()` API — bypasses dispatch, update, and subscription chain |
-| sdom (zero-copy) | `extractDelta` + `compiled()` fused row + pooledKeyedPatch + guards off |
+| static-dom | Standard `array()` with same-structure fast path |
+| static-dom (incremental) | `incrementalArray` with keyed deltas — O(1) per patch, no reconciliation |
+| static-dom (compiled) | `programWithDelta` fast-path + element row template |
+| static-dom (indexed) | `indexedArray` — non-keyed positional patching, no Map overhead |
+| static-dom (direct-patch) | `patchItem()` API — bypasses dispatch, update, and subscription chain |
+| static-dom (zero-copy) | `extractDelta` + `compiled()` fused row + pooledKeyedPatch + guards off |
 
 | Variant | ops/sec | vs solid | Notes |
 |---|---:|---:|---|
 | solid | 201,158 | 1.00x | Signal setter -> createEffect -> DOM write. O(1). |
-| **sdom (direct-patch)** | **176,592** | **1.14x** | Bypasses dispatch chain |
-| **sdom (zero-copy)** | **168,832** | **1.19x** | Full optimization stack |
-| **sdom (compiled)** | **49,874** | **4.03x** | programWithDelta fast-path |
-| **sdom (incremental)** | **49,710** | **4.05x** | Skips reconciliation via delta |
-| **sdom (indexed)** | **43,420** | **4.63x** | Positional patching |
-| **sdom** | **27,122** | **7.42x** | Same-structure fast path (key comparison only) |
+| **static-dom (direct-patch)** | **176,592** | **1.14x** | Bypasses dispatch chain |
+| **static-dom (zero-copy)** | **168,832** | **1.19x** | Full optimization stack |
+| **static-dom (compiled)** | **49,874** | **4.03x** | programWithDelta fast-path |
+| **static-dom (incremental)** | **49,710** | **4.05x** | Skips reconciliation via delta |
+| **static-dom (indexed)** | **43,420** | **4.63x** | Positional patching |
+| **static-dom** | **27,122** | **7.42x** | Same-structure fast path (key comparison only) |
 | inferno | 4,005 | 50.2x | createElement-based keyed diff |
 | inferno (optimized) | 2,202 | 91.4x | Pre-classified VNodes with flags |
 | preact | 1,215 | 165.6x | |
 | react | 448 | 449.2x | |
 
-**Takeaway:** SDOM's direct-patch path reaches within 14% of Solid's speed (~177k vs
-201k ops/sec). The basic `sdom` variant with same-structure fast path is 27k ops/sec —
+**Takeaway:** static-dom's direct-patch path reaches within 14% of Solid's speed (~177k vs
+201k ops/sec). The basic `static-dom` variant with same-structure fast path is 27k ops/sec —
 60x faster than React, 22x faster than Preact, and 6.8x faster than Inferno. The
 incremental/compiled paths skip reconciliation entirely at ~50k ops/sec.
 
@@ -98,17 +98,17 @@ comparison in the same-structure fast path.
 |---|---:|---:|---|
 | raw DOM | 730,942 | 1.00x | Direct textContent mutation |
 | solid | 369,958 | 1.98x | O(1) signal update |
-| **sdom** | **1,858** | **393x** | Same-structure fast path — key comparison + ref check |
+| **static-dom** | **1,858** | **393x** | Same-structure fast path — key comparison + ref check |
 | preact | 96 | 7,628x | Full vdom diff |
 | react | 45 | 16,154x | Full vdom diff |
 
-**Takeaway:** The same-structure fast path reduced SDOM's overhead from 2,507x to 393x
-vs raw DOM (6.4x improvement). SDOM is now 41x faster than React and 19x faster than
+**Takeaway:** The same-structure fast path reduced static-dom's overhead from 2,507x to 393x
+vs raw DOM (6.4x improvement). static-dom is now 41x faster than React and 19x faster than
 Preact at this scale. The remaining cost is the O(10k) key comparison loop + ref check
 loop + getItems() allocation (10k `{ key, model }` objects).
 
 The gap to Solid (393x vs 2x) reflects an architectural difference: Solid's per-signal
-updates are O(1), while SDOM's same-structure fast path is O(n) — it must verify all
+updates are O(1), while static-dom's same-structure fast path is O(n) — it must verify all
 10k keys match before dispatching the one update.
 
 ---
@@ -120,34 +120,34 @@ when the DOM structure doesn't change.
 
 | Variant | ops/sec | vs solid | Notes |
 |---|---:|---:|---|
-| **sdom** | **2,976** | **0.85x (17% faster)** | Same-structure fast path — skips reconciliation overhead |
-| sdom (incremental) | 2,574 | 1.01x | keyedOps with per-item patches |
+| **static-dom** | **2,976** | **0.85x (17% faster)** | Same-structure fast path — skips reconciliation overhead |
+| static-dom (incremental) | 2,574 | 1.01x | keyedOps with per-item patches |
 | solid | 2,539 | 1.00x | Per-item signal + createEffect, batched |
 | preact | 1,674 | 1.52x | |
 | react | 969 | 2.62x | |
 
-**Takeaway:** SDOM's same-structure fast path makes the basic `array()` path **17%
+**Takeaway:** static-dom's same-structure fast path makes the basic `array()` path **17%
 faster than Solid** for bulk attribute updates. When all items change, the fast path
 skips Map building, LIS computation, and removal checks — it just iterates items and
-dispatches updates. SDOM beats React by 3.1x and Preact by 1.8x.
+dispatches updates. static-dom beats React by 3.1x and Preact by 1.8x.
 
 ---
 
 ### Array Reorder — 1k items
 
-Tests SDOM's LIS-based keyed reconciliation under various mutation patterns. The
+Tests static-dom's LIS-based keyed reconciliation under various mutation patterns. The
 reconciler uses a Longest Increasing Subsequence algorithm (ported from Inferno) to
 minimize DOM `insertBefore` calls — only items NOT in the LIS require moves.
 
 | Operation | ops/sec | Notes |
 |---|---:|---|
-| sdom — append 100 | 2,676 | Best case: no moves, just mount new items |
-| sdom — reverse 1k | 2,023 | Pathological: LIS length 1, almost all items move |
-| sdom — shuffle 1k | 846 | Worst case: random permutation |
-| sdom — remove 100 | 440 | Remove from middle + teardown |
+| static-dom — append 100 | 2,676 | Best case: no moves, just mount new items |
+| static-dom — reverse 1k | 2,023 | Pathological: LIS length 1, almost all items move |
+| static-dom — shuffle 1k | 846 | Worst case: random permutation |
+| static-dom — remove 100 | 440 | Remove from middle + teardown |
 | react — shuffle 1k | 443 | React's keyed diff for comparison |
 
-**Takeaway:** SDOM's shuffle is 1.9x faster than React's keyed diff. Reverse
+**Takeaway:** static-dom's shuffle is 1.9x faster than React's keyed diff. Reverse
 (pathological case where almost every element moves) is surprisingly fast because the
 DOM moves are sequential `insertBefore` calls with predictable access patterns.
 
@@ -163,11 +163,11 @@ fresh items without markers.
 |---|---:|---:|---|
 | raw DOM | 105 | 1.00x | innerHTML = "" + build new tbody |
 | react | 46 | 2.31x | |
-| **sdom** | **29** | **3.65x** | Bulk replace: teardown all + textContent clear + fast mount |
+| **static-dom** | **29** | **3.65x** | Bulk replace: teardown all + textContent clear + fast mount |
 | preact | 1.6 | 65x | |
 
-**Takeaway:** The bulk replacement fast path improved SDOM from 4.3x to 3.65x vs raw
-DOM. SDOM detects that no old keys survive, skips marker insertion entirely, and uses
+**Takeaway:** The bulk replacement fast path improved static-dom from 4.3x to 3.65x vs raw
+DOM. static-dom detects that no old keys survive, skips marker insertion entirely, and uses
 the fast initial mount path (no markers, no fragments). React's 2.31x reflects its
 efficient vdom batch processing.
 
@@ -181,12 +181,12 @@ that existing keys form a prefix of the new list, skips full reconciliation.
 | Variant | ops/sec | vs raw DOM | Notes |
 |---|---:|---:|---|
 | raw DOM | 1,183 | 1.00x | Direct appendChild loop |
-| **sdom** | **196** | **6.05x** | Append fast path — prefix key check + mount new only |
+| **static-dom** | **196** | **6.05x** | Append fast path — prefix key check + mount new only |
 | preact | 39 | 30.5x | |
 | react | 26 | 46.3x | |
 
-**Takeaway:** The append-only fast path reduced SDOM's overhead from 19.9x to 6.05x vs
-raw DOM (3.3x improvement). SDOM is 5x faster than Preact and 7.6x faster than React.
+**Takeaway:** The append-only fast path reduced static-dom's overhead from 19.9x to 6.05x vs
+raw DOM (3.3x improvement). static-dom is 5x faster than Preact and 7.6x faster than React.
 The remaining cost is the O(10k) prefix key comparison to verify existing items haven't
 changed.
 
@@ -203,7 +203,7 @@ bulk-clears the container.
 | Variant | ops/sec | vs raw DOM | Notes |
 |---|---:|---:|---|
 | raw DOM | 6,635,586 | 1.00x | innerHTML = "" |
-| **sdom** | **4,853,678** | **1.37x** | |
+| **static-dom** | **4,853,678** | **1.37x** | |
 | preact | 3,385,799 | 1.96x | |
 | react | 973,555 | 6.82x | |
 
@@ -226,8 +226,8 @@ vs direct createElement chains.
 |---|---:|---:|---|
 | raw DOM (cloneNode + tree walk) | 192 | 1.00x | innerHTML template + firstChild/nextSibling |
 | raw DOM (createElement) | 167 | 1.15x | Direct createElement for all 15 elements |
-| **sdom (template cloning)** | **142** | **1.35x** | innerHTML + static attrs baked + walker bindings |
-| sdom (jsx compiled) | 103 | 1.87x | Direct createElement, single fused observer |
+| **static-dom (template cloning)** | **142** | **1.35x** | innerHTML + static attrs baked + walker bindings |
+| static-dom (jsx compiled) | 103 | 1.87x | Direct createElement, single fused observer |
 
 **Takeaway:** Template cloning (the rewritten engine) is **37.7% faster** than the
 createElement path for static-heavy templates. The key insight: static attributes
@@ -240,24 +240,24 @@ this template size. The crossover point is between 15-50 elements.
 
 ### Micro: Clone vs createElement (raw DOM, no framework overhead)
 
-Isolates the raw `cloneNode(true)` cost vs `createElement` chains with no SDOM overhead.
+Isolates the raw `cloneNode(true)` cost vs `createElement` chains with no static-dom overhead.
 
 | Template size | createElement | cloneNode | Winner |
 |---|---:|---:|---|
 | 15 elements, 3 dynamic | 2,825 ops/sec | 2,134 ops/sec | createElement (1.32x) |
 | 50 elements, 3 dynamic | 518 ops/sec | 594 ops/sec | **cloneNode (1.15x)** |
 
-At 15 elements, raw `cloneNode` is still slower — but SDOM's template cloning wins
+At 15 elements, raw `cloneNode` is still slower — but static-dom's template cloning wins
 because static attributes are baked into the HTML (no post-clone setAttribute calls).
 At 50 elements, `cloneNode` wins even in isolation.
 
 ---
 
-## Internal Benchmarks (SDOM-only)
+## Internal Benchmarks (static-dom only)
 
 ### Compiled Templates — 5-level tree, 10 dynamic attrs
 
-Compares the three SDOM compilation strategies for an update tick.
+Compares the three static-dom compilation strategies for an update tick.
 
 | Approach | ops/sec | vs element() |
 |---|---:|---:|
@@ -380,7 +380,7 @@ pattern through the optic chain.
    ops/sec — 60x faster than React, 22x faster than Preact. The zero-copy path reaches
    88% of Solid (~177k vs 201k ops/sec).
 
-2. **Bulk attribute updates:** SDOM's basic path (2,976 ops/sec) is **17% faster than
+2. **Bulk attribute updates:** static-dom's basic path (2,976 ops/sec) is **17% faster than
    Solid**, 3.1x faster than React.
 
 3. **Array reorder:** LIS-based reconciliation is 1.9x faster than React's keyed diff
@@ -399,7 +399,7 @@ pattern through the optic chain.
    vs Solid's 370k ops/sec. Solid's O(1) signals avoid this entirely.
 
 2. **getItems() allocation:** `array()` requires `.map()` to create n `{ key, model }`
-   wrapper objects per reconciliation. Use `arrayBy()` to avoid this — 19% faster at 10k.
+   wrapper objects per reconciliation. Use `arrayBy()` to avoid this — 19% faster at 10k rows.
 
 3. **Traversal fold/getAll overhead:** 17x for fold, 5x for composed getAll.
 

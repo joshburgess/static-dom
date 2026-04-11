@@ -1,6 +1,6 @@
 # Performance Recommendations
 
-Practical guidance for getting the best performance out of SDOM, based on
+Practical guidance for getting the best performance out of static-dom, based on
 Chromium benchmarks against React, Preact, Solid, and Inferno. See
 [BENCHMARKS.md](./BENCHMARKS.md) for full data.
 
@@ -225,7 +225,7 @@ fast and much more maintainable.
   chain, and full reconciliation. This is the zero-copy path.
 
 - **`patchItem`**: Direct item-level patching that bypasses the entire dispatch
-  chain. The fastest possible update path in SDOM.
+  chain. The fastest possible update path in static-dom.
 
 ```typescript
 programWithDelta<Model, Msg>({
