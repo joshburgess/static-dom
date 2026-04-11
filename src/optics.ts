@@ -116,6 +116,15 @@ export type ComposeOptics<F extends OpticTypeLambda, G extends OpticTypeLambda> 
   F extends PrismTypeLambda ? (G extends PrismTypeLambda ? PrismTypeLambda : AffineTypeLambda) :
   AffineTypeLambda
 
+/**
+ * Result of composing an OpticBase<F> with a Getter.
+ * Iso/Lens + Getter = Getter. Prism/Affine + Getter = Fold.
+ */
+export type ComposeWithGetter<F extends OpticTypeLambda, S, B> =
+  F extends IsoTypeLambda ? Getter<S, B> :
+  F extends LensTypeLambda ? Getter<S, B> :
+  Fold<S, B>
+
 // ---------------------------------------------------------------------------
 // OpticBase — shared methods, parameterized by type lambda
 // ---------------------------------------------------------------------------
@@ -137,6 +146,15 @@ export interface OpticBase<F extends OpticTypeLambda, S, A> {
 
   /** Compose this optic with a Traversal, yielding a Traversal. */
   compose<B>(that: Traversal<A, B>): Traversal<S, B>
+
+  /** Compose with a Getter. Yields Getter if this is Iso/Lens, Fold otherwise. */
+  compose<B>(that: Getter<A, B>): ComposeWithGetter<F, S, B>
+
+  /** Compose with a Fold, yielding a Fold. */
+  compose<B>(that: Fold<A, B>): Fold<S, B>
+
+  /** Compose with a Setter, yielding a Setter. */
+  compose<B>(that: Setter<A, B>): Setter<S, B>
 
   /**
    * Compose this optic with another single-target optic.
@@ -258,6 +276,90 @@ export interface Traversal<S, A> {
   compose<B>(that: Prism<A, B>): Traversal<S, B>
   /** Compose with an Affine. */
   compose<B>(that: Affine<A, B>): Traversal<S, B>
+  /** Compose with a Getter, yielding a Fold. */
+  compose<B>(that: Getter<A, B>): Fold<S, B>
+  /** Compose with a Fold. */
+  compose<B>(that: Fold<A, B>): Fold<S, B>
+  /** Compose with a Setter. */
+  compose<B>(that: Setter<A, B>): Setter<S, B>
+}
+
+// ---------------------------------------------------------------------------
+// Getter — read-only single-target optic
+// ---------------------------------------------------------------------------
+
+/** Getter: read-only total access. Like a Lens without set. */
+export interface Getter<S, A> {
+  /** Read the focused value. Always succeeds. */
+  readonly get: (s: S) => A
+  /** Compose with another Getter. */
+  compose<B>(that: Getter<A, B>): Getter<S, B>
+  /** Compose with a Lens (read part only). */
+  compose<B>(that: Lens<A, B>): Getter<S, B>
+  /** Compose with an Iso. */
+  compose<B>(that: Iso<A, B>): Getter<S, B>
+  /** Compose with a Prism → Fold (may fail). */
+  compose<B>(that: Prism<A, B>): Fold<S, B>
+  /** Compose with an Affine → Fold (may fail). */
+  compose<B>(that: Affine<A, B>): Fold<S, B>
+  /** Compose with a Fold. */
+  compose<B>(that: Fold<A, B>): Fold<S, B>
+  /** Compose with a Traversal → Fold. */
+  compose<B>(that: Traversal<A, B>): Fold<S, B>
+}
+
+// ---------------------------------------------------------------------------
+// Fold — read-only multi-target optic
+// ---------------------------------------------------------------------------
+
+/** Fold: read-only access to zero or more targets. Like a Traversal without modify. */
+export interface Fold<S, A> {
+  /** Extract all focused values. */
+  readonly getAll: (s: S) => ReadonlyArray<A>
+  /** Fold all focused values using a combining function and initial value. */
+  readonly fold: <R>(f: (acc: R, a: A) => R, initial: R) => (s: S) => R
+  /** Compose with any read-capable optic → Fold. */
+  compose<B>(that: Fold<A, B>): Fold<S, B>
+  compose<B>(that: Getter<A, B>): Fold<S, B>
+  compose<B>(that: Lens<A, B>): Fold<S, B>
+  compose<B>(that: Prism<A, B>): Fold<S, B>
+  compose<B>(that: Affine<A, B>): Fold<S, B>
+  compose<B>(that: Traversal<A, B>): Fold<S, B>
+}
+
+// ---------------------------------------------------------------------------
+// Setter — write-only optic
+// ---------------------------------------------------------------------------
+
+/** Setter: write-only modification. Like a Traversal without getAll. */
+export interface Setter<S, A> {
+  /** Transform the focused value(s). */
+  readonly modify: (f: (a: A) => A) => (s: S) => S
+  /** Replace the focused value(s). */
+  readonly set: (a: A) => (s: S) => S
+  /** Compose with any write-capable optic → Setter. */
+  compose<B>(that: Setter<A, B>): Setter<S, B>
+  compose<B>(that: Lens<A, B>): Setter<S, B>
+  compose<B>(that: Iso<A, B>): Setter<S, B>
+  compose<B>(that: Prism<A, B>): Setter<S, B>
+  compose<B>(that: Affine<A, B>): Setter<S, B>
+  compose<B>(that: Traversal<A, B>): Setter<S, B>
+}
+
+// ---------------------------------------------------------------------------
+// Review — write-only construction (reverse of Getter)
+// ---------------------------------------------------------------------------
+
+/** Review: construct S from A. The write-only counterpart of Getter. */
+export interface Review<S, A> {
+  /** Construct an S from an A. */
+  readonly review: (a: A) => S
+  /** Compose with another Review. */
+  compose<B>(that: Review<A, B>): Review<S, B>
+  /** Compose with a Prism (review part only). */
+  compose<B>(that: Prism<A, B>): Review<S, B>
+  /** Compose with an Iso. */
+  compose<B>(that: Iso<A, B>): Review<S, B>
 }
 
 // ---------------------------------------------------------------------------
@@ -333,10 +435,67 @@ class OpticImpl<F extends OpticTypeLambda, S, A> {
   // -- Composition --
 
   compose<B>(that: Traversal<A, B>): Traversal<S, B>
+  compose<B>(that: Getter<A, B>): ComposeWithGetter<F, S, B>
+  compose<B>(that: Fold<A, B>): Fold<S, B>
+  compose<B>(that: Setter<A, B>): Setter<S, B>
   compose<G extends OpticTypeLambda, B>(that: OpticBase<G, A, B>): Kind<ComposeOptics<F, G>, S, B>
   compose(
-    that: Traversal<A, unknown> | OpticBase<OpticTypeLambda, A, unknown>
-  ): Traversal<S, unknown> | Iso<S, unknown> | Lens<S, unknown> | Prism<S, unknown> | Affine<S, unknown> | OpticImpl<OpticTypeLambda, S, unknown> {
+    that: Traversal<A, unknown> | Getter<A, unknown> | Fold<A, unknown> | Setter<A, unknown> | OpticBase<OpticTypeLambda, A, unknown>
+  ): unknown {
+    // Detect Getter: has _tag === "Getter"
+    if (_isGetter(that)) {
+      const thatGet = that.get
+      const selfGet = this.getOptic
+      // If this optic has total get (Iso/Lens → tag Prism for Iso, Lens for Lens),
+      // the result is a Getter. Otherwise Fold.
+      // We return a GetterImpl which satisfies both Getter and Fold.
+      const composedGet = (s: S) => {
+        const got = selfGet(s)
+        if (!isRight(got)) return null
+        return thatGet(got.right)
+      }
+      // Check if this optic always succeeds on get (Iso or Lens)
+      // Iso: tag=Prism, but has total get. Lens: tag=Lens, total get.
+      // Prism: tag=Prism, partial get. Affine: tag=Lens, partial get.
+      // We can't distinguish Iso from Prism by tag alone, so we always
+      // return a GetterImpl (satisfies both Getter and Fold) — the type
+      // overloads handle the distinction.
+      return _buildGetter<S, unknown>((s: S) => {
+        const got = selfGet(s)
+        if (!isRight(got)) throw new Error("Getter.get failed — composed with partial optic")
+        return thatGet(got.right)
+      }, (s: S) => {
+        const got = selfGet(s)
+        if (!isRight(got)) return []
+        return [thatGet(got.right)]
+      })
+    }
+
+    // Detect Fold: has _tag === "Fold"
+    if (_isFold(that)) {
+      const thatGetAll = that.getAll
+      const selfGet = this.getOptic
+      return _buildFold<S, unknown>((s: S) => {
+        const got = selfGet(s)
+        if (!isRight(got)) return []
+        return thatGetAll(got.right)
+      })
+    }
+
+    // Detect Setter: has _tag === "Setter"
+    if (_isSetter(that)) {
+      const thatModify = that.modify
+      const selfGet = this.getOptic
+      const selfSet = this.setOptic
+      return _buildSetter<S, unknown>((f: (b: unknown) => unknown) => (s: S) => {
+        const got = selfGet(s)
+        if (!isRight(got)) return s
+        const modified = thatModify(f)(got.right)
+        const r = selfSet(modified as A)(s)
+        return isRight(r) ? r.right : s
+      })
+    }
+
     // Detect Traversal: has getAll/modifyAll but NOT getOptic
     if (
       that !== null &&
@@ -539,6 +698,74 @@ export function prism<S, A>(
  */
 export function iso<S, A>(from: (s: S) => A, to: (a: A) => S): Iso<S, A> {
   return isoOf(from, to)
+}
+
+// ---------------------------------------------------------------------------
+// Getter / Fold / Setter / Review constructors
+// ---------------------------------------------------------------------------
+
+/** Construct a Getter from a total get function. */
+export function getterOf<S, A>(get: (s: S) => A): Getter<S, A> {
+  return _buildGetter<S, A>(get, (s: S) => [get(s)])
+}
+
+/** Construct a Fold from a getAll function. */
+export function foldOf<S, A>(getAll: (s: S) => ReadonlyArray<A>): Fold<S, A> {
+  return _buildFold<S, A>(getAll)
+}
+
+/** Construct a Setter from a modify function. */
+export function setterOf<S, A>(modify: (f: (a: A) => A) => (s: S) => S): Setter<S, A> {
+  return _buildSetter<S, A>(modify)
+}
+
+/** Construct a Review from a construction function. */
+export function reviewOf<S, A>(review: (a: A) => S): Review<S, A> {
+  return _buildReview<S, A>(review)
+}
+
+// ---------------------------------------------------------------------------
+// Conversion functions — extract read/write components from existing optics
+// ---------------------------------------------------------------------------
+
+/** Extract the read-only Getter from a Lens or Iso. */
+export function toGetter<S, A>(optic: Lens<S, A> | Iso<S, A>): Getter<S, A> {
+  return _buildGetter<S, A>((s: S) => optic.get(s), (s: S) => [optic.get(s)])
+}
+
+/** Extract a read-only Fold from a Traversal, Prism, or Affine. */
+export function toFold<S, A>(optic: Traversal<S, A> | Prism<S, A> | Affine<S, A>): Fold<S, A> {
+  if ("getAll" in optic) {
+    return _buildFold<S, A>((optic as Traversal<S, A>).getAll)
+  }
+  // Prism or Affine — use preview
+  return _buildFold<S, A>((s: S) => {
+    const a = (optic as Prism<S, A> | Affine<S, A>).preview(s)
+    return a !== null ? [a] : []
+  })
+}
+
+/** Extract a write-only Setter from a Lens, Traversal, or any optic with modify. */
+export function toSetter<S, A>(optic: Lens<S, A> | Iso<S, A> | Prism<S, A> | Affine<S, A> | Traversal<S, A>): Setter<S, A> {
+  if ("modifyAll" in optic) {
+    return _buildSetter<S, A>((optic as Traversal<S, A>).modifyAll)
+  }
+  // Bind modify to the optic instance so it has correct `this`
+  const bound = (optic as OpticBase<OpticTypeLambda, S, A>).modify.bind(optic)
+  return _buildSetter<S, A>(bound)
+}
+
+/** Extract a Review from a Prism or Iso. */
+export function toReview<S, A>(optic: Prism<S, A> | Iso<S, A>): Review<S, A> {
+  // Both Prism and Iso have review/to on the impl, but they're prototype methods
+  // that need `this`. Use preview's partner: for Prism, review builds S from A
+  // via setOptic(a)(undefined). Bind to preserve `this`.
+  if ("review" in optic) {
+    const bound = (optic as Prism<S, A>).review.bind(optic)
+    return _buildReview<S, A>(bound)
+  }
+  const bound = (optic as Iso<S, A>).to.bind(optic)
+  return _buildReview<S, A>(bound)
 }
 
 // ---------------------------------------------------------------------------
@@ -834,7 +1061,7 @@ function _buildTraversal<S, A>(
   getAll: (s: S) => ReadonlyArray<A>,
   modifyAll: (f: (a: A) => A) => (s: S) => S,
 ): Traversal<S, A> {
-  const t: Traversal<S, A> = {
+  const t = {
     getAll,
     modifyAll,
     fold<R>(f: (acc: R, a: A) => R, initial: R) {
@@ -844,39 +1071,69 @@ function _buildTraversal<S, A>(
         return acc
       }
     },
-    compose<B>(
-      that: Traversal<A, B> | OpticBase<OpticTypeLambda, A, B>
-    ): Traversal<S, B> {
+    compose(
+      that: Traversal<A, unknown> | Getter<A, unknown> | Fold<A, unknown> | Setter<A, unknown> | OpticBase<OpticTypeLambda, A, unknown>
+    ): unknown {
+      // Traversal + Getter → Fold
+      if (_isGetter(that)) {
+        const thatGet = that.get
+        return _buildFold<S, unknown>((s: S) => {
+          const result: unknown[] = []
+          for (const a of getAll(s)) result.push(thatGet(a))
+          return result
+        })
+      }
+
+      // Traversal + Fold → Fold
+      if (_isFold(that)) {
+        const thatGetAll = that.getAll
+        return _buildFold<S, unknown>((s: S) => {
+          const result: unknown[] = []
+          for (const a of getAll(s)) {
+            for (const b of thatGetAll(a)) result.push(b)
+          }
+          return result
+        })
+      }
+
+      // Traversal + Setter → Setter
+      if (_isSetter(that)) {
+        const thatModify = that.modify
+        return _buildSetter<S, unknown>((f: (b: unknown) => unknown) =>
+          modifyAll((a: A): A => thatModify(f)(a) as A)
+        )
+      }
+
       // Traversal + Traversal (has getAll/modifyAll)
       if ("getAll" in that && "modifyAll" in that) {
-        const thatT = that as Traversal<A, B>
-        return _buildTraversal<S, B>(
+        const thatT = that as Traversal<A, unknown>
+        return _buildTraversal<S, unknown>(
           (s: S) => {
-            const result: B[] = []
+            const result: unknown[] = []
             for (const a of getAll(s)) {
               for (const b of thatT.getAll(a)) result.push(b)
             }
             return result
           },
-          (f: (b: B) => B) => modifyAll((a: A): A =>
-            thatT.modifyAll(f)(a)
+          (f: (b: unknown) => unknown) => modifyAll((a: A): A =>
+            thatT.modifyAll(f as (a: unknown) => unknown)(a) as A
           ),
         )
       }
       // Traversal + single-target optic (Lens/Prism/Affine/Iso)
-      const optic = that as OpticBase<OpticTypeLambda, A, B>
+      const optic = that as OpticBase<OpticTypeLambda, A, unknown>
       const otherGet = optic.getOptic
       const otherSet = optic.setOptic
-      return _buildTraversal<S, B>(
+      return _buildTraversal<S, unknown>(
         (s: S) => {
-          const result: B[] = []
+          const result: unknown[] = []
           for (const a of getAll(s)) {
             const got = otherGet(a)
             if (isRight(got)) result.push(got.right)
           }
           return result
         },
-        (f: (b: B) => B) => modifyAll((a: A): A => {
+        (f: (b: unknown) => unknown) => modifyAll((a: A): A => {
           const got = otherGet(a)
           if (!isRight(got)) return a
           const setResult = otherSet(f(got.right))(a)
@@ -885,5 +1142,217 @@ function _buildTraversal<S, A>(
       )
     },
   }
-  return t
+  return t as unknown as Traversal<S, A>
+}
+
+// ---------------------------------------------------------------------------
+// Type guards for new optic types
+// ---------------------------------------------------------------------------
+
+const _GETTER = Symbol.for("static-dom.optic.getter")
+const _FOLD = Symbol.for("static-dom.optic.fold")
+const _SETTER = Symbol.for("static-dom.optic.setter")
+const _REVIEW = Symbol.for("static-dom.optic.review")
+
+function _isGetter(x: unknown): x is Getter<unknown, unknown> {
+  return x !== null && typeof x === "object" && _GETTER in (x as object)
+}
+
+function _isFold(x: unknown): x is Fold<unknown, unknown> {
+  return x !== null && typeof x === "object" && (_FOLD in (x as object) || _GETTER in (x as object))
+}
+
+function _isSetter(x: unknown): x is Setter<unknown, unknown> {
+  return x !== null && typeof x === "object" && _SETTER in (x as object)
+}
+
+function _isReview(x: unknown): x is Review<unknown, unknown> {
+  return x !== null && typeof x === "object" && _REVIEW in (x as object)
+}
+
+// ---------------------------------------------------------------------------
+// Internal builders for new optic types
+// ---------------------------------------------------------------------------
+
+function _buildGetter<S, A>(
+  getFn: (s: S) => A,
+  getAllFn: (s: S) => ReadonlyArray<A>,
+): Getter<S, A> {
+  const g = {
+    [_GETTER]: true,
+    get: getFn,
+    getAll: getAllFn,
+    fold<R>(f: (acc: R, a: A) => R, initial: R) {
+      return (s: S) => f(initial, getFn(s))
+    },
+    compose(that: unknown): unknown {
+      if (_isGetter(that)) {
+        const thatGet = that.get
+        return _buildGetter<S, unknown>(
+          (s: S) => thatGet(getFn(s)),
+          (s: S) => [thatGet(getFn(s))],
+        )
+      }
+      if (_isFold(that)) {
+        const thatGetAll = that.getAll
+        return _buildFold<S, unknown>((s: S) => thatGetAll(getFn(s)))
+      }
+      // Getter + OpticBase or Traversal
+      if ("getAll" in (that as object) && "modifyAll" in (that as object)) {
+        // Getter + Traversal → Fold
+        const trav = that as Traversal<A, unknown>
+        return _buildFold<S, unknown>((s: S) => trav.getAll(getFn(s)))
+      }
+      if ("getOptic" in (that as object)) {
+        // Getter + OpticBase (Lens/Prism/Affine/Iso)
+        const optic = that as OpticBase<OpticTypeLambda, A, unknown>
+        const otherGet = optic.getOptic
+        // If it always succeeds (Lens/Iso), result is Getter. If partial, Fold.
+        // At runtime, return a Getter that also satisfies Fold — type overloads narrow.
+        return _buildGetter<S, unknown>(
+          (s: S) => {
+            const got = otherGet(getFn(s))
+            if (!isRight(got)) throw new Error("Getter.get failed — composed with partial optic")
+            return got.right
+          },
+          (s: S) => {
+            const got = otherGet(getFn(s))
+            return isRight(got) ? [got.right] : []
+          },
+        )
+      }
+      throw new Error("Getter.compose: unsupported operand")
+    },
+  }
+  return g as unknown as Getter<S, A>
+}
+
+function _buildFold<S, A>(
+  getAllFn: (s: S) => ReadonlyArray<A>,
+): Fold<S, A> {
+  const f = {
+    [_FOLD]: true,
+    getAll: getAllFn,
+    fold<R>(fn: (acc: R, a: A) => R, initial: R) {
+      return (s: S) => {
+        let acc = initial
+        for (const a of getAllFn(s)) acc = fn(acc, a)
+        return acc
+      }
+    },
+    compose(that: unknown): unknown {
+      if (_isGetter(that)) {
+        const thatGet = that.get
+        return _buildFold<S, unknown>((s: S) => {
+          const result: unknown[] = []
+          for (const a of getAllFn(s)) result.push(thatGet(a))
+          return result
+        })
+      }
+      if (_isFold(that)) {
+        const thatGetAll = that.getAll
+        return _buildFold<S, unknown>((s: S) => {
+          const result: unknown[] = []
+          for (const a of getAllFn(s)) {
+            for (const b of thatGetAll(a)) result.push(b)
+          }
+          return result
+        })
+      }
+      if ("getAll" in (that as object)) {
+        // Fold + Traversal → Fold
+        const trav = that as Traversal<A, unknown>
+        return _buildFold<S, unknown>((s: S) => {
+          const result: unknown[] = []
+          for (const a of getAllFn(s)) {
+            for (const b of trav.getAll(a)) result.push(b)
+          }
+          return result
+        })
+      }
+      if ("getOptic" in (that as object)) {
+        // Fold + OpticBase → Fold
+        const optic = that as OpticBase<OpticTypeLambda, A, unknown>
+        const otherGet = optic.getOptic
+        return _buildFold<S, unknown>((s: S) => {
+          const result: unknown[] = []
+          for (const a of getAllFn(s)) {
+            const got = otherGet(a)
+            if (isRight(got)) result.push(got.right)
+          }
+          return result
+        })
+      }
+      throw new Error("Fold.compose: unsupported operand")
+    },
+  }
+  return f as unknown as Fold<S, A>
+}
+
+function _buildSetter<S, A>(
+  modifyFn: (f: (a: A) => A) => (s: S) => S,
+): Setter<S, A> {
+  const st = {
+    [_SETTER]: true,
+    modify: modifyFn,
+    set(a: A): (s: S) => S { return modifyFn(() => a) },
+    compose(that: unknown): unknown {
+      if (_isSetter(that)) {
+        const thatModify = that.modify
+        return _buildSetter<S, unknown>((f: (b: unknown) => unknown) =>
+          modifyFn((a: A): A => thatModify(f)(a) as A)
+        )
+      }
+      if ("getAll" in (that as object) && "modifyAll" in (that as object)) {
+        // Setter + Traversal → Setter
+        const trav = that as Traversal<A, unknown>
+        return _buildSetter<S, unknown>((f: (b: unknown) => unknown) =>
+          modifyFn((a: A): A => trav.modifyAll(f as (a: unknown) => unknown)(a) as A)
+        )
+      }
+      if ("getOptic" in (that as object)) {
+        // Setter + OpticBase → Setter
+        const optic = that as OpticBase<OpticTypeLambda, A, unknown>
+        const otherGet = optic.getOptic
+        const otherSet = optic.setOptic
+        return _buildSetter<S, unknown>((f: (b: unknown) => unknown) =>
+          modifyFn((a: A): A => {
+            const got = otherGet(a)
+            if (!isRight(got)) return a
+            const setResult = otherSet(f(got.right))(a)
+            return (isRight(setResult) ? setResult.right : a) as A
+          })
+        )
+      }
+      throw new Error("Setter.compose: unsupported operand")
+    },
+  }
+  return st as unknown as Setter<S, A>
+}
+
+function _buildReview<S, A>(
+  reviewFn: (a: A) => S,
+): Review<S, A> {
+  const r = {
+    [_REVIEW]: true,
+    review: reviewFn,
+    compose(that: unknown): unknown {
+      if (_isReview(that)) {
+        const thatReview = that.review
+        return _buildReview<S, unknown>((b: unknown) => reviewFn(thatReview(b) as A))
+      }
+      if ("getOptic" in (that as object)) {
+        // Review + Iso/Prism (ones that have review/to)
+        const optic = that as OpticBase<OpticTypeLambda, A, unknown>
+        const otherSet = optic.setOptic
+        return _buildReview<S, unknown>((b: unknown) => {
+          const inner = otherSet(b)(undefined as A)
+          if (!isRight(inner)) throw new Error("Review.compose failed")
+          return reviewFn(inner.right)
+        })
+      }
+      throw new Error("Review.compose: unsupported operand")
+    },
+  }
+  return r as unknown as Review<S, A>
 }

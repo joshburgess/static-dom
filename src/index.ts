@@ -125,14 +125,17 @@ export type { SDOM, Teardown, AttrInput, KeyedItem, ArrayContext } from "./types
 // Optics
 export type {
   OpticTypeLambda, Kind, IsoTypeLambda, LensTypeLambda, PrismTypeLambda, AffineTypeLambda,
-  ComposeOptics,
+  ComposeOptics, ComposeWithGetter,
   OpticBase, Iso, Lens, Prism, Affine, Traversal,
+  Getter, Fold, Setter, Review,
   // Backward compat
   OpticKind, ComposeKinds, KindToLambda, ResolveOptic, Optic,
 } from "./optics"
 export {
   isoOf, lensOf, prismOf, affineOf, traversal,
   iso, lens, prism,
+  getterOf, foldOf, setterOf, reviewOf,
+  toGetter, toFold, toSetter, toReview,
   prop, at, composeLenses,
   unionMember, nullablePrism, indexLens,
   each, values, filtered,
