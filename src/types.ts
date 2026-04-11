@@ -52,6 +52,52 @@ import type { UpdateStream, Dispatcher } from "./observable"
 import type { Lens, Prism } from "./optics"
 
 // ---------------------------------------------------------------------------
+// Focusable — structural protocol for .focus()
+// ---------------------------------------------------------------------------
+
+/**
+ * Structural protocol that any optic library can satisfy to work with `.focus()`.
+ *
+ * Only `get` is required. `compose` enables focus fusion (consecutive `.focus()`
+ * calls collapse into a single subscription layer). `getDelta` enables O(1) delta
+ * propagation — both are optional and degrade gracefully when absent.
+ *
+ * static-dom's own `Lens` satisfies this. So do lenses from fp-ts, Effect,
+ * monocle-ts, and any library whose lens has a `get` method.
+ *
+ * @example
+ * ```typescript
+ * // fp-ts integration
+ * import * as L from "fp-ts/Lens"
+ *
+ * const nameLens = L.pipe(L.id<User>(), L.prop("name"))
+ * // nameLens has .get — it satisfies Focusable
+ * const nameView = userView.focus(nameLens)
+ * ```
+ */
+export interface Focusable<S, A> {
+  /** Read the focused value. Must always succeed (total). */
+  readonly get: (s: S) => A
+
+  /**
+   * Compose with another Focusable.
+   * When present, enables focus fusion: `view.focus(a).focus(b)` collapses
+   * into `view.focus(a.compose(b))` — one subscription layer instead of two.
+   * When absent, each `.focus()` creates its own subscription layer (still
+   * correct, just O(depth) instead of O(1) per update).
+   */
+  readonly compose?: (that: Focusable<A, unknown>) => Focusable<S, unknown>
+
+  /**
+   * Extract a sub-delta for this optic's focus from a parent delta.
+   * When present, enables O(1) delta propagation — `.focus()` can skip
+   * updates when the focused field didn't change, without calling `get`.
+   * static-dom specific; 3rd party optics can ignore this.
+   */
+  readonly getDelta?: (parentDelta: unknown) => unknown | undefined
+}
+
+// ---------------------------------------------------------------------------
 // Teardown
 // ---------------------------------------------------------------------------
 
@@ -217,8 +263,13 @@ export interface SDOM<Model, out Msg> {
   // for method-chaining ergonomics.
   // ─────────────────────────────────────────────────
 
-  /** Focus this component on a sub-model via a lens. */
-  focus<Outer>(lens: Lens<Outer, Model>): SDOM<Outer, Msg>
+  /**
+   * Focus this component on a sub-model via a lens or any Focusable optic.
+   *
+   * Accepts static-dom's own `Lens`, or any optic with a `get` method —
+   * including lenses from fp-ts, Effect, monocle-ts, etc.
+   */
+  focus<Outer>(lens: Focusable<Outer, Model>): SDOM<Outer, Msg>
 
   /**
    * Map outgoing messages.
@@ -279,25 +330,28 @@ export function makeSDOM<Model, Msg>(
   const sdom: SDOM<Model, Msg> = {
     attach: attachFn,
 
-    focus<Outer>(lensOuter: Lens<Outer, Model>): SDOM<Outer, Msg> {
-      // Focus fusion: if this SDOM was itself created by .focus(), compose
-      // the lenses into one and eliminate the intermediate subscription layer.
+    focus<Outer>(lensOuter: Focusable<Outer, Model>): SDOM<Outer, Msg> {
+      // Focus fusion: if this SDOM was itself created by .focus() and the
+      // incoming optic supports compose, collapse consecutive focus calls
+      // into a single subscription layer.
       // a.focus(L1).focus(L2) → a.focus(L2.compose(L1)) — one observer, not two.
-      const branded = sdom as SDOM<Model, Msg> & FocusFusionBrand
-      const innerTarget = branded[_FOCUS_TARGET] as SDOM<unknown, Msg> | undefined
-      const innerLens = branded[_FOCUS_LENS] as Lens<Model, unknown> | undefined
-      if (innerTarget !== undefined && innerLens !== undefined) {
-        return innerTarget.focus(lensOuter.compose(innerLens))
+      if (lensOuter.compose) {
+        const branded = sdom as SDOM<Model, Msg> & FocusFusionBrand
+        const innerTarget = branded[_FOCUS_TARGET] as SDOM<unknown, Msg> | undefined
+        const innerLens = branded[_FOCUS_LENS] as Focusable<Model, unknown> | undefined
+        if (innerTarget !== undefined && innerLens !== undefined) {
+          return innerTarget.focus(lensOuter.compose(innerLens) as Focusable<Outer, unknown>)
+        }
       }
 
       const result = makeSDOM<Outer, Msg>((parent, initialOuter, outerUpdates, dispatch) => {
         // Project updates to only fire when the focused slice changes.
-        // When a structured delta is available and the lens has getDelta,
+        // When a structured delta is available and the optic has getDelta,
         // we can check whether this field changed without calling get().
         const innerUpdates: UpdateStream<Model> = {
           subscribe(observer) {
             return outerUpdates.subscribe(({ prev, next, delta }) => {
-              // Fast path: if we have a delta and the lens can inspect it,
+              // Fast path: if we have a delta and the optic can inspect it,
               // check whether this slice was touched at all.
               if (delta !== undefined && lensOuter.getDelta) {
                 const innerDelta = lensOuter.getDelta(delta)
@@ -325,10 +379,12 @@ export function makeSDOM<Model, Msg>(
         return sdom.attach(parent, lensOuter.get(initialOuter), innerUpdates, dispatch)
       })
 
-      // Tag the result for future fusion
-      const fusionBranded = result as SDOM<Outer, Msg> & FocusFusionBrand
-      fusionBranded[_FOCUS_TARGET] = sdom
-      fusionBranded[_FOCUS_LENS] = lensOuter
+      // Tag the result for future fusion (only if compose is available)
+      if (lensOuter.compose) {
+        const fusionBranded = result as SDOM<Outer, Msg> & FocusFusionBrand
+        fusionBranded[_FOCUS_TARGET] = sdom
+        fusionBranded[_FOCUS_LENS] = lensOuter
+      }
       return result
     },
 

@@ -166,7 +166,7 @@ const nameLens = at<AppModel>()("user", "profile", "name")
 const nameInput = stringInput.focus(nameLens)
 ```
 
-Under the hood, `at()` and `prop()` build **lenses** — composable accessors from the optics tradition. You don't need to know optics to use them, but the full system is there if you want it: `Iso`, `Lens`, `Prism`, `Affine`, and `Traversal` with type-safe composition.
+Under the hood, `at()` and `prop()` build **lenses** — composable accessors from the optics tradition. You don't need to know optics to use them, but the full system is there if you want it: `Iso`, `Lens`, `Prism`, `Affine`, `Getter`, `Fold`, `Setter`, `Review`, and `Traversal` with type-safe composition.
 
 ```typescript
 import { prop, each } from "static-dom"
@@ -175,6 +175,37 @@ import { prop, each } from "static-dom"
 const allNames = prop<Model>()("users").compose(each<User>()).compose(prop<User>()("name"))
 allNames.getAll(model) // ["Alice", "Bob"]
 ```
+
+### Using third-party optics
+
+`.focus()` accepts any optic with a `get` method — not just static-dom's own lenses. This means lenses from **fp-ts**, **Effect**, **monocle-ts**, or any other optics library work out of the box:
+
+```typescript
+// fp-ts
+import * as L from "fp-ts/Lens"
+const userLens = pipe(L.id<Model>(), L.prop("user"))
+const view = userView.focus(userLens) // works — fp-ts Lens has .get
+
+// Effect
+import * as Optic from "@effect/optics"
+const nameLens = Optic.id<User>().at("name")
+const view = nameView.focus(nameLens) // works — Effect optics have .get
+
+// Any object with a get method
+const view = nameView.focus({ get: (model: Model) => model.user.name })
+```
+
+The structural protocol is called `Focusable<S, A>` — only `get` is required:
+
+```typescript
+interface Focusable<S, A> {
+  get(s: S): A                      // required — read the focused value
+  compose?(that: Focusable<A, B>): Focusable<S, B>  // optional — enables focus fusion
+  getDelta?(parentDelta: unknown): unknown | undefined // optional — O(1) delta propagation
+}
+```
+
+When `compose` is present, consecutive `.focus()` calls fuse into a single subscription layer (O(1) per update). When absent, each `.focus()` creates its own layer — still correct, just O(depth). static-dom's own `prop()` and `at()` lenses provide all three methods for maximum performance.
 
 ## React interop
 

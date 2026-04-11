@@ -120,7 +120,7 @@ export { setErrorHandler, setGuardEnabled } from "./errors"
 export { setDevMode, setDevWarningHandler, resetDevWarnings } from "./dev"
 
 // Core types
-export type { SDOM, Teardown, AttrInput, KeyedItem, ArrayContext } from "./types"
+export type { SDOM, Teardown, AttrInput, KeyedItem, ArrayContext, Focusable } from "./types"
 
 // Optics
 export type {
