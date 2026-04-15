@@ -151,9 +151,23 @@ Choose a list constructor based on your update pattern:
 
 `incrementalArray` skips reconciliation entirely — O(1) per update regardless of list size. See [RECOMMENDATION.md](./RECOMMENDATION.md) for detailed guidance.
 
-## Conditional rendering
+## Dynamic structure
 
-Use `match` to switch between completely different DOM structures based on a discriminant:
+static-dom's core guarantee is that DOM structure is fixed after mount and only leaf values update. But some UI patterns genuinely require structural changes at runtime: loading/error/success states, route switches, user-configured layouts, or embedded rich-text editors.
+
+Three constructors handle these cases at different levels of flexibility. Each one creates a boundary where structural changes can happen, while everything outside the boundary stays on the fast static path.
+
+| Constructor | Use when | Cost model |
+|---|---|---|
+| `match` | Switching between a known set of views based on a discriminant | O(leaf changes) within a branch; remount cost on branch switch |
+| `dynamic` | The set of views isn't known at compile time, or depends on runtime data | Same as match, plus optional DOM caching across key switches |
+| `vdom` | A subtree needs per-update structural changes (drag-and-drop, WYSIWYG, animations) | O(tree size) diffing inside the boundary via Inferno |
+
+For binary show/hide (present vs. absent), use `optional` with a prism. For everything else, read on.
+
+### match
+
+Switch between completely different DOM structures based on a discriminant:
 
 ```typescript
 import { match } from "static-dom"
@@ -170,7 +184,7 @@ const view = match("tag", {
 })
 ```
 
-Same-branch updates take the standard static-dom fast path (only leaf values update). Branch switches tear down the old subtree and mount the new one — cost is proportional to the branch being swapped, not the whole tree.
+Same-branch updates take the standard static-dom fast path (only leaf values update). Branch switches tear down the old subtree and mount the new one.
 
 A function discriminant works when your model isn't a tagged union:
 
@@ -181,11 +195,9 @@ const view = match(m => m.loggedIn ? "auth" : "anon", {
 })
 ```
 
-For binary show/hide, use `optional` with a prism. For N-way switching, use `match`.
+### dynamic
 
-## Dynamic structure
-
-For cases where the set of possible views isn't known at compile time — user-configured dashboards, plugin systems, data-driven layouts:
+For cases where the set of possible views isn't known at compile time -- user-configured dashboards, plugin systems, data-driven layouts:
 
 ```typescript
 import { dynamic } from "static-dom"
@@ -204,7 +216,41 @@ Enable caching to reuse previously mounted branches instead of rebuilding from s
 const view = dynamic(m => m.layout, m => buildLayout(m), { cache: true })
 ```
 
-With caching, branch switches detach and reinsert existing DOM nodes rather than tearing down and remounting — useful for tab-like patterns where users flip back and forth.
+With caching, branch switches detach and reinsert existing DOM nodes rather than tearing down and remounting -- useful for tab-like patterns where users flip back and forth.
+
+### vdom
+
+For subtrees that need per-update structural changes (drag-and-drop builders, WYSIWYG editors, animation systems), embed an Inferno virtual DOM subtree:
+
+```typescript
+import { vdom } from "static-dom/vdom"
+import { createElement as h } from "inferno-create-element"
+
+const dynamicContent = vdom<Model, Msg>((model, dispatch) =>
+  h("ul", null,
+    model.items.map(item =>
+      h("li", { key: item.id, onClick: () => dispatch({ type: "click", id: item.id }) },
+        item.label
+      )
+    )
+  )
+)
+```
+
+Everything inside the boundary pays vdom diffing cost (O(tree size)). Everything outside remains static-dom (O(leaf changes)). The trade-off is explicit and scoped.
+
+For integrating any other renderer (Canvas, D3, WebGL), use `vdomWith`:
+
+```typescript
+import { vdomWith } from "static-dom/vdom"
+
+const chart = vdomWith<Model, Msg>({
+  render(container, model, dispatch) { /* any rendering logic */ },
+  teardown(container) { /* cleanup */ },
+})
+```
+
+Inferno and inferno-create-element are optional peer dependencies -- only needed if you import `static-dom/vdom`.
 
 ## Focusing on sub-models
 
@@ -278,40 +324,6 @@ function App({ model, onMsg }) {
   )
 }
 ```
-
-## Virtual DOM boundary
-
-For subtrees that need per-update structural changes (drag-and-drop builders, WYSIWYG editors, animation systems), embed an Inferno virtual DOM subtree:
-
-```typescript
-import { vdom } from "static-dom/vdom"
-import { createElement as h } from "inferno-create-element"
-
-const dynamicContent = vdom<Model, Msg>((model, dispatch) =>
-  h("ul", null,
-    model.items.map(item =>
-      h("li", { key: item.id, onClick: () => dispatch({ type: "click", id: item.id }) },
-        item.label
-      )
-    )
-  )
-)
-```
-
-Everything inside the boundary pays vdom diffing cost (O(tree size)). Everything outside remains static-dom (O(leaf changes)). The trade-off is explicit and scoped.
-
-For integrating any other renderer (Canvas, D3, WebGL), use `vdomWith`:
-
-```typescript
-import { vdomWith } from "static-dom/vdom"
-
-const chart = vdomWith<Model, Msg>({
-  render(container, model, dispatch) { /* any rendering logic */ },
-  teardown(container) { /* cleanup */ },
-})
-```
-
-Inferno and inferno-create-element are optional peer dependencies — only needed if you import `static-dom/vdom`.
 
 ## Performance
 
