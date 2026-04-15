@@ -82,8 +82,8 @@ const counterView = element<"div", CounterModel, CounterMsg>("div", {
 
 // -- Mount ------------------------------------------------------------------
 
-export function mountCounter(container: HTMLElement): void {
-  program({
+export function mountCounter(container: HTMLElement) {
+  return program({
     container,
     init: { count: 0, label: "Counter" },
     update: counterUpdate,

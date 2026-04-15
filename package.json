@@ -47,13 +47,25 @@
     "./html": {
       "types": "./dist/html.d.ts",
       "import": "./dist/html.js"
+    },
+    "./vdom": {
+      "types": "./dist/vdom.d.ts",
+      "import": "./dist/vdom.js"
     }
   },
   "peerDependencies": {
+    "inferno": "^9.0.0",
+    "inferno-create-element": "^9.0.0",
     "react": "^18.0.0 || ^19.0.0",
     "vite": "^5.0.0 || ^6.0.0"
   },
   "peerDependenciesMeta": {
+    "inferno": {
+      "optional": true
+    },
+    "inferno-create-element": {
+      "optional": true
+    },
     "react": {
       "optional": true
     },
@@ -71,7 +83,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "bench": "vitest bench"
+    "bench": "vitest bench",
+    "dev": "vite examples"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

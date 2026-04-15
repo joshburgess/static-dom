@@ -277,6 +277,61 @@ benchmarking.
 
 ---
 
+## Conditional & Dynamic Structure
+
+static-dom provides a spectrum of constructors for handling structural
+variation, from fully static to fully dynamic. Choose the simplest one that
+fits your use case.
+
+### Decision tree
+
+```
+Is the structure fixed after mount?
+ ├─ Yes → element(), text(), fragment()
+ └─ No → Does it toggle between present/absent?
+          ├─ Yes → optional(prism, view)
+          └─ No → Is the set of variants known at compile time?
+                   ├─ Yes → match(discriminant, branches)
+                   └─ No → Is the structure changing every frame?
+                            ├─ No → dynamic(key, factory)
+                            └─ Yes → vdom(renderFn) or component(setup)
+```
+
+### Comparison
+
+| Constructor | Structural change | Same-branch update cost | Switch cost | When to use |
+|---|---|---|---|---|
+| `optional` | Binary (present/absent) | O(leaf changes) | O(branch size) | Show/hide a single subtree |
+| `match` | N-way (tagged variants) | O(leaf changes) | O(branch size) | Loading/error/loaded, routes, wizards |
+| `dynamic` | Unbounded | O(leaf changes) | O(teardown + mount) | User-configured layouts, plugin systems |
+| `dynamic` + cache | Unbounded | O(leaf changes) | O(detach + reinsert) | Tab panels, back-and-forth switching |
+| `vdom` | Per-update | O(tree size) — vdom diff | N/A (always diffs) | Drag-and-drop, WYSIWYG, animation |
+| `component` | Imperative | Manual | Manual | Third-party integration (charts, maps) |
+
+### Performance notes
+
+**`match` vs React conditional rendering:**
+Same-branch updates are ~2x faster than React (leaf-only patching vs full
+tree diffing). Branch switches are ~2x slower (teardown + mount vs vdom
+diff). Since same-branch updates are far more frequent than switches in
+typical apps (e.g. updating data on the "loaded" page happens constantly,
+switching to "error" happens rarely), `match` wins in aggregate.
+
+**`dynamic` caching:**
+Cached switches are ~3x faster than uncached (12.9K vs 4.3K ops/sec)
+because they skip DOM creation entirely. Use `{ cache: true }` when users
+flip back and forth between a small set of views (tabs, settings panels).
+The trade-off is memory — cached branches keep their DOM alive in detached
+state.
+
+**`vdom` boundary:**
+Everything inside the boundary pays O(tree size) per update — standard
+vdom diffing cost. Keep the boundary small. If only part of your subtree
+needs structural changes, wrap just that part in `vdom()` and keep the rest
+as static-dom.
+
+---
+
 ## What to Avoid
 
 | Approach | Why |

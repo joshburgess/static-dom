@@ -841,6 +841,319 @@ export function compiled<Model, Msg>(
 }
 
 // ---------------------------------------------------------------------------
+// match — discriminated union switch (N-way optional)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mount one of several SDOM branches based on a discriminant.
+ *
+ * This is the N-way generalization of `optional`: where `optional` handles
+ * binary (present vs. absent), `match` handles N variants with completely
+ * different DOM structures per branch.
+ *
+ * Accepts either a property name (for tagged unions) or a function:
+ *
+ * @example Tagged union (property name):
+ * ```typescript
+ * type State =
+ *   | { tag: "loading" }
+ *   | { tag: "error"; message: string }
+ *   | { tag: "loaded"; data: Data }
+ *
+ * const view = match("tag", {
+ *   loading: loadingSpinner,
+ *   error: errorPanel,
+ *   loaded: dataTable,
+ * })
+ * ```
+ *
+ * @example Function discriminant:
+ * ```typescript
+ * const view = match(m => m.loggedIn ? "auth" : "anon", {
+ *   auth: dashboardView,
+ *   anon: loginView,
+ * })
+ * ```
+ *
+ * **Cost model:**
+ * - Same-branch updates: O(leaf changes) — standard static-dom fast path.
+ * - Branch switches: O(teardown + mount) — proportional to branch size.
+ */
+export function match<
+  Model extends Record<Tag, string>,
+  Tag extends string,
+  Msg,
+  Branches extends Record<Model[Tag], SDOM<Model, Msg>>,
+>(
+  discriminant: Tag,
+  branches: Branches,
+): SDOM<Model, Msg>
+export function match<
+  Model,
+  K extends string,
+  Msg,
+>(
+  discriminant: (model: Model) => K,
+  branches: Record<K, SDOM<Model, Msg>>,
+): SDOM<Model, Msg>
+export function match<Model, Msg>(
+  discriminant: string | ((model: Model) => string),
+  branches: Record<string, SDOM<Model, Msg>>,
+): SDOM<Model, Msg> {
+  const getKey: (model: Model) => string =
+    typeof discriminant === "function"
+      ? discriminant
+      : (model: Model) => (model as Record<string, string>)[discriminant]!
+
+  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
+    const anchor = document.createComment("match")
+    parent.appendChild(anchor)
+
+    let currentKey = getKey(initialModel)
+    let currentTeardown: Teardown | null = null
+    // Track DOM nodes inserted by the current branch for removal on switch.
+    // Most branches produce a single root element, but fragment children
+    // can produce multiple — so we track the list.
+    let currentNodes: Node[] = []
+
+    function mountBranch(key: string, model: Model): void {
+      const branch = branches[key]
+      if (!branch) return
+
+      const fragment = document.createDocumentFragment()
+      // Branch update stream: forward updates only when the model's discriminant
+      // still matches this branch. We check the model directly (not `currentKey`)
+      // because inner subscriptions fire before the outer switch subscriber —
+      // without this, a branch would see one final update with the wrong variant
+      // shape before being torn down.
+      const branchUpdates: UpdateStream<Model> = {
+        subscribe(observer) {
+          return updates.subscribe(update => {
+            if (getKey(update.next) === key) {
+              observer(update)
+            }
+          })
+        },
+      }
+      currentTeardown = guard("attach", `match branch "${key}"`, () =>
+        branch.attach(fragment, model, branchUpdates, dispatch),
+        { teardown() {} }
+      )
+
+      currentNodes = Array.from(fragment.childNodes)
+      anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
+    }
+
+    function unmountBranch(): void {
+      currentTeardown?.teardown()
+      currentTeardown = null
+      for (const node of currentNodes) {
+        node.parentNode?.removeChild(node)
+      }
+      currentNodes = []
+    }
+
+    mountBranch(currentKey, initialModel)
+
+    const unsub = updates.subscribe(({ next }) => {
+      const nextKey = getKey(next)
+      if (nextKey !== currentKey) {
+        unmountBranch()
+        currentKey = nextKey
+        mountBranch(nextKey, next)
+      }
+    })
+
+    return {
+      teardown() {
+        unsub()
+        unmountBranch()
+        anchor.remove()
+      },
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// dynamic — general structural escape hatch
+// ---------------------------------------------------------------------------
+
+/**
+ * A general escape hatch for unbounded structural variation.
+ *
+ * Unlike `match` (which requires a fixed set of branches known at compile
+ * time), `dynamic` accepts a factory function that can return any SDOM
+ * based on the current model. A key function determines when to remount.
+ *
+ * @param key      Extracts a cache key from the model. When the key changes
+ *                 (by `===`), the current branch is torn down and the factory
+ *                 is called to produce a new one.
+ * @param factory  Called on mount and on key changes to produce an SDOM.
+ * @param options  Optional `{ cache: true }` to reuse previously mounted
+ *                 branches rather than rebuilding from scratch on re-entry.
+ *
+ * @example
+ * ```typescript
+ * const view = dynamic(
+ *   (model: Model) => model.layout,
+ *   (model: Model) => {
+ *     if (model.layout === "grid") return gridView
+ *     if (model.layout === "list") return listView
+ *     return buildCustomLayout(model.columns)
+ *   },
+ * )
+ * ```
+ *
+ * **Cost model:**
+ * - Same-key updates: O(leaf changes) — inner SDOM is still static-dom.
+ * - Key changes: O(teardown + factory + mount) — full remount.
+ * - With `cache: true`, key changes hide/show cached branches instead of
+ *   teardown/remount — trades memory for faster switches.
+ */
+export function dynamic<Model, Msg, K>(
+  key: (model: Model) => K,
+  factory: (model: Model) => SDOM<Model, Msg>,
+  options?: { cache?: boolean },
+): SDOM<Model, Msg> {
+  const useCache = options?.cache === true
+
+  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
+    const anchor = document.createComment("dynamic")
+    parent.appendChild(anchor)
+
+    let currentKeyValue = key(initialModel)
+    let currentModel = initialModel
+    let currentTeardown: Teardown | null = null
+    let currentNodes: Node[] = []
+
+    // Cache: key → { nodes (detached), teardown, lastModel, notify }
+    // The `notify` function lets us push a synthetic update into a cached
+    // branch when it's re-entered so it catches up to the current model.
+    interface CachedBranch {
+      nodes: Node[]
+      teardown: Teardown
+      lastModel: Model
+      notify: (update: { prev: Model; next: Model }) => void
+    }
+    const cache = useCache ? new Map<K, CachedBranch>() : null
+
+    function mountBranch(keyValue: K, model: Model): void {
+      // Check cache first — reinsert existing DOM without re-running factory
+      if (cache?.has(keyValue)) {
+        const cached = cache.get(keyValue)!
+        currentTeardown = cached.teardown
+        currentNodes = cached.nodes
+        const fragment = document.createDocumentFragment()
+        for (const node of currentNodes) {
+          fragment.appendChild(node)
+        }
+        anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
+
+        // Catch the branch up to the current model if it changed while detached
+        if (cached.lastModel !== model) {
+          cached.notify({ prev: cached.lastModel, next: model })
+          cached.lastModel = model
+        }
+        return
+      }
+
+      const sdom = factory(model)
+      const fragment = document.createDocumentFragment()
+
+      // Observers registered by the inner branch — used for synthetic notify
+      const observers = new Set<Observer<Update<Model>>>()
+
+      // Branch update stream: filter against `currentKeyValue` (closed over)
+      // rather than re-calling key() — the outer subscriber already computes
+      // the key and updates `currentKeyValue` before switching branches.
+      const branchUpdates: UpdateStream<Model> = {
+        subscribe(observer) {
+          observers.add(observer)
+          const unsub = updates.subscribe(update => {
+            if (currentKeyValue === keyValue) {
+              observer(update)
+            }
+          })
+          return () => {
+            observers.delete(observer)
+            unsub()
+          }
+        },
+      }
+
+      currentTeardown = guard("attach", "dynamic branch", () =>
+        sdom.attach(fragment, model, branchUpdates, dispatch),
+        { teardown() {} }
+      )
+      currentNodes = Array.from(fragment.childNodes)
+      anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
+
+      if (cache) {
+        cache.set(keyValue, {
+          nodes: currentNodes,
+          teardown: currentTeardown,
+          lastModel: model,
+          notify: (update) => {
+            for (const obs of observers) obs(update)
+          },
+        })
+      }
+    }
+
+    function unmountBranch(): void {
+      if (!useCache) {
+        // Non-cached: full teardown (unsubscribes inner observers)
+        currentTeardown?.teardown()
+        currentTeardown = null
+      }
+      // In both modes, detach DOM nodes
+      for (const node of currentNodes) {
+        node.parentNode?.removeChild(node)
+      }
+      currentNodes = []
+    }
+
+    mountBranch(currentKeyValue, initialModel)
+
+    const unsub = updates.subscribe(({ next }) => {
+      currentModel = next
+      const nextKeyValue = key(next)
+      if (nextKeyValue !== currentKeyValue) {
+        // Snapshot lastModel for the outgoing cached branch
+        if (cache?.has(currentKeyValue)) {
+          cache.get(currentKeyValue)!.lastModel = next
+        }
+        unmountBranch()
+        currentKeyValue = nextKeyValue
+        mountBranch(nextKeyValue, next)
+      }
+    })
+
+    return {
+      teardown() {
+        unsub()
+        if (cache) {
+          // Tear down all cached branches (including the active one)
+          for (const [, cached] of cache) {
+            cached.teardown.teardown()
+            for (const node of cached.nodes) {
+              node.parentNode?.removeChild(node)
+            }
+          }
+          cache.clear()
+        } else {
+          currentTeardown?.teardown()
+          for (const node of currentNodes) {
+            node.parentNode?.removeChild(node)
+          }
+        }
+        anchor.remove()
+      },
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
 // wrapChannel — lower SDOMWithChannel to SDOM
 // ---------------------------------------------------------------------------
 

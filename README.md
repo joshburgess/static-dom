@@ -151,6 +151,61 @@ Choose a list constructor based on your update pattern:
 
 `incrementalArray` skips reconciliation entirely — O(1) per update regardless of list size. See [RECOMMENDATION.md](./RECOMMENDATION.md) for detailed guidance.
 
+## Conditional rendering
+
+Use `match` to switch between completely different DOM structures based on a discriminant:
+
+```typescript
+import { match } from "static-dom"
+
+type State =
+  | { tag: "loading" }
+  | { tag: "error"; message: string }
+  | { tag: "loaded"; data: Data }
+
+const view = match("tag", {
+  loading: loadingSpinner,   // SDOM<State, Msg>
+  error: errorPanel,         // SDOM<State, Msg>
+  loaded: dataTable,         // SDOM<State, Msg>
+})
+```
+
+Same-branch updates take the standard static-dom fast path (only leaf values update). Branch switches tear down the old subtree and mount the new one — cost is proportional to the branch being swapped, not the whole tree.
+
+A function discriminant works when your model isn't a tagged union:
+
+```typescript
+const view = match(m => m.loggedIn ? "auth" : "anon", {
+  auth: dashboardView,
+  anon: loginView,
+})
+```
+
+For binary show/hide, use `optional` with a prism. For N-way switching, use `match`.
+
+## Dynamic structure
+
+For cases where the set of possible views isn't known at compile time — user-configured dashboards, plugin systems, data-driven layouts:
+
+```typescript
+import { dynamic } from "static-dom"
+
+const view = dynamic(
+  m => m.layout,           // cache key — determines when to remount
+  m => buildLayout(m),     // factory — returns an SDOM
+)
+```
+
+Everything inside the `dynamic` boundary is still static-dom (O(leaf changes) per update). The boundary itself pays remount cost only when the key changes.
+
+Enable caching to reuse previously mounted branches instead of rebuilding from scratch:
+
+```typescript
+const view = dynamic(m => m.layout, m => buildLayout(m), { cache: true })
+```
+
+With caching, branch switches detach and reinsert existing DOM nodes rather than tearing down and remounting — useful for tab-like patterns where users flip back and forth.
+
 ## Focusing on sub-models
 
 Components often operate on a slice of the app model. Use `.focus()` with a path to zoom in:
@@ -224,6 +279,40 @@ function App({ model, onMsg }) {
 }
 ```
 
+## Virtual DOM boundary
+
+For subtrees that need per-update structural changes (drag-and-drop builders, WYSIWYG editors, animation systems), embed an Inferno virtual DOM subtree:
+
+```typescript
+import { vdom } from "static-dom/vdom"
+import { createElement as h } from "inferno-create-element"
+
+const dynamicContent = vdom<Model, Msg>((model, dispatch) =>
+  h("ul", null,
+    model.items.map(item =>
+      h("li", { key: item.id, onClick: () => dispatch({ type: "click", id: item.id }) },
+        item.label
+      )
+    )
+  )
+)
+```
+
+Everything inside the boundary pays vdom diffing cost (O(tree size)). Everything outside remains static-dom (O(leaf changes)). The trade-off is explicit and scoped.
+
+For integrating any other renderer (Canvas, D3, WebGL), use `vdomWith`:
+
+```typescript
+import { vdomWith } from "static-dom/vdom"
+
+const chart = vdomWith<Model, Msg>({
+  render(container, model, dispatch) { /* any rendering logic */ },
+  teardown(container) { /* cleanup */ },
+})
+```
+
+Inferno and inferno-create-element are optional peer dependencies — only needed if you import `static-dom/vdom`.
+
 ## Performance
 
 On targeted updates (single row in a 1,000-row table), static-dom's incremental path reaches 88% of Solid.js throughput while using a simpler whole-model architecture — no signals, no dependency tracking. On bulk attribute updates, the basic `array()` path beats Solid by 17%.
@@ -237,6 +326,7 @@ See [BENCHMARKS.md](./BENCHMARKS.md) for full results and [RECOMMENDATION.md](./
 | `static-dom/vite` | Vite plugin — `sdomJsx()` |
 | `static-dom/esbuild` | esbuild plugin + SWC config helper |
 | `static-dom/eslint` | `no-dynamic-children` lint rule |
+| `static-dom/vdom` | Inferno-backed virtual DOM boundary |
 
 ## License
 

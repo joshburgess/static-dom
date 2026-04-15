@@ -191,8 +191,8 @@ const todoView = element<"div", TodoModel, TodoMsg>("div", { rawAttrs: { class: 
   editForm,
 ])
 
-export function mountTodo(container: HTMLElement): void {
-  program({
+export function mountTodo(container: HTMLElement) {
+  return program({
     container,
     init: { todos: [], input: "", filter: "all", editing: null },
     update: todoUpdate,
