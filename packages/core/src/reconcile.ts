@@ -20,6 +20,7 @@ import type { SDOM, Teardown } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import { guard, __SDOM_GUARD__, getErrorHandler } from "./errors"
 import { __SDOM_DEV__, validateUniqueKeys } from "./dev"
+import { getCurrentDelegator, withDelegator } from "./delegation"
 
 // ---------------------------------------------------------------------------
 // LIS — Longest Increasing Subsequence (from Inferno)
@@ -112,6 +113,10 @@ export function createArrayReconciler<ItemModel, Msg>(
   dispatch: Dispatcher<Msg>,
   label: string,
 ): ArrayReconciler<ItemModel> {
+  // Capture the ambient delegator at factory time so per-item mounts that
+  // happen later (after program() returns) still register through the
+  // program's root listener.
+  const capturedDelegator = getCurrentDelegator()
   const liveItems = new Map<string, ItemEntry<ItemModel>>()
 
   // Shared UpdateStream — avoids per-row function object allocation.
@@ -159,9 +164,11 @@ export function createArrayReconciler<ItemModel, Msg>(
     const lastBefore = container.lastChild
 
     currentMountEntry = entry
-    entry.teardown = guard("attach", `${label} item "${key}"`, () =>
-      itemSdom.attach(container, itemModel, sharedUpdateStream, dispatch),
-      { teardown() {} }
+    entry.teardown = withDelegator(capturedDelegator, () =>
+      guard("attach", `${label} item "${key}"`, () =>
+        itemSdom.attach(container, itemModel, sharedUpdateStream, dispatch),
+        { teardown() {} }
+      )
     )
     currentMountEntry = null
 
@@ -187,9 +194,11 @@ export function createArrayReconciler<ItemModel, Msg>(
     frag.appendChild(startMarker)
 
     currentMountEntry = entry
-    entry.teardown = guard("attach", `${label} item "${key}"`, () =>
-      itemSdom.attach(frag, itemModel, sharedUpdateStream, dispatch),
-      { teardown() {} }
+    entry.teardown = withDelegator(capturedDelegator, () =>
+      guard("attach", `${label} item "${key}"`, () =>
+        itemSdom.attach(frag, itemModel, sharedUpdateStream, dispatch),
+        { teardown() {} }
+      )
     )
     currentMountEntry = null
 
@@ -466,6 +475,17 @@ export function createArrayReconciler<ItemModel, Msg>(
   }
 
   function teardown(): void {
+    for (const { teardown: td, startMarker, endMarker } of liveItems.values()) {
+      td.teardown()
+      startMarker?.remove()
+      endMarker?.remove()
+    }
+    container.remove()
+  }
+
+  return { sync, teardown }
+}
+ void {
     for (const { teardown: td, startMarker, endMarker } of liveItems.values()) {
       td.teardown()
       startMarker?.remove()

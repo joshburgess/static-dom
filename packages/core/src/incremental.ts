@@ -56,6 +56,7 @@ import { makeSDOM, type SDOM, type Teardown, type KeyedItem } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { KeyedArrayDelta, KeyedOp } from "./patch"
 import { lis } from "./reconcile"
+import { getCurrentDelegator, withDelegator } from "./delegation"
 
 // ---------------------------------------------------------------------------
 // Fast-patch handler — allows programWithDelta to bypass subscription chain
@@ -137,6 +138,10 @@ export function incrementalArray<
     const container = document.createElement(containerTag)
     parent.appendChild(container)
 
+    // Capture the ambient delegator at attach time so per-item mounts that
+    // happen later still register through the program's root listener.
+    const capturedDelegator = getCurrentDelegator()
+
     // Live item tracking — comment markers instead of wrapper divs.
     // Single-observer fast path: first subscriber stored directly.
     type ItemEntry = {
@@ -192,7 +197,8 @@ export function incrementalArray<
 
       const frag = document.createDocumentFragment()
       frag.appendChild(startMarker)
-      entry.teardown = itemSdom.attach(frag, itemModel, itemUpdates, dispatch)
+      entry.teardown = withDelegator(capturedDelegator, () =>
+        itemSdom.attach(frag, itemModel, itemUpdates, dispatch))
       frag.appendChild(endMarker)
       container.appendChild(frag)
     }

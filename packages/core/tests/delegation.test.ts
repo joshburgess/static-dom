@@ -1,5 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { createDelegator, type EventDelegator } from "../src/delegation"
+import { program } from "../src/program"
+import { element, arrayBy } from "../src/constructors"
+import { text } from "../src/constructors"
+import type { SDOM } from "../src/types"
 
 describe("createDelegator", () => {
   let root: HTMLDivElement
@@ -99,5 +103,51 @@ describe("createDelegator", () => {
     delegator.teardown()
     button.click()
     expect(clicks.length).toBe(0)
+  })
+})
+
+describe("program-level delegation", () => {
+  it("routes events from arrayBy items through a single root listener", () => {
+    interface Item { id: string; label: string }
+    interface M { items: Item[] }
+    type Msg = { type: "click"; id: string }
+
+    const itemSdom: SDOM<Item, Msg> = element<"li", Item, Msg>("li", {
+      on: { click: (_e, m) => ({ type: "click", id: m.id }) },
+    }, [text(m => m.label)])
+
+    const view = arrayBy<M, Item, Msg>(
+      "ul",
+      m => m.items,
+      i => i.id,
+      itemSdom,
+    )
+
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+
+    const dispatched: Msg[] = []
+    const handle = program<M, Msg>({
+      container,
+      init: { items: [{ id: "a", label: "A" }, { id: "b", label: "B" }] },
+      update: (msg, m) => { dispatched.push(msg); return m },
+      view,
+    })
+
+    // Sanity check: only one click listener at the root container.
+    // We can't directly count listeners, but we can verify clicks route
+    // correctly and that adding more rows doesn't add per-row listeners
+    // (covered by the bench, but we at least confirm dispatch works here).
+    const lis = container.querySelectorAll("li")
+    expect(lis.length).toBe(2)
+    ;(lis[0] as HTMLElement).click()
+    ;(lis[1] as HTMLElement).click()
+    expect(dispatched).toEqual([
+      { type: "click", id: "a" },
+      { type: "click", id: "b" },
+    ])
+
+    handle.teardown()
+    container.remove()
   })
 })

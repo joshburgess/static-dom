@@ -29,6 +29,7 @@ import { ATTR_TO_PROP, applyClassMap } from "./constructors"
 import type { Dispatcher } from "./observable"
 import type { ErasedSDOM } from "./shared"
 import { EVENT_RE, camelToKebab, ensureFn, IDL_PROPS } from "./shared"
+import { registerEvent } from "./delegation"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -365,8 +366,7 @@ function wireAttrBinding(
       const msg = handler(event, ref.current)
       if (msg !== null) dispatch(msg)
       }
-    el.addEventListener(eventName, listener)
-    eventCleanups.push(() => el.removeEventListener(eventName, listener))
+    eventCleanups.push(registerEvent(el, eventName, listener))
     updaters.push((next) => { ref.current = next })
     return
   }

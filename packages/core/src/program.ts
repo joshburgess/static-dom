@@ -21,6 +21,7 @@ import { createSignal, toUpdateStream, type Dispatcher, type Observer, type Upda
 import type { SDOM, Teardown } from "./types"
 import { _tryFastPatch } from "./incremental"
 import { diffSubs, type Sub } from "./subscription"
+import { createDelegator, withDelegator } from "./delegation"
 
 // ---------------------------------------------------------------------------
 // Program types
@@ -97,8 +98,14 @@ export function program<Model, Msg>(
     modelSignal.setValue(next)
   }
 
+  // One root delegator per program. Per-element addEventListener calls
+  // collapse to a single root listener per event type, so mount/teardown
+  // for large keyed lists is no longer dominated by listener bookkeeping.
+  const delegator = createDelegator(container)
+
   // Mount the view once. This is the ONLY time DOM structure is created.
-  viewTeardown = view.attach(container, init, updates, dispatch)
+  viewTeardown = withDelegator(delegator, () =>
+    view.attach(container, init, updates, dispatch))
 
   return {
     dispatch,
@@ -106,6 +113,7 @@ export function program<Model, Msg>(
     teardown() {
       viewTeardown?.teardown()
       viewTeardown = null
+      delegator.teardown()
     },
   }
 }
@@ -167,7 +175,9 @@ export function programWithEffects<Model, Msg>(
     cmd(dispatch)
   }
 
-  viewTeardown = view.attach(container, initModel, updates, dispatch)
+  const delegator = createDelegator(container)
+  viewTeardown = withDelegator(delegator, () =>
+    view.attach(container, initModel, updates, dispatch))
 
   // Run the init command
   initCmd(dispatch)
@@ -178,6 +188,7 @@ export function programWithEffects<Model, Msg>(
     teardown() {
       viewTeardown?.teardown()
       viewTeardown = null
+      delegator.teardown()
     },
   }
 }
@@ -306,7 +317,9 @@ export function programWithDelta<Model, Msg>(
     }
   }
 
-  viewTeardown = view.attach(container, init, deltaUpdates, dispatch)
+  const delegator = createDelegator(container)
+  viewTeardown = withDelegator(delegator, () =>
+    view.attach(container, init, deltaUpdates, dispatch))
 
   return {
     dispatch,
@@ -317,6 +330,7 @@ export function programWithDelta<Model, Msg>(
     teardown() {
       viewTeardown?.teardown()
       viewTeardown = null
+      delegator.teardown()
     },
   }
 }
@@ -362,7 +376,9 @@ export function programWithSub<Model, Msg>(
     diffSubs(activeSubs, subscriptions(next), dispatch)
   }
 
-  viewTeardown = view.attach(container, init, updates, dispatch)
+  const delegator = createDelegator(container)
+  viewTeardown = withDelegator(delegator, () =>
+    view.attach(container, init, updates, dispatch))
 
   // Start initial subscriptions
   diffSubs(activeSubs, subscriptions(init), dispatch)
@@ -375,6 +391,7 @@ export function programWithSub<Model, Msg>(
       activeSubs.clear()
       viewTeardown?.teardown()
       viewTeardown = null
+      delegator.teardown()
     },
   }
 }
@@ -418,7 +435,9 @@ export function elmProgram<Model, Msg>(
     diffSubs(activeSubs, subscriptions(next), dispatch)
   }
 
-  viewTeardown = view.attach(container, initModel, updates, dispatch)
+  const delegator = createDelegator(container)
+  viewTeardown = withDelegator(delegator, () =>
+    view.attach(container, initModel, updates, dispatch))
   initCmd(dispatch)
   diffSubs(activeSubs, subscriptions(initModel), dispatch)
 
@@ -430,6 +449,7 @@ export function elmProgram<Model, Msg>(
       activeSubs.clear()
       viewTeardown?.teardown()
       viewTeardown = null
+      delegator.teardown()
     },
   }
 }

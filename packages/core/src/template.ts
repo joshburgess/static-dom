@@ -18,6 +18,7 @@
 
 import { ATTR_TO_PROP, applyClassMap } from "./constructors"
 import type { Dispatcher } from "./observable"
+import { registerEvent } from "./delegation"
 import type { JsxSpec } from "./shared"
 import { isStaticFn, staticValueOf } from "./shared"
 
@@ -342,8 +343,7 @@ export function instantiateTemplate(
           const msg = (handler as (e: Event, m: unknown) => unknown)(event, ref.current)
           if (msg !== null) dispatch(msg)
         }
-        ;(node as Element).addEventListener(eventName, listener)
-        eventCleanups.push(() => (node as Element).removeEventListener(eventName, listener))
+        eventCleanups.push(registerEvent(node as Element, eventName, listener))
         updaters.push((next) => { ref.current = next })
         break
       }

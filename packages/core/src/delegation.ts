@@ -99,3 +99,56 @@ export function createDelegator(root: Element): EventDelegator {
     },
   }
 }
+
+// ---------------------------------------------------------------------------
+// Ambient delegator
+//
+// program() installs a delegator at the container, then runs view.attach
+// inside withDelegator(d, ...). Constructors that wire DOM events (jsx
+// runtime, template, element() constructor, html runtime) call
+// registerEvent(el, name, fn), which uses the ambient delegator if one is
+// set and otherwise falls back to addEventListener. This keeps the public
+// SDOM.attach signature unchanged: delegation is a transport-layer detail,
+// not part of the user-facing model.
+//
+// Reconcilers (createArrayReconciler, the array() reconciler in
+// incremental.ts) capture the ambient delegator at factory time and
+// reinstall it around every per-item attach so newly-mounted rows also
+// register through the program's root listener.
+// ---------------------------------------------------------------------------
+
+let currentDelegator: EventDelegator | null = null
+
+/** Read the ambient delegator. Returns null when no program is mounting. */
+export function getCurrentDelegator(): EventDelegator | null {
+  return currentDelegator
+}
+
+/** Run `fn` with `d` installed as the ambient delegator. Restores the prior
+ *  delegator on return. Synchronous only — do not await inside `fn`. */
+export function withDelegator<T>(d: EventDelegator | null, fn: () => T): T {
+  const prev = currentDelegator
+  currentDelegator = d
+  try {
+    return fn()
+  } finally {
+    currentDelegator = prev
+  }
+}
+
+/** Register a DOM event handler. Uses the ambient delegator when present
+ *  (single root listener), otherwise installs a native listener on the
+ *  element. Returns an unregister function suitable for an event-cleanup
+ *  array. */
+export function registerEvent(
+  el: Element,
+  eventName: string,
+  listener: (event: Event) => void,
+): () => void {
+  const d = currentDelegator
+  if (d !== null) {
+    return d.on(el, eventName, listener)
+  }
+  el.addEventListener(eventName, listener)
+  return () => el.removeEventListener(eventName, listener)
+}

@@ -23,6 +23,7 @@ import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { Prism, Affine } from "./optics"
 import { guard, guardApply, getErrorHandler, __SDOM_GUARD__ } from "./errors"
 import { __SDOM_DEV__, validateModelShape, validateUniqueKeys } from "./dev"
+import { registerEvent, getCurrentDelegator, withDelegator } from "./delegation"
 import { createArrayReconciler, lis as lisImpl } from "./reconcile"
 
 // ---------------------------------------------------------------------------
@@ -302,9 +303,8 @@ export function element<
               : evtHandler(event, ref.current)
             if (msg !== null) dispatch(msg)
           }
-          el.addEventListener(name, handler)
           attrUpdaters.push(new EventRefUpdater<Model>(ref))
-          eventTeardowns.push(() => el.removeEventListener(name, handler))
+          eventTeardowns.push(registerEvent(el, name, handler))
           break
         }
       }
@@ -542,6 +542,10 @@ export function indexedArray<Model, ItemModel, Msg>(
     const container = document.createElement(containerTag)
     parent.appendChild(container)
 
+    // Capture the ambient delegator so deferred per-item mounts still
+    // register through the program's root listener.
+    const capturedDelegator = getCurrentDelegator()
+
     type Slot = {
       teardown: Teardown
       modelRef: { current: ItemModel }
@@ -563,7 +567,8 @@ export function indexedArray<Model, ItemModel, Msg>(
         },
       }
 
-      slot.teardown = itemSdom.attach(container, itemModel, itemUpdates, dispatch)
+      slot.teardown = withDelegator(capturedDelegator, () =>
+        itemSdom.attach(container, itemModel, itemUpdates, dispatch))
       slots.push(slot)
     }
 
@@ -637,6 +642,9 @@ export function optional<Model, SubModel, Msg>(
     const anchor = document.createComment("optional")
     parent.appendChild(anchor)
 
+    // Capture for deferred re-mounts.
+    const capturedDelegator = getCurrentDelegator()
+
     let currentTeardown: Teardown | null = null
     let currentSubModel: SubModel | null = prism.preview(initialModel)
 
@@ -668,9 +676,11 @@ export function optional<Model, SubModel, Msg>(
           })
         },
       }
-      currentTeardown = guard("attach", "optional inner", () =>
-        inner.attach(fragment, subModel, subUpdates, dispatch),
-        { teardown() {} }
+      currentTeardown = withDelegator(capturedDelegator, () =>
+        guard("attach", "optional inner", () =>
+          inner.attach(fragment, subModel, subUpdates, dispatch),
+          { teardown() {} }
+        )
       )
       anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
     }
@@ -909,6 +919,9 @@ export function match<Model, Msg>(
     const anchor = document.createComment("match")
     parent.appendChild(anchor)
 
+    // Capture for deferred branch re-mounts.
+    const capturedDelegator = getCurrentDelegator()
+
     let currentKey = getKey(initialModel)
     let currentTeardown: Teardown | null = null
     // Track DOM nodes inserted by the current branch for removal on switch.
@@ -935,9 +948,11 @@ export function match<Model, Msg>(
           })
         },
       }
-      currentTeardown = guard("attach", `match branch "${key}"`, () =>
-        branch.attach(fragment, model, branchUpdates, dispatch),
-        { teardown() {} }
+      currentTeardown = withDelegator(capturedDelegator, () =>
+        guard("attach", `match branch "${key}"`, () =>
+          branch.attach(fragment, model, branchUpdates, dispatch),
+          { teardown() {} }
+        )
       )
 
       currentNodes = Array.from(fragment.childNodes)
@@ -1021,6 +1036,9 @@ export function dynamic<Model, Msg, K>(
     const anchor = document.createComment("dynamic")
     parent.appendChild(anchor)
 
+    // Capture for deferred branch re-mounts.
+    const capturedDelegator = getCurrentDelegator()
+
     let currentKeyValue = key(initialModel)
     let currentModel = initialModel
     let currentTeardown: Teardown | null = null
@@ -1081,9 +1099,11 @@ export function dynamic<Model, Msg, K>(
         },
       }
 
-      currentTeardown = guard("attach", "dynamic branch", () =>
-        sdom.attach(fragment, model, branchUpdates, dispatch),
-        { teardown() {} }
+      currentTeardown = withDelegator(capturedDelegator, () =>
+        guard("attach", "dynamic branch", () =>
+          sdom.attach(fragment, model, branchUpdates, dispatch),
+          { teardown() {} }
+        )
       )
       currentNodes = Array.from(fragment.childNodes)
       anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)

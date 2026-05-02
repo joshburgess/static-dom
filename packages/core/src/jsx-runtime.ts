@@ -30,6 +30,7 @@ import {
   type JsxSpec,
 } from "./shared"
 import { buildTemplate, instantiateTemplate, type TemplateCache } from "./template"
+import { registerEvent } from "./delegation"
 
 // ---------------------------------------------------------------------------
 // Fragment
@@ -205,8 +206,7 @@ function buildSpecElement(
         const msg = (handler as (e: Event, m: unknown) => unknown)(event, ref.current)
         if (msg !== null) dispatch(msg)
       }
-      el.addEventListener(eventName, listener)
-      eventCleanups!.push(() => el.removeEventListener(eventName, listener))
+      eventCleanups!.push(registerEvent(el, eventName, listener))
       updaters.push((next) => { ref.current = next })
     }
   }
