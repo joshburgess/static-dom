@@ -4,37 +4,55 @@
   "description": "Static DOM: a virtual-DOM-free UI library with precise TypeScript types",
   "type": "module",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./optics": {
-      "types": "./dist/optics.d.ts",
-      "import": "./dist/optics.js"
-    },
-    "./jsx-runtime": {
-      "types": "./dist/jsx-runtime.d.ts",
-      "import": "./dist/jsx-runtime.js"
-    },
-    "./jsx-dev-runtime": {
-      "types": "./dist/jsx-dev-runtime.d.ts",
-      "import": "./dist/jsx-dev-runtime.js"
-    },
-    "./hyperscript": {
-      "types": "./dist/hyperscript.d.ts",
-      "import": "./dist/hyperscript.js"
-    },
-    "./htm": {
-      "types": "./dist/htm.d.ts",
-      "import": "./dist/htm.js"
-    },
-    "./html": {
-      "types": "./dist/html.d.ts",
-      "import": "./dist/html.js"
-    }
+    ".": "./src/index.ts",
+    "./optics": "./src/optics.ts",
+    "./internal": "./src/internal.ts",
+    "./jsx-runtime": "./src/jsx-runtime.ts",
+    "./jsx-dev-runtime": "./src/jsx-dev-runtime.ts",
+    "./hyperscript": "./src/hyperscript.ts",
+    "./htm": "./src/htm.ts",
+    "./html": "./src/html.ts"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./optics": {
+        "types": "./dist/optics.d.ts",
+        "import": "./dist/optics.js"
+      },
+      "./internal": {
+        "types": "./dist/internal.d.ts",
+        "import": "./dist/internal.js"
+      },
+      "./jsx-runtime": {
+        "types": "./dist/jsx-runtime.d.ts",
+        "import": "./dist/jsx-runtime.js"
+      },
+      "./jsx-dev-runtime": {
+        "types": "./dist/jsx-dev-runtime.d.ts",
+        "import": "./dist/jsx-dev-runtime.js"
+      },
+      "./hyperscript": {
+        "types": "./dist/hyperscript.d.ts",
+        "import": "./dist/hyperscript.js"
+      },
+      "./htm": {
+        "types": "./dist/htm.d.ts",
+        "import": "./dist/htm.js"
+      },
+      "./html": {
+        "types": "./dist/html.d.ts",
+        "import": "./dist/html.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "files": [
     "dist"
   ],

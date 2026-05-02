@@ -45,6 +45,28 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@20.19.39)(@vitest/browser@3.2.4)(happy-dom@20.9.0)
 
+  packages/vdom:
+    dependencies:
+      '@static-dom/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.39
+      happy-dom:
+        specifier: ^20.8.9
+        version: 20.9.0
+      tachys:
+        specifier: ^0.1.1
+        version: 0.1.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@20.19.39)(@vitest/browser@3.2.4)(happy-dom@20.9.0)
+
 packages:
 
   '@babel/code-frame@7.29.0':
@@ -629,6 +651,10 @@ packages:
 
   strip-literal@3.1.0:
     resolution: {integrity: sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==}
+
+  tachys@0.1.1:
+    resolution: {integrity: sha512-nHLuPCqOhnOlWk9NDsxkEo7e+Hum9wavAO8YBUmKawUdPFMXMd8uVGov6ncQRU4yhi09yHdfz8HOXKs2kOlZdA==}
+    engines: {node: '>=18'}
 
   tinybench@2.9.0:
     resolution: {integrity: sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==}
@@ -1243,6 +1269,8 @@ snapshots:
   strip-literal@3.1.0:
     dependencies:
       js-tokens: 9.0.1
+
+  tachys@0.1.1: {}
 
   tinybench@2.9.0: {}
 

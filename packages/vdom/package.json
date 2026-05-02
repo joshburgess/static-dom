@@ -1,0 +1,37 @@
+{
+  "name": "@static-dom/vdom",
+  "version": "0.1.0",
+  "description": "Tachys-backed virtual DOM boundary for static-dom",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@static-dom/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "tachys": "^0.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "happy-dom": "^20.8.9",
+    "tachys": "^0.1.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "license": "(Apache-2.0 OR MIT)"
+}

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { h } from "tachys/sync"
-import { vdom, vdomWith } from "../src/vdom"
+import { vdom, vdomWith } from "../src/index"
 import { mount, cleanup, type TestHarness } from "./helpers"
 
 // ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ describe("vdom", () => {
     h("div", null,
       h("h1", null, model.title),
       h("ul", null,
-        model.items.map(item =>
+        ...model.items.map(item =>
           h("li", {
             key: item.id,
             onClick: () => dispatch({ type: "clicked", id: item.id }),

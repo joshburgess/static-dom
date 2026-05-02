@@ -228,7 +228,7 @@ import { h } from "tachys/sync"
 
 const dynamicContent = vdom<Model, Msg>((model, dispatch) =>
   h("ul", null,
-    model.items.map(item =>
+    ...model.items.map(item =>
       h("li", { key: item.id, onClick: () => dispatch({ type: "click", id: item.id }) },
         item.label
       )

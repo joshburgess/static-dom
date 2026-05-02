@@ -10,16 +10,16 @@
  * Everything outside remains static-dom O(leaf changes). The boundary
  * is explicit and scoped.
  *
- * Tachys is a peer dependency, only required if you import `static-dom/vdom`.
+ * Tachys is a peer dependency of this package.
  *
  * @example
  * ```typescript
- * import { vdom } from "static-dom/vdom"
+ * import { vdom } from "@static-dom/vdom"
  * import { h } from "tachys/sync"
  *
  * const dynamicContent = vdom<Model, Msg>((model, dispatch) =>
  *   h("div", null,
- *     model.items.map(item =>
+ *     ...model.items.map(item =>
  *       h(item.type, {
  *         key: item.id,
  *         onClick: () => dispatch({ type: "click", id: item.id }),
@@ -30,9 +30,8 @@
  * ```
  */
 
-import { makeSDOM, type SDOM } from "./types"
-import type { Dispatcher } from "./observable"
-import { guard } from "./errors"
+import type { SDOM, Dispatcher } from "@static-dom/core"
+import { makeSDOM, guard } from "@static-dom/core/internal"
 import { render as tachysRender, type VNode } from "tachys/sync"
 
 // ---------------------------------------------------------------------------
@@ -52,12 +51,12 @@ import { render as tachysRender, type VNode } from "tachys/sync"
  *
  * @example
  * ```typescript
- * import { vdom } from "static-dom/vdom"
+ * import { vdom } from "@static-dom/vdom"
  * import { h } from "tachys/sync"
  *
  * const view = vdom<Model, Msg>((model, dispatch) =>
  *   h("ul", null,
- *     model.items.map(item =>
+ *     ...model.items.map(item =>
  *       h("li", { key: item.id, onClick: () => dispatch({ type: "select", id: item.id }) },
  *         item.label
  *       )
@@ -115,7 +114,7 @@ export function vdom<Model, Msg>(
  *
  * @example
  * ```typescript
- * import { vdomWith } from "static-dom/vdom"
+ * import { vdomWith } from "@static-dom/vdom"
  *
  * const chart = vdomWith<Model, Msg>({
  *   render(container, model, dispatch) {
