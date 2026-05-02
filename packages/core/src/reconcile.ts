@@ -409,9 +409,12 @@ export function createArrayReconciler<ItemModel, Msg>(
     }
 
     // --- Fast path: clear all ---
+    // Wipe the DOM first so per-item teardowns find their nodes already
+    // detached: el.remove() becomes a no-op, and 1000 individual removes
+    // collapse into one textContent="" wipe.
     if (count === 0 && liveItems.size > 0) {
-      for (const { teardown: td } of liveItems.values()) td.teardown()
       container.textContent = ""
+      for (const { teardown: td } of liveItems.values()) td.teardown()
       liveItems.clear()
       markersInserted = false
       itemFirstNodes.clear()
@@ -435,8 +438,8 @@ export function createArrayReconciler<ItemModel, Msg>(
         if (nextByKey.has(key)) { noOverlap = false; break }
       }
       if (noOverlap) {
-        for (const { teardown: td } of liveItems.values()) td.teardown()
         container.textContent = ""
+        for (const { teardown: td } of liveItems.values()) td.teardown()
         liveItems.clear()
         markersInserted = false
         itemFirstNodes.clear()
