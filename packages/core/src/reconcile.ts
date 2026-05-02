@@ -150,8 +150,15 @@ export function createArrayReconciler<ItemModel, Msg>(
   let markersInserted = false
   const itemFirstNodes = new Map<string, ChildNode>()
 
-  /** Mount an item during initial render — no markers, appends to container. */
-  function mountItemInitial(key: string, itemModel: ItemModel): void {
+  /** Mount an item during initial render — no markers, appends to `target`.
+   *  `target` is the container itself for one-off mounts, or a temporary
+   *  DocumentFragment when the caller is bulk-mounting and will flush the
+   *  fragment to the container at the end. */
+  function mountItemInitial(
+    target: Element | DocumentFragment,
+    key: string,
+    itemModel: ItemModel,
+  ): void {
     const update = { prev: itemModel, next: itemModel }
     const entry: ItemEntry<ItemModel> = {
       startMarker: null, endMarker: null,
@@ -160,18 +167,18 @@ export function createArrayReconciler<ItemModel, Msg>(
     }
     liveItems.set(key, entry)
 
-    const lastBefore = container.lastChild
+    const lastBefore = target.lastChild
 
     currentMountEntry = entry
     entry.teardown = withDelegator(capturedDelegator, () =>
       guard("attach", `${label} item "${key}"`, () =>
-        itemSdom.attach(container, itemModel, sharedUpdateStream, dispatch),
+        itemSdom.attach(target, itemModel, sharedUpdateStream, dispatch),
         { teardown() {} }
       )
     )
     currentMountEntry = null
 
-    const firstNode = lastBefore ? lastBefore.nextSibling : container.firstChild
+    const firstNode = lastBefore ? lastBefore.nextSibling : target.firstChild
     if (firstNode) itemFirstNodes.set(key, firstNode)
   }
 
@@ -332,14 +339,18 @@ export function createArrayReconciler<ItemModel, Msg>(
     modelAt: (i: number) => ItemModel,
   ): void {
     // --- Initial mount: no markers, no reconciliation ---
+    // Build into a DocumentFragment first so the N row insertions collapse
+    // into a single live-DOM append at the end. Big win on 10k-row creates.
     if (isFirstSync) {
       isFirstSync = false
       const keys = new Array<string>(count)
+      const frag = document.createDocumentFragment()
       for (let i = 0; i < count; i++) {
         const key = keyAt(i)
         keys[i] = key
-        mountItemInitial(key, modelAt(i))
+        mountItemInitial(frag, key, modelAt(i))
       }
+      container.appendChild(frag)
       prevKeys = keys
       return
     }
@@ -571,9 +582,11 @@ export function createArrayReconciler<ItemModel, Msg>(
         liveItems.clear()
         markersInserted = false
         itemFirstNodes.clear()
+        const frag = document.createDocumentFragment()
         for (let i = 0; i < count; i++) {
-          mountItemInitial(nextKeys[i]!, modelAt(i))
+          mountItemInitial(frag, nextKeys[i]!, modelAt(i))
         }
+        container.appendChild(frag)
         prevKeys = nextKeys
         return
       }
