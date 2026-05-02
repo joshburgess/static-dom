@@ -458,6 +458,101 @@ export function createArrayReconciler<ItemModel, Msg>(
       return
     }
 
+    // --- Prefix/suffix walks for pure removal or pure insertion ---
+    // After matching equal keys at the head and tail, if the middle is
+    // empty in either direction we can skip nextByKey + LIS entirely.
+    // Targets remove-one (pure removal) and insert-in-middle patterns.
+    if (prevKeys !== null && liveItems.size > 0) {
+      const oldLen = prevKeys.length
+      const limit = oldLen < count ? oldLen : count
+
+      let prefixLen = 0
+      while (prefixLen < limit && prevKeys[prefixLen] === keyAt(prefixLen)) {
+        prefixLen++
+      }
+
+      let oldEnd = oldLen - 1
+      let newEnd = count - 1
+      while (
+        oldEnd >= prefixLen &&
+        newEnd >= prefixLen &&
+        prevKeys[oldEnd] === keyAt(newEnd)
+      ) {
+        oldEnd--
+        newEnd--
+      }
+
+      // Pure removal: new is fully consumed by prefix + suffix
+      if (newEnd < prefixLen && oldEnd >= prefixLen) {
+        for (let i = 0; i < prefixLen; i++) {
+          const entry = liveItems.get(prevKeys[i]!)!
+          const model = modelAt(i)
+          if (entry.modelRef.current !== model) {
+            pushItemUpdate(entry, entry.modelRef.current, model)
+          }
+        }
+        for (let i = oldEnd + 1; i < oldLen; i++) {
+          const entry = liveItems.get(prevKeys[i]!)!
+          const model = modelAt(prefixLen + (i - oldEnd - 1))
+          if (entry.modelRef.current !== model) {
+            pushItemUpdate(entry, entry.modelRef.current, model)
+          }
+        }
+        ensureMarkers()
+        for (let i = prefixLen; i <= oldEnd; i++) {
+          removeItem(prevKeys[i]!)
+        }
+        const newKeys = new Array<string>(count)
+        for (let i = 0; i < prefixLen; i++) newKeys[i] = prevKeys[i]!
+        for (let i = oldEnd + 1; i < oldLen; i++) {
+          newKeys[prefixLen + (i - oldEnd - 1)] = prevKeys[i]!
+        }
+        prevKeys = newKeys
+        return
+      }
+
+      // Pure insertion: old is fully consumed by prefix + suffix
+      if (oldEnd < prefixLen && newEnd >= prefixLen) {
+        for (let i = 0; i < prefixLen; i++) {
+          const entry = liveItems.get(prevKeys[i]!)!
+          const model = modelAt(i)
+          if (entry.modelRef.current !== model) {
+            pushItemUpdate(entry, entry.modelRef.current, model)
+          }
+        }
+        const suffixStart = oldEnd + 1
+        for (let i = suffixStart; i < oldLen; i++) {
+          const entry = liveItems.get(prevKeys[i]!)!
+          const newIdx = newEnd + 1 + (i - suffixStart)
+          const model = modelAt(newIdx)
+          if (entry.modelRef.current !== model) {
+            pushItemUpdate(entry, entry.modelRef.current, model)
+          }
+        }
+        ensureMarkers()
+        const refKey = suffixStart < oldLen ? prevKeys[suffixStart]! : null
+        const refNode = refKey ? liveItems.get(refKey)!.startMarker : null
+        const newKeys = new Array<string>(count)
+        for (let i = 0; i < prefixLen; i++) newKeys[i] = prevKeys[i]!
+        for (let i = prefixLen; i <= newEnd; i++) {
+          const key = keyAt(i)
+          newKeys[i] = key
+          mountItemFull(key, modelAt(i))
+        }
+        // Move freshly-mounted items from the end of the container into
+        // place. insertBefore the same refNode in order — each move slots
+        // the next item directly after the previous one.
+        for (let i = prefixLen; i <= newEnd; i++) {
+          moveItemBefore(liveItems.get(newKeys[i]!)!, refNode)
+        }
+        for (let i = suffixStart; i < oldLen; i++) {
+          newKeys[newEnd + 1 + (i - suffixStart)] = prevKeys[i]!
+        }
+        prevKeys = newKeys
+        return
+      }
+    }
+
     // Build key→model map for full reconciliation
     const nextByKey = new Map<string, ItemModel>()
     const nextKeys = new Array<string>(count)
