@@ -1,16 +1,16 @@
 /**
- * vdom.ts — Embedded virtual DOM subtree boundary.
+ * vdom.ts: Embedded virtual DOM subtree boundary.
  *
  * Provides `vdom()` and `vdomWith()` constructors that embed a virtual DOM
  * subtree inside a static-dom tree. The recommended `vdom()` boundary uses
- * Tachys (`tachys/sync`) for diffing and patching — an Inferno-style LIS
+ * Tachys (`tachys/sync`) for diffing and patching: an Inferno-style LIS
  * keyed-diff with V8-focused tuning, ~11KB gzipped.
  *
  * Everything inside the boundary pays vdom diffing cost O(tree size).
  * Everything outside remains static-dom O(leaf changes). The boundary
  * is explicit and scoped.
  *
- * Tachys is a peer dependency — only required if you import `static-dom/vdom`.
+ * Tachys is a peer dependency, only required if you import `static-dom/vdom`.
  *
  * @example
  * ```typescript
@@ -36,7 +36,7 @@ import { guard } from "./errors"
 import { render as tachysRender, type VNode } from "tachys/sync"
 
 // ---------------------------------------------------------------------------
-// vdom — Tachys-backed virtual DOM boundary
+// vdom: Tachys-backed virtual DOM boundary
 // ---------------------------------------------------------------------------
 
 /**
@@ -100,13 +100,13 @@ export function vdom<Model, Msg>(
 }
 
 // ---------------------------------------------------------------------------
-// vdomWith — bring your own renderer
+// vdomWith: bring your own renderer
 // ---------------------------------------------------------------------------
 
 /**
  * Embed any imperative rendering engine inside a static-dom tree.
  *
- * This is the generic variant of `vdom()` — instead of Inferno, you provide
+ * This is the generic variant of `vdom()`. Instead of Tachys, you provide
  * your own render and teardown functions. Useful for integrating any renderer
  * (Canvas, WebGL, D3, a custom vdom, etc.) as an SDOM node.
  *
@@ -119,7 +119,7 @@ export function vdom<Model, Msg>(
  *
  * const chart = vdomWith<Model, Msg>({
  *   render(container, model, dispatch) {
- *     // Any rendering logic — D3, Canvas, WebGL, etc.
+ *     // Any rendering logic: D3, Canvas, WebGL, etc.
  *     container.innerHTML = `<p>${model.value}</p>`
  *   },
  *   teardown(container) {

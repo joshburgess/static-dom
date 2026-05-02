@@ -1,13 +1,13 @@
 # static-dom
 
-A TypeScript UI library that eliminates virtual DOM diffing by fixing DOM structure at mount time. Only leaf values (text content, attributes) update in place — no intermediate representation, no reconciliation.
+A TypeScript UI library that eliminates virtual DOM diffing by fixing DOM structure at mount time. Only leaf values (text content, attributes) update in place: no intermediate representation, no reconciliation.
 
 Based on Phil Freeman's [purescript-sdom](https://github.com/paf31/purescript-sdom) and [blog post](https://blog.functorial.com/posts/2018-03-12-You-Might-Not-Need-The-Virtual-DOM.html).
 
-- **No diffing** — updates go straight to the DOM node that changed
-- **Predictable performance** — cost is proportional to what changed, not tree size
-- **Simple mental model** — components are just functions from model to leaf values
-- **Multiple authoring styles** — JSX, hyperscript, tagged templates, or low-level constructors
+- **No diffing**: updates go straight to the DOM node that changed
+- **Predictable performance**: cost is proportional to what changed, not tree size
+- **Simple mental model**: components are just functions from model to leaf values
+- **Multiple authoring styles**: JSX, hyperscript, tagged templates, or low-level constructors
 
 ## Install
 
@@ -59,11 +59,11 @@ program({
 })
 ```
 
-Dynamic values are functions from model to leaf values — `{m => m.label}` for text, `class={m => m.active ? "active" : ""}` for attributes. Event handlers receive the event and current model: `onClick={(e, m) => ({ type: "clicked", id: m.id })}`.
+Dynamic values are functions from model to leaf values: `{m => m.label}` for text, `class={m => m.active ? "active" : ""}` for attributes. Event handlers receive the event and current model: `onClick={(e, m) => ({ type: "clicked", id: m.id })}`.
 
 ### Hyperscript
 
-No build step needed — same semantics as JSX, just function calls:
+No build step needed; same semantics as JSX, just function calls:
 
 ```typescript
 import { div, span, button } from "static-dom/hyperscript"
@@ -77,7 +77,7 @@ const view = div({}, [
 
 ### Tagged templates
 
-Two flavors — `htm` parses at runtime (no build step), `html` uses the browser's native HTML parser with template cloning for faster initial renders:
+Two flavors: `htm` parses at runtime (no build step), `html` uses the browser's native HTML parser with template cloning for faster initial renders:
 
 ```typescript
 import { html } from "static-dom/htm"
@@ -92,7 +92,7 @@ const view = html`
 `
 ```
 
-All authoring styles produce the same runtime code — pick whichever you prefer.
+All authoring styles produce the same runtime code. Pick whichever you prefer.
 
 ## Architecture
 
@@ -136,7 +136,7 @@ elmProgram<Model, Msg>({
 
 **Navigation:** `pushUrl`, `replaceUrl`, `back`, `forward`, `onUrlChange`, `onHashChange`
 
-**Ports:** `createInPort`, `createOutPort`, `portSub`, `portCmd` — typed JS interop
+**Ports:** `createInPort`, `createOutPort`, `portSub`, `portCmd` (typed JS interop)
 
 ## Lists
 
@@ -149,7 +149,7 @@ Choose a list constructor based on your update pattern:
 | `indexedArray(tag, getItems, view)` | Positional (no keys) | Append-only logs, fixed grids |
 | `incrementalArray(tag, getItems, getDelta, view)` | Keyed deltas | Large lists with targeted updates |
 
-`incrementalArray` skips reconciliation entirely — O(1) per update regardless of list size. See [RECOMMENDATION.md](./RECOMMENDATION.md) for detailed guidance.
+`incrementalArray` skips reconciliation entirely: O(1) per update regardless of list size. See [RECOMMENDATION.md](./RECOMMENDATION.md) for detailed guidance.
 
 ## Dynamic structure
 
@@ -161,7 +161,7 @@ Three constructors handle these cases at different levels of flexibility. Each o
 |---|---|---|
 | `match` | Switching between a known set of views based on a discriminant | O(leaf changes) within a branch; remount cost on branch switch |
 | `dynamic` | The set of views isn't known at compile time, or depends on runtime data | Same as match, plus optional DOM caching across key switches |
-| `vdom` | A subtree needs per-update structural changes (drag-and-drop, WYSIWYG, animations) | O(tree size) diffing inside the boundary via Inferno |
+| `vdom` | A subtree needs per-update structural changes (drag-and-drop, WYSIWYG, animations) | O(tree size) diffing inside the boundary via Tachys |
 
 For binary show/hide (present vs. absent), use `optional` with a prism. For everything else, read on.
 
@@ -197,14 +197,14 @@ const view = match(m => m.loggedIn ? "auth" : "anon", {
 
 ### dynamic
 
-For cases where the set of possible views isn't known at compile time -- user-configured dashboards, plugin systems, data-driven layouts:
+For cases where the set of possible views isn't known at compile time, like user-configured dashboards, plugin systems, or data-driven layouts:
 
 ```typescript
 import { dynamic } from "static-dom"
 
 const view = dynamic(
-  m => m.layout,           // cache key — determines when to remount
-  m => buildLayout(m),     // factory — returns an SDOM
+  m => m.layout,           // cache key: determines when to remount
+  m => buildLayout(m),     // factory: returns an SDOM
 )
 ```
 
@@ -216,7 +216,7 @@ Enable caching to reuse previously mounted branches instead of rebuilding from s
 const view = dynamic(m => m.layout, m => buildLayout(m), { cache: true })
 ```
 
-With caching, branch switches detach and reinsert existing DOM nodes rather than tearing down and remounting -- useful for tab-like patterns where users flip back and forth.
+With caching, branch switches detach and reinsert existing DOM nodes rather than tearing down and remounting. Useful for tab-like patterns where users flip back and forth.
 
 ### vdom
 
@@ -239,7 +239,7 @@ const dynamicContent = vdom<Model, Msg>((model, dispatch) =>
 
 Everything inside the boundary pays vdom diffing cost (O(tree size)). Everything outside remains static-dom (O(leaf changes)). The trade-off is explicit and scoped.
 
-`tachys/sync` is the synchronous-only build of Tachys -- a React-like vdom with an Inferno-style LIS keyed-diff and V8-focused tuning, ~11KB gzipped. The concurrent scheduler is shimmed out, so transitions, time slicing, and Suspense aren't pulled into your bundle.
+`tachys/sync` is the synchronous-only build of Tachys: a React-like vdom with an Inferno-style LIS keyed-diff and V8-focused tuning, ~11KB gzipped. The concurrent scheduler is shimmed out, so transitions, time slicing, and Suspense aren't pulled into your bundle.
 
 For integrating any other renderer (Canvas, D3, WebGL), use `vdomWith`:
 
@@ -252,7 +252,7 @@ const chart = vdomWith<Model, Msg>({
 })
 ```
 
-Tachys is an optional peer dependency -- only needed if you import `static-dom/vdom`.
+Tachys is an optional peer dependency, only needed if you import `static-dom/vdom`.
 
 ## Focusing on sub-models
 
@@ -263,13 +263,13 @@ import { at } from "static-dom"
 
 // at() builds a type-safe path into your model
 const nameLens = at<AppModel>()("user", "profile", "name")
-// Lens<AppModel, string> — reads and writes model.user.profile.name
+// Lens<AppModel, string>: reads and writes model.user.profile.name
 
 // Focus a reusable component on a sub-model
 const nameInput = stringInput.focus(nameLens)
 ```
 
-Under the hood, `at()` and `prop()` build **lenses** — composable accessors from the optics tradition. You don't need to know optics to use them, but the full system is there if you want it: `Iso`, `Lens`, `Prism`, `Affine`, `Getter`, `Fold`, `Setter`, `Review`, and `Traversal` with type-safe composition.
+Under the hood, `at()` and `prop()` build **lenses**: composable accessors from the optics tradition. You don't need to know optics to use them, but the full system is there if you want it: `Iso`, `Lens`, `Prism`, `Affine`, `Getter`, `Fold`, `Setter`, `Review`, and `Traversal` with type-safe composition.
 
 ```typescript
 import { prop, each } from "static-dom"
@@ -281,34 +281,34 @@ allNames.getAll(model) // ["Alice", "Bob"]
 
 ### Using third-party optics
 
-`.focus()` accepts any optic with a `get` method — not just static-dom's own lenses. This means lenses from **fp-ts**, **Effect**, **monocle-ts**, or any other optics library work out of the box:
+`.focus()` accepts any optic with a `get` method, not just static-dom's own lenses. This means lenses from **fp-ts**, **Effect**, **monocle-ts**, or any other optics library work out of the box:
 
 ```typescript
 // fp-ts
 import * as L from "fp-ts/Lens"
 const userLens = pipe(L.id<Model>(), L.prop("user"))
-const view = userView.focus(userLens) // works — fp-ts Lens has .get
+const view = userView.focus(userLens) // works because fp-ts Lens has .get
 
 // Effect
 import * as Optic from "@effect/optics"
 const nameLens = Optic.id<User>().at("name")
-const view = nameView.focus(nameLens) // works — Effect optics have .get
+const view = nameView.focus(nameLens) // works because Effect optics have .get
 
 // Any object with a get method
 const view = nameView.focus({ get: (model: Model) => model.user.name })
 ```
 
-The structural protocol is called `Focusable<S, A>` — only `get` is required:
+The structural protocol is called `Focusable<S, A>`. Only `get` is required:
 
 ```typescript
 interface Focusable<S, A> {
-  get(s: S): A                      // required — read the focused value
-  compose?(that: Focusable<A, B>): Focusable<S, B>  // optional — enables focus fusion
-  getDelta?(parentDelta: unknown): unknown | undefined // optional — O(1) delta propagation
+  get(s: S): A                      // required: read the focused value
+  compose?(that: Focusable<A, B>): Focusable<S, B>  // optional: enables focus fusion
+  getDelta?(parentDelta: unknown): unknown | undefined // optional: O(1) delta propagation
 }
 ```
 
-When `compose` is present, consecutive `.focus()` calls fuse into a single subscription layer (O(1) per update). When absent, each `.focus()` creates its own layer — still correct, just O(depth). static-dom's own `prop()` and `at()` lenses provide all three methods for maximum performance.
+When `compose` is present, consecutive `.focus()` calls fuse into a single subscription layer (O(1) per update). When absent, each `.focus()` creates its own layer (still correct, just O(depth)). static-dom's own `prop()` and `at()` lenses provide all three methods for maximum performance.
 
 ## React interop
 
@@ -329,7 +329,7 @@ function App({ model, onMsg }) {
 
 ## Performance
 
-On targeted updates (single row in a 1,000-row table), static-dom's incremental path reaches 88% of Solid.js throughput while using a simpler whole-model architecture — no signals, no dependency tracking. On bulk attribute updates, the basic `array()` path beats Solid by 17%.
+On targeted updates (single row in a 1,000-row table), static-dom's incremental path reaches 88% of Solid.js throughput while using a simpler whole-model architecture: no signals, no dependency tracking. On bulk attribute updates, the basic `array()` path beats Solid by 17%.
 
 See [BENCHMARKS.md](./BENCHMARKS.md) for full results and [RECOMMENDATION.md](./RECOMMENDATION.md) for tuning guidance.
 
@@ -337,10 +337,10 @@ See [BENCHMARKS.md](./BENCHMARKS.md) for full results and [RECOMMENDATION.md](./
 
 | Export | Description |
 |---|---|
-| `static-dom/vite` | Vite plugin — `sdomJsx()` |
+| `static-dom/vite` | Vite plugin (`sdomJsx()`) |
 | `static-dom/esbuild` | esbuild plugin + SWC config helper |
 | `static-dom/eslint` | `no-dynamic-children` lint rule |
-| `static-dom/vdom` | Inferno-backed virtual DOM boundary |
+| `static-dom/vdom` | Tachys-backed virtual DOM boundary |
 
 ## License
 
