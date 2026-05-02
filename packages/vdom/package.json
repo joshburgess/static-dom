@@ -24,12 +24,12 @@
     "@static-dom/core": "workspace:*"
   },
   "peerDependencies": {
-    "tachys": "^0.1.1"
+    "tachys": "^0.1.2"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "happy-dom": "^20.8.9",
-    "tachys": "^0.1.1",
+    "tachys": "^0.1.2",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   },

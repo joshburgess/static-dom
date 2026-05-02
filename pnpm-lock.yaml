@@ -134,8 +134,8 @@ importers:
         specifier: ^20.8.9
         version: 20.9.0
       tachys:
-        specifier: ^0.1.1
-        version: 0.1.1
+        specifier: ^0.1.2
+        version: 0.1.2
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -1165,8 +1165,8 @@ packages:
   strip-literal@3.1.0:
     resolution: {integrity: sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==}
 
-  tachys@0.1.1:
-    resolution: {integrity: sha512-nHLuPCqOhnOlWk9NDsxkEo7e+Hum9wavAO8YBUmKawUdPFMXMd8uVGov6ncQRU4yhi09yHdfz8HOXKs2kOlZdA==}
+  tachys@0.1.2:
+    resolution: {integrity: sha512-rC/SpYg3ueQ4jLxmv95dK0l4YRFdxa8d04y3/YqNbJaTog7r9mizPSSJ1ILRvsJLlsaz1QwLUdyvDvvaFFwNHg==}
     engines: {node: '>=18'}
 
   tinybench@2.9.0:
@@ -2204,7 +2204,7 @@ snapshots:
     dependencies:
       js-tokens: 9.0.1
 
-  tachys@0.1.1: {}
+  tachys@0.1.2: {}
 
   tinybench@2.9.0: {}
 

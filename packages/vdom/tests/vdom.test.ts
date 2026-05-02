@@ -26,7 +26,7 @@ describe("vdom", () => {
     h("div", null,
       h("h1", null, model.title),
       h("ul", null,
-        ...model.items.map(item =>
+        model.items.map(item =>
           h("li", {
             key: item.id,
             onClick: () => dispatch({ type: "clicked", id: item.id }),
