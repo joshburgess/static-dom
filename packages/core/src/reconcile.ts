@@ -77,9 +77,9 @@ interface ItemEntry<ItemModel> {
   startMarker: Comment | null
   endMarker: Comment | null
   teardown: Teardown
-  modelRef: { current: ItemModel }
   observer: Observer<Update<ItemModel>> | null
   observers: Set<Observer<Update<ItemModel>>> | null
+  // update.next doubles as the live model ref — saves one allocation per row.
   update: { prev: ItemModel; next: ItemModel }
 }
 
@@ -152,11 +152,10 @@ export function createArrayReconciler<ItemModel, Msg>(
 
   /** Mount an item during initial render — no markers, appends to container. */
   function mountItemInitial(key: string, itemModel: ItemModel): void {
-    const modelRef = { current: itemModel }
     const update = { prev: itemModel, next: itemModel }
     const entry: ItemEntry<ItemModel> = {
       startMarker: null, endMarker: null,
-      teardown: { teardown() {} }, modelRef,
+      teardown: { teardown() {} },
       observer: null, observers: null, update,
     }
     liveItems.set(key, entry)
@@ -181,11 +180,10 @@ export function createArrayReconciler<ItemModel, Msg>(
     const startMarker = document.createComment(`s:${key}`)
     const endMarker = document.createComment(`e:${key}`)
 
-    const modelRef = { current: itemModel }
     const update = { prev: itemModel, next: itemModel }
     const entry: ItemEntry<ItemModel> = {
       startMarker, endMarker,
-      teardown: { teardown() {} }, modelRef,
+      teardown: { teardown() {} },
       observer: null, observers: null, update,
     }
     liveItems.set(key, entry)
@@ -204,9 +202,8 @@ export function createArrayReconciler<ItemModel, Msg>(
     container.appendChild(endMarker)
   }
 
-  function pushItemUpdate(entry: ItemEntry<ItemModel>, prevModel: ItemModel, itemModel: ItemModel): void {
-    entry.modelRef.current = itemModel
-    entry.update.prev = prevModel
+  function pushItemUpdate(entry: ItemEntry<ItemModel>, itemModel: ItemModel): void {
+    entry.update.prev = entry.update.next
     entry.update.next = itemModel
     if (entry.observer) {
       entry.observer(entry.update)
@@ -374,8 +371,8 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (let i = 0; i < count; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(i)
-          if (entry.modelRef.current !== model) {
-            pushItemUpdate(entry, entry.modelRef.current, model)
+          if (entry.update.next !== model) {
+            pushItemUpdate(entry, model)
           }
         }
         return
@@ -405,8 +402,8 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (let i = 0; i < count; i++) {
           const entry = liveItems.get(newKeys[i]!)!
           const model = modelAt(i)
-          if (entry.modelRef.current !== model) {
-            pushItemUpdate(entry, entry.modelRef.current, model)
+          if (entry.update.next !== model) {
+            pushItemUpdate(entry, model)
           }
         }
         prevKeys = newKeys
@@ -427,8 +424,8 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (let i = 0; i < prevKeys.length; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(i)
-          if (entry.modelRef.current !== model) {
-            pushItemUpdate(entry, entry.modelRef.current, model)
+          if (entry.update.next !== model) {
+            pushItemUpdate(entry, model)
           }
         }
         ensureMarkers()
@@ -487,15 +484,15 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (let i = 0; i < prefixLen; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(i)
-          if (entry.modelRef.current !== model) {
-            pushItemUpdate(entry, entry.modelRef.current, model)
+          if (entry.update.next !== model) {
+            pushItemUpdate(entry, model)
           }
         }
         for (let i = oldEnd + 1; i < oldLen; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(prefixLen + (i - oldEnd - 1))
-          if (entry.modelRef.current !== model) {
-            pushItemUpdate(entry, entry.modelRef.current, model)
+          if (entry.update.next !== model) {
+            pushItemUpdate(entry, model)
           }
         }
         ensureMarkers()
@@ -516,8 +513,8 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (let i = 0; i < prefixLen; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(i)
-          if (entry.modelRef.current !== model) {
-            pushItemUpdate(entry, entry.modelRef.current, model)
+          if (entry.update.next !== model) {
+            pushItemUpdate(entry, model)
           }
         }
         const suffixStart = oldEnd + 1
@@ -525,8 +522,8 @@ export function createArrayReconciler<ItemModel, Msg>(
           const entry = liveItems.get(prevKeys[i]!)!
           const newIdx = newEnd + 1 + (i - suffixStart)
           const model = modelAt(newIdx)
-          if (entry.modelRef.current !== model) {
-            pushItemUpdate(entry, entry.modelRef.current, model)
+          if (entry.update.next !== model) {
+            pushItemUpdate(entry, model)
           }
         }
         ensureMarkers()
@@ -597,8 +594,8 @@ export function createArrayReconciler<ItemModel, Msg>(
       const entry = liveItems.get(key)
       if (!entry) {
         mountItemFull(key, model)
-      } else if (entry.modelRef.current !== model) {
-        pushItemUpdate(entry, entry.modelRef.current, model)
+      } else if (entry.update.next !== model) {
+        pushItemUpdate(entry, model)
       }
     }
 
