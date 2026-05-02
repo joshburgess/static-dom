@@ -1,9 +1,8 @@
 import { describe, it, expect, afterEach, beforeAll } from "vitest"
 import { createElement, act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { SDOMBoundary, useSDOMBoundary } from "../src/react"
-import { text, element } from "../src/constructors"
-import type { SDOM } from "../src/types"
+import { SDOMBoundary, useSDOMBoundary } from "../src/index"
+import { text, element, type SDOM } from "@static-dom/core"
 
 beforeAll(() => {
   ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true

@@ -142,7 +142,7 @@ export {
 } from "./optics"
 
 // Observable primitives (useful for building adapters)
-export type { Observable, UpdateStream, Dispatcher, Update, Signal } from "./observable"
+export type { Observable, UpdateStream, Dispatcher, Update, Signal, Observer, Unsubscribe } from "./observable"
 export { createSignal, toUpdateStream, mapUpdate, contramapDispatcher } from "./observable"
 
 // Constructors

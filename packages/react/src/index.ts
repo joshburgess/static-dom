@@ -11,7 +11,7 @@
  *
  * @example
  * ```tsx
- * import { SDOMBoundary } from "static-dom/react"
+ * import { SDOMBoundary } from "@static-dom/react"
  * import { myTableView } from "./views"
  *
  * function App({ model, onMsg }) {
@@ -33,14 +33,15 @@ import {
   type ReactElement,
   type Ref,
 } from "react"
-import type { SDOM, Teardown } from "./types"
 import type {
+  SDOM,
+  Teardown,
   Observer,
   Update,
   UpdateStream,
   Unsubscribe,
   Dispatcher,
-} from "./observable"
+} from "@static-dom/core"
 
 // ---------------------------------------------------------------------------
 // Bridge: converts React prop changes into SDOM's UpdateStream
