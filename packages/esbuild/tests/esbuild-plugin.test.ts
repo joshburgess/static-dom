@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { sdomJsx, sdomJsxOptions, sdomSwcConfig } from "../src/esbuild-plugin"
+import { sdomJsx, sdomJsxOptions, sdomSwcConfig } from "../src/index"
 
 // ---------------------------------------------------------------------------
 // esbuild plugin
@@ -18,7 +18,7 @@ describe("sdomJsx (esbuild plugin)", () => {
     plugin.setup(build as any)
 
     expect(build.initialOptions.jsx).toBe("automatic")
-    expect(build.initialOptions.jsxImportSource).toBe("static-dom")
+    expect(build.initialOptions.jsxImportSource).toBe("@static-dom/core")
   })
 
   it("does not override explicit jsx settings", () => {
@@ -43,7 +43,7 @@ describe("sdomJsx (esbuild plugin)", () => {
     plugin.setup(build as any)
 
     expect(build.initialOptions.jsx).toBe("preserve")
-    expect(build.initialOptions.jsxImportSource).toBe("static-dom")
+    expect(build.initialOptions.jsxImportSource).toBe("@static-dom/core")
   })
 })
 
@@ -56,7 +56,7 @@ describe("sdomJsxOptions", () => {
     const opts = sdomJsxOptions()
     expect(opts).toEqual({
       jsx: "automatic",
-      jsxImportSource: "static-dom",
+      jsxImportSource: "@static-dom/core",
     })
   })
 })
@@ -73,7 +73,7 @@ describe("sdomSwcConfig", () => {
         transform: {
           react: {
             runtime: "automatic",
-            importSource: "static-dom",
+            importSource: "@static-dom/core",
           },
         },
       },

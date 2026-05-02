@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { sdomJsx } from "../src/vite-plugin"
+import { sdomJsx } from "../src/index"
 
 describe("sdomJsx (Vite plugin)", () => {
   it("returns a plugin with correct name", () => {
@@ -18,7 +18,7 @@ describe("sdomJsx (Vite plugin)", () => {
     expect(config).toEqual({
       esbuild: {
         jsx: "automatic",
-        jsxImportSource: "static-dom",
+        jsxImportSource: "@static-dom/core",
       },
     })
   })

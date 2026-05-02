@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import plugin, { rules, noDynamicChildren } from "../src/eslint-plugin"
+import plugin, { rules, noDynamicChildren } from "../src/index"
 
 // ---------------------------------------------------------------------------
 // Helpers — minimal ESLint context mock

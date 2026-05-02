@@ -7,7 +7,7 @@
  * @example Plugin usage (esbuild JS API):
  * ```typescript
  * import esbuild from "esbuild"
- * import { sdomJsx } from "static-dom/esbuild"
+ * import { sdomJsx } from "@static-dom/esbuild"
  *
  * await esbuild.build({
  *   entryPoints: ["src/main.tsx"],
@@ -19,7 +19,7 @@
  * @example Config helper (manual options):
  * ```typescript
  * import esbuild from "esbuild"
- * import { sdomJsxOptions } from "static-dom/esbuild"
+ * import { sdomJsxOptions } from "@static-dom/esbuild"
  *
  * await esbuild.build({
  *   entryPoints: ["src/main.tsx"],
@@ -48,7 +48,7 @@ interface EsbuildPluginBuild {
 /**
  * esbuild plugin that configures JSX automatic mode with SDOM's runtime.
  *
- * Sets `jsx: "automatic"` and `jsxImportSource: "static-dom"` unless
+ * Sets `jsx: "automatic"` and `jsxImportSource: "@static-dom/core"` unless
  * already configured (won't override explicit user settings).
  */
 export function sdomJsx(): EsbuildPlugin {
@@ -57,7 +57,7 @@ export function sdomJsx(): EsbuildPlugin {
     setup(build) {
       const opts = build.initialOptions
       if (!opts.jsx) opts.jsx = "automatic"
-      if (!opts.jsxImportSource) opts.jsxImportSource = "static-dom"
+      if (!opts.jsxImportSource) opts.jsxImportSource = "@static-dom/core"
     },
   }
 }
@@ -72,7 +72,7 @@ export function sdomJsxOptions(): {
 } {
   return {
     jsx: "automatic",
-    jsxImportSource: "static-dom",
+    jsxImportSource: "@static-dom/core",
   }
 }
 
@@ -82,7 +82,7 @@ export function sdomJsxOptions(): {
  *
  * @example
  * ```typescript
- * import { sdomSwcConfig } from "static-dom/esbuild"
+ * import { sdomSwcConfig } from "@static-dom/esbuild"
  *
  * // .swcrc or swc-loader config:
  * const config = {
@@ -108,7 +108,7 @@ export function sdomSwcConfig(): {
       transform: {
         react: {
           runtime: "automatic",
-          importSource: "static-dom",
+          importSource: "@static-dom/core",
         },
       },
     },
