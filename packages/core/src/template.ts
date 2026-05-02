@@ -268,8 +268,9 @@ function buildHtml(
  * Clone a cached template, wire up all dynamic bindings, and return the
  * root element together with a tight update function and a teardown.
  *
- * Per-row state (target nodes, last values, event model refs) lives in
- * three flat arrays. The update closure dispatches over binding.kind in
+ * Per-row state (target nodes, last values) lives in flat arrays. A single
+ * model ref is shared across all events on the row so multi-event rows only
+ * pay one ref allocation. The update closure dispatches over binding.kind in
  * a single hot loop, so each row only allocates one update closure
  * regardless of how many bindings the template has.
  */
@@ -284,8 +285,9 @@ export function instantiateTemplate(
   const n = bindings.length
   const nodes = new Array<Node>(n)
   const lasts = new Array<unknown>(n)
-  // Lazily allocated — most rows have at least one event but small templates may not.
-  let eventRefs: Array<{ current: unknown } | null> | null = null
+  // Lazily allocated on the first event binding — shared across every event
+  // on this row so the update path only writes one .current per change.
+  let rowRef: { current: unknown } | null = null
 
   for (let i = 0; i < n; i++) {
     const binding = bindings[i]!
@@ -325,16 +327,15 @@ export function instantiateTemplate(
         break
       }
       case "event": {
-        const ref: { current: unknown } = { current: model }
+        if (rowRef === null) rowRef = { current: model }
+        const ref = rowRef
         const handler = binding.handler as (e: Event, m: unknown) => unknown
         const listener = (event: Event) => {
           const msg = handler(event, ref.current)
           if (msg !== null) dispatch(msg)
         }
         eventCleanups.push(registerEvent(node as Element, binding.eventName, listener))
-        nodes[i] = node
-        if (eventRefs === null) eventRefs = new Array(n).fill(null)
-        eventRefs[i] = ref
+        // nodes[i] / lasts[i] left undefined — the update path skips events.
         break
       }
       case "dynamicText": {
@@ -348,8 +349,9 @@ export function instantiateTemplate(
     }
   }
 
-  const refs = eventRefs
+  const ref = rowRef
   const update = (next: unknown): void => {
+    if (ref !== null) ref.current = next
     for (let i = 0; i < n; i++) {
       const binding = bindings[i]!
       switch (binding.kind) {
@@ -390,7 +392,7 @@ export function instantiateTemplate(
           break
         }
         case "event":
-          refs![i]!.current = next
+          // ref.current was updated above the loop.
           break
         case "dynamicText": {
           const v = binding.fn(next)

@@ -18,9 +18,10 @@
  * `element` that registers events via a delegator instead of addEventListener.
  */
 
-// Handler map: element → event name → handler function
-// WeakMap ensures elements can be GC'd when removed from the DOM.
-type HandlerMap = WeakMap<EventTarget, Map<string, (event: Event) => void>>
+// One WeakMap per event type maps elements directly to their handler.
+// Skipping the inner Map<eventName, handler> avoids one Map allocation per
+// element registration — meaningful when 10k rows each register 1+ events.
+type EventMap = WeakMap<EventTarget, (event: Event) => void>
 
 export interface EventDelegator {
   /**
@@ -41,54 +42,44 @@ export interface EventDelegator {
  * `event.target` looking for a registered handler.
  */
 export function createDelegator(root: Element): EventDelegator {
-  const handlers: HandlerMap = new WeakMap()
+  // event name → WeakMap<el, handler>
+  const handlersByEvent = new Map<string, EventMap>()
   const rootListeners = new Map<string, (e: Event) => void>()
 
-  function ensureRootListener(eventName: string): void {
-    if (rootListeners.has(eventName)) return
+  function ensureRootListener(eventName: string): EventMap {
+    let map = handlersByEvent.get(eventName)
+    if (map !== undefined) return map
+    map = new WeakMap()
+    handlersByEvent.set(eventName, map)
 
+    const eventMap = map
     const listener = (event: Event) => {
       let target = event.target as Element | null
       while (target !== null && target !== root) {
-        const elMap = handlers.get(target)
-        if (elMap) {
-          const handler = elMap.get(eventName)
-          if (handler) {
-            handler(event)
-            // Don't return — allow bubbling to continue for analytics/logging
-            // Handlers that want to stop propagation can call event.stopPropagation()
-            return
-          }
+        const handler = eventMap.get(target)
+        if (handler) {
+          handler(event)
+          // Don't return — allow bubbling to continue for analytics/logging
+          // Handlers that want to stop propagation can call event.stopPropagation()
+          return
         }
         target = target.parentElement
       }
       // Also check the root itself
-      const rootMap = handlers.get(root)
-      if (rootMap) {
-        const handler = rootMap.get(eventName)
-        if (handler) handler(event)
-      }
+      const rootHandler = eventMap.get(root)
+      if (rootHandler) rootHandler(event)
     }
 
     rootListeners.set(eventName, listener)
     root.addEventListener(eventName, listener)
+    return map
   }
 
   return {
     on(el: Element, eventName: string, handler: (event: Event) => void): () => void {
-      ensureRootListener(eventName)
-
-      let elMap = handlers.get(el)
-      if (!elMap) {
-        elMap = new Map()
-        handlers.set(el, elMap)
-      }
-      elMap.set(eventName, handler)
-
-      return () => {
-        elMap!.delete(eventName)
-        // WeakMap entry stays — GC handles cleanup when element is removed
-      }
+      const map = ensureRootListener(eventName)
+      map.set(el, handler)
+      return () => map.delete(el)
     },
 
     teardown() {
@@ -96,6 +87,7 @@ export function createDelegator(root: Element): EventDelegator {
         root.removeEventListener(name, listener)
       }
       rootListeners.clear()
+      handlersByEvent.clear()
     },
   }
 }
