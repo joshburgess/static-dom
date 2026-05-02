@@ -49,11 +49,39 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "static-dom",
+    "sdom",
+    "ui",
+    "dom",
+    "no-vdom",
+    "virtual-dom",
+    "elm-architecture",
+    "typescript",
+    "lens",
+    "optics",
+    "incremental",
+    "reactive"
+  ],
+  "author": "Josh Burgess",
+  "license": "(Apache-2.0 OR MIT)",
+  "homepage": "https://github.com/joshburgess/static-dom#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joshburgess/static-dom.git",
+    "directory": "packages/static-dom"
+  },
+  "bugs": {
+    "url": "https://github.com/joshburgess/static-dom/issues"
   },
   "dependencies": {
     "@static-dom/core": "workspace:*"
@@ -61,6 +89,5 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "typescript": "^5.9.3"
-  },
-  "license": "(Apache-2.0 OR MIT)"
+  }
 }

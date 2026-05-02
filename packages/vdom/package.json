@@ -12,13 +12,36 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
+  },
+  "keywords": [
+    "static-dom",
+    "sdom",
+    "vdom",
+    "virtual-dom",
+    "tachys",
+    "ui",
+    "dom"
+  ],
+  "author": "Josh Burgess",
+  "license": "(Apache-2.0 OR MIT)",
+  "homepage": "https://github.com/joshburgess/static-dom#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joshburgess/static-dom.git",
+    "directory": "packages/vdom"
+  },
+  "bugs": {
+    "url": "https://github.com/joshburgess/static-dom/issues"
   },
   "dependencies": {
     "@static-dom/core": "workspace:*"
@@ -32,6 +55,5 @@
     "tachys": "^0.1.2",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
-  },
-  "license": "(Apache-2.0 OR MIT)"
+  }
 }

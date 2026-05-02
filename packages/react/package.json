@@ -19,13 +19,35 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
+  },
+  "keywords": [
+    "static-dom",
+    "sdom",
+    "react",
+    "react-adapter",
+    "ui",
+    "dom"
+  ],
+  "author": "Josh Burgess",
+  "license": "(Apache-2.0 OR MIT)",
+  "homepage": "https://github.com/joshburgess/static-dom#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joshburgess/static-dom.git",
+    "directory": "packages/react"
+  },
+  "bugs": {
+    "url": "https://github.com/joshburgess/static-dom/issues"
   },
   "dependencies": {
     "@static-dom/core": "workspace:*"
@@ -42,6 +64,5 @@
     "react-dom": "^19.2.5",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
-  },
-  "license": "(Apache-2.0 OR MIT)"
+  }
 }
