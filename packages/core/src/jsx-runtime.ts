@@ -107,16 +107,12 @@ export function compileSpecCloned(spec: JsxSpec): ErasedSDOM {
   return compiled((parent, initialModel, dispatch) => {
     if (!cache) cache = buildTemplate(spec)
 
-    const updaters: Array<(next: unknown) => void> = []
     const eventCleanups: Array<() => void> = []
-    const el = instantiateTemplate(cache, initialModel, dispatch, updaters, eventCleanups)
+    const { el, update } = instantiateTemplate(cache, initialModel, dispatch, eventCleanups)
     parent.appendChild(el)
 
-    const n = updaters.length
     return {
-      update(_prev, next) {
-        for (let i = 0; i < n; i++) updaters[i]!(next)
-      },
+      update(_prev, next) { update(next) },
       teardown() {
         for (const cleanup of eventCleanups) cleanup()
         el.remove()

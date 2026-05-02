@@ -265,110 +265,144 @@ function buildHtml(
 // ---------------------------------------------------------------------------
 
 /**
- * Clone a cached template and wire up all dynamic bindings.
+ * Clone a cached template, wire up all dynamic bindings, and return the
+ * root element together with a tight update function and a teardown.
  *
- * Walkers resolve target nodes via firstChild/nextSibling chains.
- * Comment placeholders for dynamic text are replaced with real text nodes.
- * Returns the root element of the clone.
+ * Per-row state (target nodes, last values, event model refs) lives in
+ * three flat arrays. The update closure dispatches over binding.kind in
+ * a single hot loop, so each row only allocates one update closure
+ * regardless of how many bindings the template has.
  */
 export function instantiateTemplate(
   cache: TemplateCache,
   model: unknown,
   dispatch: Dispatcher<unknown>,
-  updaters: Array<(next: unknown) => void>,
   eventCleanups: Array<() => void>,
-): Element {
+): { el: Element; update: (next: unknown) => void } {
   const clone = cache.template.content.cloneNode(true) as DocumentFragment
+  const bindings = cache.bindings
+  const n = bindings.length
+  const nodes = new Array<Node>(n)
+  const lasts = new Array<unknown>(n)
+  // Lazily allocated — most rows have at least one event but small templates may not.
+  let eventRefs: Array<{ current: unknown } | null> | null = null
 
-  for (let i = 0; i < cache.bindings.length; i++) {
-    const binding = cache.bindings[i]!
+  for (let i = 0; i < n; i++) {
+    const binding = bindings[i]!
     const node = binding.walk(clone)
 
     switch (binding.kind) {
       case "prop": {
-        const { name, fn } = binding
-        let last = fn(model)
-        ;(node as unknown as Record<string, unknown>)[name] = last
-        updaters.push((next) => {
-          const v = fn(next)
-          if (v !== last) {
-            last = v
-            ;(node as unknown as Record<string, unknown>)[name] = v
-          }
-        })
+        const v = binding.fn(model)
+        ;(node as unknown as Record<string, unknown>)[binding.name] = v
+        nodes[i] = node
+        lasts[i] = v
         break
       }
       case "rawAttr": {
-        const { name, propName, fn } = binding
-        let last = fn(model)
-        if (propName) {
-          ;(node as unknown as Record<string, unknown>)[propName] = last
-          updaters.push((next) => {
-            const v = fn(next)
-            if (v !== last) {
-              last = v
-              ;(node as unknown as Record<string, unknown>)[propName] = v
-            }
-          })
+        const v = binding.fn(model)
+        if (binding.propName) {
+          ;(node as unknown as Record<string, unknown>)[binding.propName] = v
         } else {
-          ;(node as Element).setAttribute(name, last)
-          updaters.push((next) => {
-            const v = fn(next)
-            if (v !== last) { last = v; (node as Element).setAttribute(name, v) }
-          })
+          ;(node as Element).setAttribute(binding.name, v)
         }
+        nodes[i] = node
+        lasts[i] = v
         break
       }
       case "style": {
-        const { prop, fn } = binding
-        let last = fn(model)
-        ;(node as HTMLElement).style.setProperty(prop, last)
-        updaters.push((next) => {
-          const v = fn(next)
-          if (v !== last) { last = v; (node as HTMLElement).style.setProperty(prop, v) }
-        })
+        const v = binding.fn(model)
+        ;(node as HTMLElement).style.setProperty(binding.prop, v)
+        nodes[i] = node
+        lasts[i] = v
         break
       }
       case "classMap": {
-        const { fn } = binding
-        let lastMap = fn(model)
-        applyClassMap(node as Element, lastMap)
-        updaters.push((next) => {
-          const nextMap = fn(next)
-          if (nextMap !== lastMap) {
-            applyClassMap(node as Element, nextMap, lastMap)
-            lastMap = nextMap
-          }
-        })
+        const v = binding.fn(model)
+        applyClassMap(node as Element, v)
+        nodes[i] = node
+        lasts[i] = v
         break
       }
       case "event": {
-        const { eventName, handler } = binding
-        const ref = { current: model }
+        const ref: { current: unknown } = { current: model }
+        const handler = binding.handler as (e: Event, m: unknown) => unknown
         const listener = (event: Event) => {
-          const msg = (handler as (e: Event, m: unknown) => unknown)(event, ref.current)
+          const msg = handler(event, ref.current)
           if (msg !== null) dispatch(msg)
         }
-        eventCleanups.push(registerEvent(node as Element, eventName, listener))
-        updaters.push((next) => { ref.current = next })
+        eventCleanups.push(registerEvent(node as Element, binding.eventName, listener))
+        nodes[i] = node
+        if (eventRefs === null) eventRefs = new Array(n).fill(null)
+        eventRefs[i] = ref
         break
       }
       case "dynamicText": {
-        const { fn } = binding
-        let last = fn(model)
-        // Replace the comment placeholder with a real text node in one
-        // DOM mutation. Walkers resolved by sibling chain still work.
-        const textNode = document.createTextNode(last)
+        const v = binding.fn(model)
+        const textNode = document.createTextNode(v)
         node.parentNode!.replaceChild(textNode, node)
-        updaters.push((next) => {
-          const v = fn(next)
-          if (v !== last) { last = v; textNode.textContent = v }
-        })
+        nodes[i] = textNode
+        lasts[i] = v
         break
       }
     }
   }
 
-  // The root element is the first (and only) child of the fragment
-  return clone.firstChild as Element
+  const refs = eventRefs
+  const update = (next: unknown): void => {
+    for (let i = 0; i < n; i++) {
+      const binding = bindings[i]!
+      switch (binding.kind) {
+        case "prop": {
+          const v = binding.fn(next)
+          if (v !== lasts[i]) {
+            lasts[i] = v
+            ;(nodes[i] as unknown as Record<string, unknown>)[binding.name] = v
+          }
+          break
+        }
+        case "rawAttr": {
+          const v = binding.fn(next)
+          if (v !== lasts[i]) {
+            lasts[i] = v
+            if (binding.propName) {
+              ;(nodes[i] as unknown as Record<string, unknown>)[binding.propName] = v
+            } else {
+              ;(nodes[i] as Element).setAttribute(binding.name, v)
+            }
+          }
+          break
+        }
+        case "style": {
+          const v = binding.fn(next)
+          if (v !== lasts[i]) {
+            lasts[i] = v
+            ;(nodes[i] as HTMLElement).style.setProperty(binding.prop, v)
+          }
+          break
+        }
+        case "classMap": {
+          const v = binding.fn(next)
+          if (v !== lasts[i]) {
+            applyClassMap(nodes[i] as Element, v, lasts[i] as Record<string, boolean>)
+            lasts[i] = v
+          }
+          break
+        }
+        case "event":
+          refs![i]!.current = next
+          break
+        case "dynamicText": {
+          const v = binding.fn(next)
+          if (v !== lasts[i]) {
+            lasts[i] = v
+            ;(nodes[i] as Text).textContent = v
+          }
+          break
+        }
+      }
+    }
+  }
+
+  return { el: clone.firstChild as Element, update }
 }

@@ -100,15 +100,13 @@ describe("instantiateTemplate", () => {
       children: [{ kind: "dynamic", fn: (m: any) => m.name }],
     }
     const cache = buildTemplate(spec)
-    const updaters: Array<(next: any) => void> = []
     const eventCleanups: Array<() => void> = []
 
-    const el = instantiateTemplate(cache, { name: "Alice" }, () => {}, updaters, eventCleanups)
+    const { el, update } = instantiateTemplate(cache, { name: "Alice" }, () => {}, eventCleanups)
     expect(el.tagName).toBe("SPAN")
     expect(el.textContent).toBe("Alice")
 
-    // Update
-    updaters.forEach(u => u({ name: "Bob" }))
+    update({ name: "Bob" })
     expect(el.textContent).toBe("Bob")
   })
 
@@ -119,12 +117,11 @@ describe("instantiateTemplate", () => {
       children: [],
     }
     const cache = buildTemplate(spec)
-    const updaters: Array<(next: any) => void> = []
 
-    const el = instantiateTemplate(cache, { val: "hello" }, () => {}, updaters, [])
+    const { el, update } = instantiateTemplate(cache, { val: "hello" }, () => {}, [])
     expect((el as HTMLInputElement).value).toBe("hello")
 
-    updaters.forEach(u => u({ val: "world" }))
+    update({ val: "world" })
     expect((el as HTMLInputElement).value).toBe("world")
   })
 
@@ -136,17 +133,15 @@ describe("instantiateTemplate", () => {
       children: [{ kind: "static", text: "Go" }],
     }
     const cache = buildTemplate(spec)
-    const updaters: Array<(next: any) => void> = []
     const eventCleanups: Array<() => void> = []
     const dispatch = vi.fn()
 
-    const el = instantiateTemplate(cache, { id: 1 }, dispatch, updaters, eventCleanups)
+    const { el, update } = instantiateTemplate(cache, { id: 1 }, dispatch, eventCleanups)
     el.dispatchEvent(new Event("click"))
 
     expect(dispatch).toHaveBeenCalledWith({ type: "click", id: 1 })
 
-    // Update model ref and click again
-    updaters.forEach(u => u({ id: 2 }))
+    update({ id: 2 })
     el.dispatchEvent(new Event("click"))
     expect(dispatch).toHaveBeenCalledWith({ type: "click", id: 2 })
   })
@@ -159,19 +154,15 @@ describe("instantiateTemplate", () => {
     }
     const cache = buildTemplate(spec)
 
-    const updaters1: Array<(next: any) => void> = []
-    const updaters2: Array<(next: any) => void> = []
+    const r1 = instantiateTemplate(cache, { name: "A" }, () => {}, [])
+    const r2 = instantiateTemplate(cache, { name: "B" }, () => {}, [])
 
-    const el1 = instantiateTemplate(cache, { name: "A" }, () => {}, updaters1, [])
-    const el2 = instantiateTemplate(cache, { name: "B" }, () => {}, updaters2, [])
+    expect(r1.el.textContent).toBe("A")
+    expect(r2.el.textContent).toBe("B")
 
-    expect(el1.textContent).toBe("A")
-    expect(el2.textContent).toBe("B")
-
-    // Updating one doesn't affect the other
-    updaters1.forEach(u => u({ name: "A2" }))
-    expect(el1.textContent).toBe("A2")
-    expect(el2.textContent).toBe("B")
+    r1.update({ name: "A2" })
+    expect(r1.el.textContent).toBe("A2")
+    expect(r2.el.textContent).toBe("B")
   })
 })
 
