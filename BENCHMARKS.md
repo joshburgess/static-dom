@@ -13,14 +13,14 @@ All results collected on Chromium via Playwright, using Vitest's bench runner (T
 ## Running Benchmarks
 
 ```bash
-# All benchmarks in Chromium (recommended, real DOM cost)
+# From the repo root, via pnpm
+pnpm --filter @static-dom/core bench
+
+# Or, inside packages/core, in Chromium (recommended, real DOM cost)
 npx vitest bench --config vitest.browser.config.ts
 
 # Single benchmark file
 npx vitest bench bench/initial-render.bench.ts --config vitest.browser.config.ts
-
-# All benchmarks in happy-dom (faster, isolates JS overhead)
-npx vitest bench
 ```
 
 ---

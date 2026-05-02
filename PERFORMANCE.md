@@ -23,7 +23,7 @@ properties (`className`, `htmlFor`, `tabIndex`) that are faster to set.
 `el.className = "active"` avoids the `setAttribute` → attribute parsing →
 reflection pipeline.
 
-**File:** `src/constructors.ts` (`ATTR_TO_PROP` map, `PropUpdater` class).
+**File:** `packages/core/src/constructors.ts` (`ATTR_TO_PROP` map, `PropUpdater` class).
 
 ### Prototype-based updaters (from V8 optimization guides)
 
@@ -36,7 +36,7 @@ Closures created inline (`{ update() { ... } }`) get different hidden classes
 at each call site. Class instances share one hidden class across all instances,
 enabling V8's inline caches.
 
-**File:** `src/constructors.ts` (updater class hierarchy).
+**File:** `packages/core/src/constructors.ts` (updater class hierarchy).
 
 ### Bitwise element flags (from Inferno.js)
 
@@ -49,7 +49,7 @@ Inferno uses more granular flags (`VNodeFlags`, `ChildFlags`) to classify
 vnodes for optimized diffing. static-dom's approach is simpler because there's no
 diff; the flags just gate whether to run updaters.
 
-**File:** `src/constructors.ts` (`element()` function, flag computation).
+**File:** `packages/core/src/constructors.ts` (`element()` function, flag computation).
 
 ### Focus fusion (from lens composition)
 
@@ -59,7 +59,7 @@ This eliminates intermediate subscription layers. Instead of
 model → lensA → subscription → lensB → subscription → updater, you get
 model → composedLens → subscription → updater.
 
-**File:** `src/types.ts` (`_FOCUS_TARGET` / `_FOCUS_LENS` symbols).
+**File:** `packages/core/src/types.ts` (`_FOCUS_TARGET` / `_FOCUS_LENS` symbols).
 
 ### Single-observer fast path (from reactive library patterns)
 
@@ -68,7 +68,7 @@ instead of allocating a `Set`. Only when a second subscriber arrives does the
 Set get created. Since most static-dom nodes have exactly one subscriber, this avoids
 Set allocation and iteration overhead for the common case.
 
-**File:** `src/incremental.ts` (`ItemEntry` type), `src/program.ts` (`deltaUpdates`).
+**File:** `packages/core/src/incremental.ts` (`ItemEntry` type), `packages/core/src/program.ts` (`deltaUpdates`).
 
 ### Incremental arrays with keyed deltas (from incremental lambda calculus)
 
@@ -80,7 +80,7 @@ update function provides a structured delta (`keyedPatch`, `keyedInsert`,
 For a single-item patch, this is O(1): one Map lookup, one observer
 notification, one DOM write. No reconciliation, no key scanning.
 
-**File:** `src/incremental.ts` (`incrementalArray()`).
+**File:** `packages/core/src/incremental.ts` (`incrementalArray()`).
 
 ### Fast-patch handler (from Most.js stream fusion)
 
@@ -97,8 +97,8 @@ Normal path:  dispatch → update() → delta → observer → incrementalArray 
 Fast path:    dispatch → extract delta → _fastPatchHandler(key, value) → item observer → updaters
 ```
 
-**File:** `src/incremental.ts` (`_registerFastPatch`, `_tryFastPatch`).
-**File:** `src/program.ts` (`tryDeltaFastPath()` in `programWithDelta`).
+**File:** `packages/core/src/incremental.ts` (`_registerFastPatch`, `_tryFastPatch`).
+**File:** `packages/core/src/program.ts` (`tryDeltaFastPath()` in `programWithDelta`).
 
 ### Pooled delta constructors (from object pooling)
 
@@ -106,7 +106,7 @@ Fast path:    dispatch → extract delta → _fastPatchHandler(key, value) → i
 shared objects instead of allocating new ones per update. Safe because deltas
 are consumed synchronously within the same microtask.
 
-**File:** `src/patch.ts` (`pooledKeyedPatch()` and related functions).
+**File:** `packages/core/src/patch.ts` (`pooledKeyedPatch()` and related functions).
 
 ### `extractDelta` pre-update hook (from Most.js)
 
@@ -118,7 +118,7 @@ are consumed synchronously within the same microtask.
 This is stream fusion applied to the update loop: the delta "fuses" with the
 dispatch, bypassing the model transformation entirely.
 
-**File:** `src/program.ts` (`extractDelta` in `DeltaProgramConfig`).
+**File:** `packages/core/src/program.ts` (`extractDelta` in `DeltaProgramConfig`).
 
 ### `compiled()` fused templates (from Inferno.js)
 
@@ -131,7 +131,7 @@ callback. This fuses all per-element overhead into one observer:
 - No guard/dev overhead (the user's function handles everything)
 - Direct DOM property writes (no updater dispatch)
 
-**File:** `src/constructors.ts` (`compiled()`).
+**File:** `packages/core/src/constructors.ts` (`compiled()`).
 
 ### `patchItem` direct-patch API
 
@@ -146,7 +146,7 @@ patchItem(key, value) → _tryFastPatch → registered handler → item observer
 The model is NOT updated through this path. Use for maximum throughput when
 you know exactly which keyed item changed.
 
-**File:** `src/program.ts` (`patchItem` on `ProgramHandle`).
+**File:** `packages/core/src/program.ts` (`patchItem` on `ProgramHandle`).
 
 ### LIS-based reordering (from Inferno.js)
 
@@ -158,7 +158,7 @@ naive O(n) approach that may perform unnecessary moves.
 Inferno pioneered this approach in the vdom world; static-dom applies it to its
 keyed array reconciliation.
 
-**File:** `src/constructors.ts` (`lis()`).
+**File:** `packages/core/src/constructors.ts` (`lis()`).
 
 ### Event delegation (from Inferno.js)
 
@@ -167,7 +167,7 @@ Events are routed to handlers via a `WeakMap` keyed by target element. This
 reduces the number of active listeners from O(n) to O(event types) and avoids
 listener teardown/re-registration when items are added or removed.
 
-**File:** `src/delegation.ts` (`createDelegator()`).
+**File:** `packages/core/src/delegation.ts` (`createDelegator()`).
 
 ### Non-keyed indexed array (from Inferno.js)
 
@@ -175,7 +175,7 @@ listener teardown/re-registration when items are added or removed.
 one observer. When the array length doesn't change (the common case for fixed
 lists), this is pure positional update with zero reconciliation overhead.
 
-**File:** `src/constructors.ts` (`indexedArray()`).
+**File:** `packages/core/src/constructors.ts` (`indexedArray()`).
 
 ### Guard and dev mode flags
 
@@ -184,7 +184,7 @@ functions (attribute derivers, event handlers). `setDevMode(false)` disables
 Object.keys shape validation. Both are safe for production builds and
 eliminate per-update overhead.
 
-**File:** `src/errors.ts`, `src/dev.ts`.
+**File:** `packages/core/src/errors.ts`, `packages/core/src/dev.ts`.
 
 ## How the layers compose
 

@@ -15,6 +15,17 @@ Based on Phil Freeman's [purescript-sdom](https://github.com/paf31/purescript-sd
 npm install static-dom
 ```
 
+`static-dom` is a thin re-export of `@static-dom/core`. Optional pieces live in their own packages so you only pull in peer deps you actually use:
+
+| Package | What it adds | Peer deps |
+|---|---|---|
+| `static-dom` | Facade for `@static-dom/core` (or use `@static-dom/core` directly) | none |
+| `@static-dom/react` | `<SDOMBoundary>` for embedding in React apps | `react` |
+| `@static-dom/vdom` | Per-update structural changes via Tachys | `tachys` |
+| `@static-dom/vite` | Vite plugin for the JSX runtime | `vite` |
+| `@static-dom/esbuild` | esbuild plugin and SWC config helper | `esbuild` (optional) |
+| `@static-dom/eslint` | `no-dynamic-children` lint rule | `eslint` (optional) |
+
 ## Quick start
 
 ### JSX
@@ -24,7 +35,7 @@ Configure your build tool for the automatic JSX runtime:
 ```typescript
 // vite.config.ts
 import { defineConfig } from "vite"
-import { sdomJsx } from "static-dom/vite"
+import { sdomJsx } from "@static-dom/vite"
 
 export default defineConfig({ plugins: [sdomJsx()] })
 ```
@@ -223,7 +234,7 @@ With caching, branch switches detach and reinsert existing DOM nodes rather than
 For subtrees that need per-update structural changes (drag-and-drop builders, WYSIWYG editors, animation systems), embed a [Tachys](https://github.com/joshburgess/tachys) virtual DOM subtree via its `tachys/sync` entry point:
 
 ```typescript
-import { vdom } from "static-dom/vdom"
+import { vdom } from "@static-dom/vdom"
 import { h } from "tachys/sync"
 
 const dynamicContent = vdom<Model, Msg>((model, dispatch) =>
@@ -244,7 +255,7 @@ Everything inside the boundary pays vdom diffing cost (O(tree size)). Everything
 For integrating any other renderer (Canvas, D3, WebGL), use `vdomWith`:
 
 ```typescript
-import { vdomWith } from "static-dom/vdom"
+import { vdomWith } from "@static-dom/vdom"
 
 const chart = vdomWith<Model, Msg>({
   render(container, model, dispatch) { /* any rendering logic */ },
@@ -252,7 +263,7 @@ const chart = vdomWith<Model, Msg>({
 })
 ```
 
-Tachys is an optional peer dependency, only needed if you import `static-dom/vdom`.
+Tachys is an optional peer dependency of `@static-dom/vdom`.
 
 ## Focusing on sub-models
 
@@ -315,7 +326,7 @@ When `compose` is present, consecutive `.focus()` calls fuse into a single subsc
 Drop static-dom subtrees into existing React apps:
 
 ```tsx
-import { SDOMBoundary } from "static-dom/react"
+import { SDOMBoundary } from "@static-dom/react"
 
 function App({ model, onMsg }) {
   return (
@@ -335,12 +346,13 @@ See [BENCHMARKS.md](./BENCHMARKS.md) for full results and [RECOMMENDATION.md](./
 
 ## Build tooling
 
-| Export | Description |
+| Package | Description |
 |---|---|
-| `static-dom/vite` | Vite plugin (`sdomJsx()`) |
-| `static-dom/esbuild` | esbuild plugin + SWC config helper |
-| `static-dom/eslint` | `no-dynamic-children` lint rule |
-| `static-dom/vdom` | Tachys-backed virtual DOM boundary |
+| `@static-dom/vite` | Vite plugin (`sdomJsx()`) |
+| `@static-dom/esbuild` | esbuild plugin and SWC config helper |
+| `@static-dom/eslint` | `no-dynamic-children` lint rule |
+| `@static-dom/vdom` | Tachys-backed virtual DOM boundary |
+| `@static-dom/react` | React adapter (`<SDOMBoundary>`) |
 
 ## License
 
