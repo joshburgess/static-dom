@@ -220,15 +220,15 @@ With caching, branch switches detach and reinsert existing DOM nodes rather than
 
 ### vdom
 
-For subtrees that need per-update structural changes (drag-and-drop builders, WYSIWYG editors, animation systems), embed an Inferno virtual DOM subtree:
+For subtrees that need per-update structural changes (drag-and-drop builders, WYSIWYG editors, animation systems), embed a [Tachys](https://github.com/joshburgess/tachys) virtual DOM subtree via its `tachys/sync` entry point:
 
 ```typescript
 import { vdom } from "static-dom/vdom"
-import { createElement as h } from "inferno-create-element"
+import { h } from "tachys/sync"
 
 const dynamicContent = vdom<Model, Msg>((model, dispatch) =>
   h("ul", null,
-    model.items.map(item =>
+    ...model.items.map(item =>
       h("li", { key: item.id, onClick: () => dispatch({ type: "click", id: item.id }) },
         item.label
       )
@@ -238,6 +238,8 @@ const dynamicContent = vdom<Model, Msg>((model, dispatch) =>
 ```
 
 Everything inside the boundary pays vdom diffing cost (O(tree size)). Everything outside remains static-dom (O(leaf changes)). The trade-off is explicit and scoped.
+
+`tachys/sync` is the synchronous-only build of Tachys -- a React-like vdom with an Inferno-style LIS keyed-diff and V8-focused tuning, ~11KB gzipped. The concurrent scheduler is shimmed out, so transitions, time slicing, and Suspense aren't pulled into your bundle.
 
 For integrating any other renderer (Canvas, D3, WebGL), use `vdomWith`:
 
@@ -250,7 +252,7 @@ const chart = vdomWith<Model, Msg>({
 })
 ```
 
-Inferno and inferno-create-element are optional peer dependencies -- only needed if you import `static-dom/vdom`.
+Tachys is an optional peer dependency -- only needed if you import `static-dom/vdom`.
 
 ## Focusing on sub-models
 

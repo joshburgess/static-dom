@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { createElement as h } from "inferno-create-element"
+import { h } from "tachys/sync"
 import { vdom, vdomWith } from "../src/vdom"
 import { mount, cleanup, type TestHarness } from "./helpers"
 
@@ -26,7 +26,7 @@ describe("vdom", () => {
     h("div", null,
       h("h1", null, model.title),
       h("ul", null,
-        model.items.map(item =>
+        ...model.items.map(item =>
           h("li", {
             key: item.id,
             onClick: () => dispatch({ type: "clicked", id: item.id }),
@@ -36,7 +36,7 @@ describe("vdom", () => {
     )
   )
 
-  it("renders the initial Inferno VNode tree", () => {
+  it("renders the initial Tachys VNode tree", () => {
     harn = mount(view, {
       title: "Hello",
       items: [{ id: "1", label: "first" }, { id: "2", label: "second" }],
@@ -64,7 +64,7 @@ describe("vdom", () => {
     expect(harn.container.querySelectorAll("li").length).toBe(2)
   })
 
-  it("dispatches messages from Inferno event handlers", () => {
+  it("dispatches messages from Tachys event handlers", () => {
     harn = mount(view, {
       title: "test",
       items: [{ id: "42", label: "click me" }],

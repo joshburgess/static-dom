@@ -2,23 +2,24 @@
  * vdom.ts — Embedded virtual DOM subtree boundary.
  *
  * Provides `vdom()` and `vdomWith()` constructors that embed a virtual DOM
- * subtree inside a static-dom tree. The virtual DOM boundary uses Inferno
- * (~9KB gzipped) for diffing and patching — battle-tested and fast.
+ * subtree inside a static-dom tree. The recommended `vdom()` boundary uses
+ * Tachys (`tachys/sync`) for diffing and patching — an Inferno-style LIS
+ * keyed-diff with V8-focused tuning, ~11KB gzipped.
  *
  * Everything inside the boundary pays vdom diffing cost O(tree size).
  * Everything outside remains static-dom O(leaf changes). The boundary
  * is explicit and scoped.
  *
- * Inferno is a peer dependency — only required if you import `static-dom/vdom`.
+ * Tachys is a peer dependency — only required if you import `static-dom/vdom`.
  *
  * @example
  * ```typescript
  * import { vdom } from "static-dom/vdom"
- * import { createElement as h } from "inferno-create-element"
+ * import { h } from "tachys/sync"
  *
  * const dynamicContent = vdom<Model, Msg>((model, dispatch) =>
  *   h("div", null,
- *     model.items.map(item =>
+ *     ...model.items.map(item =>
  *       h(item.type, {
  *         key: item.id,
  *         onClick: () => dispatch({ type: "click", id: item.id }),
@@ -32,31 +33,31 @@
 import { makeSDOM, type SDOM } from "./types"
 import type { Dispatcher } from "./observable"
 import { guard } from "./errors"
-import { render as infernoRender, type VNode } from "inferno"
+import { render as tachysRender, type VNode } from "tachys/sync"
 
 // ---------------------------------------------------------------------------
-// vdom — Inferno-backed virtual DOM boundary
+// vdom — Tachys-backed virtual DOM boundary
 // ---------------------------------------------------------------------------
 
 /**
- * Embed an Inferno virtual DOM subtree inside a static-dom tree.
+ * Embed a Tachys virtual DOM subtree inside a static-dom tree.
  *
  * The render function is called on every model update and should return
- * an Inferno VNode tree. Inferno handles diffing and patching within
+ * a Tachys VNode tree. Tachys handles diffing and patching within
  * the boundary container.
  *
  * @param renderFn  Called with `(model, dispatch)` on every update.
- *                  Returns an Inferno VNode (use `createElement` from
- *                  `inferno-create-element` or Inferno's JSX).
+ *                  Returns a Tachys VNode (use `h` from `tachys/sync`
+ *                  or Tachys's JSX runtime).
  *
  * @example
  * ```typescript
  * import { vdom } from "static-dom/vdom"
- * import { createElement as h } from "inferno-create-element"
+ * import { h } from "tachys/sync"
  *
  * const view = vdom<Model, Msg>((model, dispatch) =>
  *   h("ul", null,
- *     model.items.map(item =>
+ *     ...model.items.map(item =>
  *       h("li", { key: item.id, onClick: () => dispatch({ type: "select", id: item.id }) },
  *         item.label
  *       )
@@ -76,25 +77,22 @@ export function vdom<Model, Msg>(
     const container = document.createElement("div")
     parent.appendChild(container)
 
-    // Initial render
     guard("attach", "vdom render", () => {
       const vnode = renderFn(initialModel, dispatch)
-      infernoRender(vnode, container)
+      tachysRender(vnode, container)
     }, undefined)
 
-    // Subscribe to updates
     const unsub = updates.subscribe(({ next }) => {
       guard("update", "vdom render", () => {
         const vnode = renderFn(next, dispatch)
-        infernoRender(vnode, container)
+        tachysRender(vnode, container)
       }, undefined)
     })
 
     return {
       teardown() {
         unsub()
-        // Unmount Inferno tree
-        infernoRender(null, container)
+        tachysRender(null, container)
         container.remove()
       },
     }
