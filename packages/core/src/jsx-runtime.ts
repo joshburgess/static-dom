@@ -141,26 +141,28 @@ function buildSpecElement(
 
   // IDL properties
   if (c.attrs) {
+    const elAny = el as unknown as Record<string, unknown>
     for (const [name, fn] of Object.entries(c.attrs as Record<string, (m: unknown) => unknown>)) {
       let last = fn(model)
-      Reflect.set(el, name, last)
+      elAny[name] = last
       updaters.push((next) => {
         const v = fn(next)
-        if (v !== last) { last = v; Reflect.set(el, name, v) }
+        if (v !== last) { last = v; elAny[name] = v }
       })
     }
   }
 
   // Raw attributes
   if (c.rawAttrs) {
+    const elAny = el as unknown as Record<string, unknown>
     for (const [name, fn] of Object.entries(c.rawAttrs as Record<string, (m: unknown) => string>)) {
       const propName = ATTR_TO_PROP[name]
       let last = fn(model)
       if (propName) {
-        Reflect.set(el, propName, last)
+        elAny[propName] = last
         updaters.push((next) => {
           const v = fn(next)
-          if (v !== last) { last = v; Reflect.set(el, propName, v) }
+          if (v !== last) { last = v; elAny[propName] = v }
         })
       } else {
         el.setAttribute(name, last)

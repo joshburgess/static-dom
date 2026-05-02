@@ -288,10 +288,13 @@ export function instantiateTemplate(
       case "prop": {
         const { name, fn } = binding
         let last = fn(model)
-        Reflect.set(node, name, last)
+        ;(node as unknown as Record<string, unknown>)[name] = last
         updaters.push((next) => {
           const v = fn(next)
-          if (v !== last) { last = v; Reflect.set(node, name, v) }
+          if (v !== last) {
+            last = v
+            ;(node as unknown as Record<string, unknown>)[name] = v
+          }
         })
         break
       }
@@ -299,10 +302,13 @@ export function instantiateTemplate(
         const { name, propName, fn } = binding
         let last = fn(model)
         if (propName) {
-          Reflect.set(node, propName, last)
+          ;(node as unknown as Record<string, unknown>)[propName] = last
           updaters.push((next) => {
             const v = fn(next)
-            if (v !== last) { last = v; Reflect.set(node, propName, v) }
+            if (v !== last) {
+              last = v
+              ;(node as unknown as Record<string, unknown>)[propName] = v
+            }
           })
         } else {
           ;(node as Element).setAttribute(name, last)
@@ -350,12 +356,10 @@ export function instantiateTemplate(
       case "dynamicText": {
         const { fn } = binding
         let last = fn(model)
-        // Replace the comment placeholder with a real text node.
-        // insertBefore + removeChild preserves the sibling chain,
-        // so subsequent walkers still resolve correctly.
+        // Replace the comment placeholder with a real text node in one
+        // DOM mutation. Walkers resolved by sibling chain still work.
         const textNode = document.createTextNode(last)
-        node.parentNode!.insertBefore(textNode, node)
-        node.parentNode!.removeChild(node)
+        node.parentNode!.replaceChild(textNode, node)
         updaters.push((next) => {
           const v = fn(next)
           if (v !== last) { last = v; textNode.textContent = v }
