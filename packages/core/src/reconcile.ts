@@ -263,10 +263,25 @@ export function createArrayReconciler<ItemModel, Msg>(
     keyAt: (i: number) => string,
     nextByKey: Map<string, ItemModel>,
   ): void {
+    // oldPos must reflect current DOM order. prevKeys carries the order
+    // produced by the previous sync; liveItems iteration is insertion order
+    // and goes stale after any reorder. New items mounted during this sync
+    // are not in prevKeys but live at the end of the container, so we tack
+    // them on in liveItems order.
     const oldPos = new Map<string, number>()
     let posIdx = 0
+    if (prevKeys !== null) {
+      for (let i = 0; i < prevKeys.length; i++) {
+        const key = prevKeys[i]!
+        if (nextByKey.has(key) && liveItems.has(key)) {
+          oldPos.set(key, posIdx++)
+        }
+      }
+    }
     for (const [key] of liveItems) {
-      if (nextByKey.has(key)) oldPos.set(key, posIdx++)
+      if (!oldPos.has(key) && nextByKey.has(key)) {
+        oldPos.set(key, posIdx++)
+      }
     }
 
     const positions: number[] = []

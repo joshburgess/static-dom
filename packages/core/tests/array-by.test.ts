@@ -130,4 +130,37 @@ describe("arrayBy", () => {
     expect(lis.length).toBe(2)
     expect(lis[0]!.textContent).toBe("A")
   })
+
+  it("reorder back to original DOM order after a swap (jfb 05_swap1k)", () => {
+    const items = Array.from({ length: 6 }, (_, i) => ({
+      id: String(i + 1),
+      label: String(i + 1),
+    }))
+    h = mount(makeArrayBy(), { items: items.slice() })
+
+    const swap = (data: Item[]) => {
+      const next = data.slice()
+      const a = next[1]!
+      next[1] = next[4]!
+      next[4] = a
+      return next
+    }
+
+    const labels = () =>
+      Array.from(h.container.querySelectorAll("li"), li => li.textContent)
+
+    expect(labels()).toEqual(["1", "2", "3", "4", "5", "6"])
+
+    const after1 = swap(items)
+    h.set({ items: after1 })
+    expect(labels()).toEqual(["1", "5", "3", "4", "2", "6"])
+
+    const after2 = swap(after1)
+    h.set({ items: after2 })
+    expect(labels()).toEqual(["1", "2", "3", "4", "5", "6"])
+
+    const after3 = swap(after2)
+    h.set({ items: after3 })
+    expect(labels()).toEqual(["1", "5", "3", "4", "2", "6"])
+  })
 })
