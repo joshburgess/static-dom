@@ -1,103 +1,19 @@
 {
-  "name": "static-dom",
-  "version": "0.1.0",
-  "description": "Static DOM — a virtual-DOM-free UI library with precise TypeScript types",
+  "name": "static-dom-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "static-dom monorepo: a virtual-DOM-free UI library with precise TypeScript types",
   "type": "module",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./optics": {
-      "types": "./dist/optics.d.ts",
-      "import": "./dist/optics.js"
-    },
-    "./react": {
-      "types": "./dist/react.d.ts",
-      "import": "./dist/react.js"
-    },
-    "./jsx-runtime": {
-      "types": "./dist/jsx-runtime.d.ts",
-      "import": "./dist/jsx-runtime.js"
-    },
-    "./jsx-dev-runtime": {
-      "types": "./dist/jsx-dev-runtime.d.ts",
-      "import": "./dist/jsx-dev-runtime.js"
-    },
-    "./vite": {
-      "types": "./dist/vite-plugin.d.ts",
-      "import": "./dist/vite-plugin.js"
-    },
-    "./esbuild": {
-      "types": "./dist/esbuild-plugin.d.ts",
-      "import": "./dist/esbuild-plugin.js"
-    },
-    "./eslint": {
-      "types": "./dist/eslint-plugin.d.ts",
-      "import": "./dist/eslint-plugin.js"
-    },
-    "./hyperscript": {
-      "types": "./dist/hyperscript.d.ts",
-      "import": "./dist/hyperscript.js"
-    },
-    "./htm": {
-      "types": "./dist/htm.d.ts",
-      "import": "./dist/htm.js"
-    },
-    "./html": {
-      "types": "./dist/html.d.ts",
-      "import": "./dist/html.js"
-    },
-    "./vdom": {
-      "types": "./dist/vdom.d.ts",
-      "import": "./dist/vdom.js"
-    }
-  },
-  "peerDependencies": {
-    "react": "^18.0.0 || ^19.0.0",
-    "tachys": "^0.1.1",
-    "vite": "^5.0.0 || ^6.0.0"
-  },
-  "peerDependenciesMeta": {
-    "react": {
-      "optional": true
-    },
-    "tachys": {
-      "optional": true
-    },
-    "vite": {
-      "optional": true
-    }
-  },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "bench": "vitest bench",
-    "dev": "vite examples"
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:watch": "pnpm -r test:watch",
+    "bench": "pnpm --filter @static-dom/core bench",
+    "dev": "pnpm --filter @static-dom/core dev"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@vitest/browser": "^3.2.4",
-    "happy-dom": "^20.8.9",
-    "inferno": "^9.1.0",
-    "inferno-create-element": "^9.1.0",
-    "playwright": "^1.59.1",
-    "preact": "^10.29.1",
-    "react": "^19.2.5",
-    "react-dom": "^19.2.5",
-    "solid-js": "^1.9.12",
-    "tachys": "^0.1.1",
-    "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "typescript": "^5.9.3"
   },
   "license": "(Apache-2.0 OR MIT)"
 }

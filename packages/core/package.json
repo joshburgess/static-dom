@@ -1,0 +1,62 @@
+{
+  "name": "@static-dom/core",
+  "version": "0.1.0",
+  "description": "Static DOM: a virtual-DOM-free UI library with precise TypeScript types",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./optics": {
+      "types": "./dist/optics.d.ts",
+      "import": "./dist/optics.js"
+    },
+    "./jsx-runtime": {
+      "types": "./dist/jsx-runtime.d.ts",
+      "import": "./dist/jsx-runtime.js"
+    },
+    "./jsx-dev-runtime": {
+      "types": "./dist/jsx-dev-runtime.d.ts",
+      "import": "./dist/jsx-dev-runtime.js"
+    },
+    "./hyperscript": {
+      "types": "./dist/hyperscript.d.ts",
+      "import": "./dist/hyperscript.js"
+    },
+    "./htm": {
+      "types": "./dist/htm.d.ts",
+      "import": "./dist/htm.js"
+    },
+    "./html": {
+      "types": "./dist/html.d.ts",
+      "import": "./dist/html.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "bench": "vitest bench",
+    "dev": "vite examples"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@vitest/browser": "^3.2.4",
+    "happy-dom": "^20.8.9",
+    "inferno": "^9.1.0",
+    "inferno-create-element": "^9.1.0",
+    "playwright": "^1.59.1",
+    "preact": "^10.29.1",
+    "solid-js": "^1.9.12",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "license": "(Apache-2.0 OR MIT)"
+}
