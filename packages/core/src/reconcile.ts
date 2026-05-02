@@ -150,7 +150,7 @@ export function createArrayReconciler<ItemModel, Msg>(
   let markersInserted = false
   const itemFirstNodes = new Map<string, ChildNode>()
 
-  /** Mount an item during initial render — no markers, no fragment. */
+  /** Mount an item during initial render — no markers, appends to container. */
   function mountItemInitial(key: string, itemModel: ItemModel): void {
     const modelRef = { current: itemModel }
     const update = { prev: itemModel, next: itemModel }
@@ -190,20 +190,18 @@ export function createArrayReconciler<ItemModel, Msg>(
     }
     liveItems.set(key, entry)
 
-    const frag = document.createDocumentFragment()
-    frag.appendChild(startMarker)
+    container.appendChild(startMarker)
 
     currentMountEntry = entry
     entry.teardown = withDelegator(capturedDelegator, () =>
       guard("attach", `${label} item "${key}"`, () =>
-        itemSdom.attach(frag, itemModel, sharedUpdateStream, dispatch),
+        itemSdom.attach(container, itemModel, sharedUpdateStream, dispatch),
         { teardown() {} }
       )
     )
     currentMountEntry = null
 
-    frag.appendChild(endMarker)
-    container.appendChild(frag)
+    container.appendChild(endMarker)
   }
 
   function pushItemUpdate(entry: ItemEntry<ItemModel>, prevModel: ItemModel, itemModel: ItemModel): void {
@@ -357,15 +355,22 @@ export function createArrayReconciler<ItemModel, Msg>(
     }
 
     // --- Fast path: same keys, same order → update-only ---
+    // Also detects 2-item swap with unchanged interior in a single scan,
+    // skipping nextByKey/oldPos/LIS for the krausest swap1k pattern.
     if (prevKeys !== null && count === prevKeys.length) {
-      let sameStructure = true
+      let diffCount = 0
+      let firstDiff = -1
+      let lastDiff = -1
       for (let i = 0; i < count; i++) {
         if (keyAt(i) !== prevKeys[i]) {
-          sameStructure = false
-          break
+          diffCount++
+          if (diffCount === 1) firstDiff = i
+          else if (diffCount === 2) lastDiff = i
+          else break
         }
       }
-      if (sameStructure) {
+      if (diffCount === 0) {
+        // sameStructure — update-only
         for (let i = 0; i < count; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(i)
@@ -373,7 +378,38 @@ export function createArrayReconciler<ItemModel, Msg>(
             pushItemUpdate(entry, entry.modelRef.current, model)
           }
         }
-        // prevKeys unchanged
+        return
+      }
+
+      // 2-item swap fast path: exactly two positions differ and they're
+      // a transposition.
+      if (
+        diffCount === 2 &&
+        keyAt(firstDiff) === prevKeys[lastDiff] &&
+        keyAt(lastDiff) === prevKeys[firstDiff]
+      ) {
+        ensureMarkers()
+        const entryA = liveItems.get(prevKeys[firstDiff]!)!
+        const entryB = liveItems.get(prevKeys[lastDiff]!)!
+        // Capture insertion refs before either move runs.
+        const afterA = entryA.endMarker!.nextSibling
+        const afterB = entryB.endMarker!.nextSibling
+        moveItemBefore(entryA, afterB)
+        moveItemBefore(entryB, afterA)
+
+        const newKeys = prevKeys.slice()
+        newKeys[firstDiff] = prevKeys[lastDiff]!
+        newKeys[lastDiff] = prevKeys[firstDiff]!
+
+        // Push model updates for any rows whose model identity changed.
+        for (let i = 0; i < count; i++) {
+          const entry = liveItems.get(newKeys[i]!)!
+          const model = modelAt(i)
+          if (entry.modelRef.current !== model) {
+            pushItemUpdate(entry, entry.modelRef.current, model)
+          }
+        }
+        prevKeys = newKeys
         return
       }
     }
@@ -478,17 +514,6 @@ export function createArrayReconciler<ItemModel, Msg>(
   }
 
   function teardown(): void {
-    for (const { teardown: td, startMarker, endMarker } of liveItems.values()) {
-      td.teardown()
-      startMarker?.remove()
-      endMarker?.remove()
-    }
-    container.remove()
-  }
-
-  return { sync, teardown }
-}
- void {
     for (const { teardown: td, startMarker, endMarker } of liveItems.values()) {
       td.teardown()
       startMarker?.remove()
