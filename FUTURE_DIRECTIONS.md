@@ -281,3 +281,38 @@ not move benchmarks much without codegen on top.
   the `binding.walk(clone)` call site overflowed V8's inline cache.
   Reverted. The right fix is to eliminate the dispatch entirely via
   codegen, not to specialize the dispatched functions.
+
+## Codegen prototype: results and lessons
+
+A runtime-codegen prototype was built and measured against the
+interpreted path on `01_run1k` and `07_create10k`. Within the noise of
+5-iteration runs the two paths were indistinguishable: codegen ran a
+hair faster on `01_run1k` and a hair slower on `07_create10k`, with
+medians within a few percent. No clear win.
+
+Why the predicted gain did not materialize:
+
+1. **Update-closure size dominates.** The codegen path emits one
+   `update` closure per row that captures every walker target
+   (`_root`, `_w_*`), every last-value (`_l*`), every text-node ref
+   (`_n*`), and every binding fn (`_fn*`): roughly 14 vars on the row
+   template. The interpreted path's update closure captures 6 vars
+   (`bindings`, `n`, `nodes`, `lasts`, `rowRef`, `dispatch`). For
+   `07_create10k`, that is 10000 larger Contexts allocated up front.
+   The allocation pressure cancelled the dispatch win.
+2. **The dispatch cost was overestimated.** Templates in this codebase
+   are small (3-5 bindings on the row template). The `switch` in
+   `instantiateTemplate` is well-predicted by V8 and `binding.walk` has
+   a small enough callee set per call site that megamorphism is less
+   punishing than the FUTURE_DIRECTIONS analysis assumed.
+
+A redesign that shares one `update` function across rows and stores
+per-row state in a single object slot (instead of N captured vars)
+would likely fix the closure-size issue, at the cost of a
+property-access per slot. Whether that net wins is unmeasured.
+
+Cost of the prototype as written: +140 LOC, +5kB to the bench bundle
+(+10%), +CSP fragility from `new Function`. Reverted because the
+benchmark numbers did not justify the cost. Codegen remains a
+plausible direction, but the next attempt should target the
+update-closure environment, not just the dispatch.
