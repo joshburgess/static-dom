@@ -46,7 +46,7 @@ export type TemplateBinding =
   | { kind: "style"; walk: NodeWalker; prop: string; fn: (m: unknown) => string }
   | { kind: "classMap"; walk: NodeWalker; fn: (m: unknown) => Record<string, boolean> }
   | { kind: "event"; walk: NodeWalker; eventName: string; handler: Function }
-  | { kind: "dynamicText"; walk: NodeWalker; fn: (m: unknown) => string }
+  | { kind: "dynamicText"; walk: NodeWalker; fn: (m: unknown) => string; isText: boolean }
 
 // ---------------------------------------------------------------------------
 // Walker compilation
@@ -233,18 +233,34 @@ function buildHtml(
           inTextRun = true
           break
 
-        case "dynamic":
-          // Close any active text run — it produced one text node
+        case "dynamic": {
+          // Close any active text run, it produced one text node
           if (inTextRun) { childIndex++; inTextRun = false }
-          // Comment placeholder — creates a Comment node in the DOM
-          html += "<!---->"
+          // If neither neighbor is text-producing (static text or another
+          // dynamic), use a Text-node placeholder directly. The parser
+          // won't merge it with anything, so on instantiation we can just
+          // set nodeValue instead of allocating a new Text node and
+          // calling replaceChild.
+          const prev = ci > 0 ? children[ci - 1]! : null
+          const next = ci + 1 < children.length ? children[ci + 1]! : null
+          const prevTextLike = prev !== null && (prev.kind === "static" || prev.kind === "dynamic")
+          const nextTextLike = next !== null && (next.kind === "static" || next.kind === "dynamic")
+          const useTextPlaceholder = !prevTextLike && !nextTextLike
+          if (useTextPlaceholder) {
+            // Zero-width space (U+200B), overwritten on first instantiation.
+            html += "​"
+          } else {
+            html += "<!---->"
+          }
           bindings.push({
             kind: "dynamicText",
             walk: compileWalker([...currentPath, childIndex]),
             fn: child.fn,
+            isText: useTextPlaceholder,
           })
           childIndex++
           break
+        }
 
         case "element":
           if (inTextRun) { childIndex++; inTextRun = false }
@@ -341,9 +357,14 @@ export function instantiateTemplate(
       }
       case "dynamicText": {
         const v = binding.fn(model)
-        const textNode = document.createTextNode(v)
-        node.parentNode!.replaceChild(textNode, node)
-        nodes[i] = textNode
+        if (binding.isText) {
+          ;(node as Text).nodeValue = v
+          nodes[i] = node
+        } else {
+          const textNode = document.createTextNode(v)
+          node.parentNode!.replaceChild(textNode, node)
+          nodes[i] = textNode
+        }
         lasts[i] = v
         break
       }
