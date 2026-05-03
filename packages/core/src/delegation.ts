@@ -130,16 +130,21 @@ export function withDelegator<T>(d: EventDelegator | null, fn: () => T): T {
 
 /** Register a DOM event handler. Uses the ambient delegator when present
  *  (single root listener), otherwise installs a native listener on the
- *  element. Returns an unregister function suitable for an event-cleanup
- *  array. */
+ *  element. Returns an unregister function for the native-listener path,
+ *  or null when delegated — delegated handlers live in a WeakMap keyed by
+ *  the element, so they reclaim automatically once the element becomes
+ *  unreachable. Skipping the eager `WeakMap.delete()` saves one closure
+ *  call + one map mutation per event per row on teardown, which is a
+ *  large fraction of script time when clearing thousands of rows. */
 export function registerEvent(
   el: Element,
   eventName: string,
   listener: (event: Event) => void,
-): () => void {
+): (() => void) | null {
   const d = currentDelegator
   if (d !== null) {
-    return d.on(el, eventName, listener)
+    d.on(el, eventName, listener)
+    return null
   }
   el.addEventListener(eventName, listener)
   return () => el.removeEventListener(eventName, listener)

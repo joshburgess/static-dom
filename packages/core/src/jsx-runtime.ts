@@ -204,7 +204,8 @@ function buildSpecElement(
         const msg = (handler as (e: Event, m: unknown) => unknown)(event, ref.current)
         if (msg !== null) dispatch(msg)
       }
-      eventCleanups!.push(registerEvent(el, eventName, listener))
+      const cleanup = registerEvent(el, eventName, listener)
+      if (cleanup !== null) eventCleanups!.push(cleanup)
       updaters.push((next) => { ref.current = next })
     }
   }

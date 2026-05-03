@@ -366,7 +366,8 @@ function wireAttrBinding(
       const msg = handler(event, ref.current)
       if (msg !== null) dispatch(msg)
       }
-    eventCleanups.push(registerEvent(el, eventName, listener))
+    const cleanup = registerEvent(el, eventName, listener)
+    if (cleanup !== null) eventCleanups.push(cleanup)
     updaters.push((next) => { ref.current = next })
     return
   }

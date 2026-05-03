@@ -334,7 +334,8 @@ export function instantiateTemplate(
           const msg = handler(event, ref.current)
           if (msg !== null) dispatch(msg)
         }
-        eventCleanups.push(registerEvent(node as Element, binding.eventName, listener))
+        const cleanup = registerEvent(node as Element, binding.eventName, listener)
+        if (cleanup !== null) eventCleanups.push(cleanup)
         // nodes[i] / lasts[i] left undefined — the update path skips events.
         break
       }

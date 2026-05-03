@@ -304,7 +304,8 @@ export function element<
             if (msg !== null) dispatch(msg)
           }
           attrUpdaters.push(new EventRefUpdater<Model>(ref))
-          eventTeardowns.push(registerEvent(el, name, handler))
+          const cleanup = registerEvent(el, name, handler)
+          if (cleanup !== null) eventTeardowns.push(cleanup)
           break
         }
       }
