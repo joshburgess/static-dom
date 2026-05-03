@@ -338,11 +338,19 @@ export function createArrayReconciler<ItemModel, Msg>(
     keyAt: (i: number) => string,
     modelAt: (i: number) => ItemModel,
   ): void {
-    // --- Initial mount: no markers, no reconciliation ---
+    // --- Bulk mount from empty: no markers, no reconciliation ---
     // Build into a DocumentFragment first so the N row insertions collapse
-    // into a single live-DOM append at the end. Big win on 10k-row creates.
-    if (isFirstSync) {
+    // into a single live-DOM append at the end. Hits on first sync, on the
+    // sync after clear/full-replacement, and on the first non-empty sync
+    // after an initial empty sync — i.e., the common 1k/10k create flow.
+    if (liveItems.size === 0) {
       isFirstSync = false
+      markersInserted = false
+      itemFirstNodes.clear()
+      if (count === 0) {
+        prevKeys = []
+        return
+      }
       const keys = new Array<string>(count)
       const frag = document.createDocumentFragment()
       for (let i = 0; i < count; i++) {
@@ -439,14 +447,19 @@ export function createArrayReconciler<ItemModel, Msg>(
             pushItemUpdate(entry, model)
           }
         }
-        ensureMarkers()
+        // No ensureMarkers here. Append doesn't move anything, so markers
+        // stay deferred until a swap/reorder/insert actually needs them.
+        // Mount new items into a fragment via the marker-less initial path
+        // and flush in one live append.
         const newKeys = new Array<string>(count)
         for (let i = 0; i < prevKeys.length; i++) newKeys[i] = prevKeys[i]!
+        const frag = document.createDocumentFragment()
         for (let i = prevKeys.length; i < count; i++) {
           const key = keyAt(i)
           newKeys[i] = key
-          mountItemFull(key, modelAt(i))
+          mountItemInitial(frag, key, modelAt(i))
         }
+        container.appendChild(frag)
         prevKeys = newKeys
         return
       }
