@@ -17,7 +17,7 @@
  * separate from the UI description concern.
  */
 
-import { createSignal, toUpdateStream, type Dispatcher, type Observer, type Update, type Unsubscribe, type UpdateStream } from "./observable"
+import type { Dispatcher, Observer, Update, Unsubscribe, UpdateStream } from "./observable"
 import type { SDOM, Teardown } from "./types"
 import { _tryFastPatch } from "./incremental"
 import { diffSubs, type Sub } from "./subscription"
@@ -165,17 +165,17 @@ export function programWithEffects<Model, Msg>(
 ): ProgramHandle<Model, Msg> {
   const { container, init: [initModel, initCmd], update, view, onUpdate } = config
 
-  const modelSignal = createSignal(initModel)
-  const updates = toUpdateStream(modelSignal)
+  const modelVar = makeVar(initModel)
+  const updates = nodeToUpdateStream(modelVar)
 
   let viewTeardown: Teardown | null = null
 
   // dispatch is defined before mount because event handlers close over it
   const dispatch: Dispatcher<Msg> = (msg: Msg) => {
-    const prev = modelSignal.value
+    const prev = modelVar.value
     const [next, cmd] = update(msg, prev)
     onUpdate?.(msg, prev, next)
-    modelSignal.setValue(next)
+    modelVar.set(next)
     // Execute the command — async, will dispatch more messages later
     cmd(dispatch)
   }
@@ -189,7 +189,7 @@ export function programWithEffects<Model, Msg>(
 
   return {
     dispatch,
-    getModel: () => modelSignal.value,
+    getModel: () => modelVar.value,
     teardown() {
       viewTeardown?.teardown()
       viewTeardown = null
@@ -246,30 +246,33 @@ export function programWithDelta<Model, Msg>(
 ): ProgramHandle<Model, Msg> {
   const { container, init, update, view, onUpdate, extractDelta } = config
 
-  // Custom UpdateStream that carries deltas.
-  // Single-observer fast path + reusable mutable Update object.
+  // The fast-patch path bypasses the observer chain entirely (the
+  // incrementalArray fast-patch handler writes the DOM directly). When
+  // that runs, we don't want Var observers to fire, but we still need
+  // getModel() to return the new value and the next dispatch to read it
+  // as `prev`. So `current` is the source of truth for reads, and the
+  // Var is set only on the normal path — its observers are exactly the
+  // view subscriptions that need to re-render.
   let current = init
-  let observer: Observer<Update<Model>> | null = null
-  let observers: Set<Observer<Update<Model>>> | null = null
+  const modelVar = makeVar(init)
 
-  // Reusable mutable update — safe because observers consume synchronously
-  const updateObj = { prev: init, next: init } as { prev: Model; next: Model; delta?: unknown }
-
+  // Per-subscriber reusable update objects so the existing UpdateStream
+  // surface (which carries `delta` alongside `{prev, next}`) keeps working.
+  // `currentDelta` is the closed-over delta for the in-flight dispatch.
+  let currentDelta: unknown = undefined
   const deltaUpdates: UpdateStream<Model> = {
     subscribe(obs: Observer<Update<Model>>): Unsubscribe {
-      if (observer === null && observers === null) {
-        observer = obs
-      } else {
-        if (observers === null) {
-          observers = new Set()
-          if (observer) { observers.add(observer); observer = null }
-        }
-        observers.add(obs)
+      const update: { prev: Model; next: Model; delta: unknown | undefined } = {
+        prev: modelVar.value,
+        next: modelVar.value,
+        delta: undefined,
       }
-      return () => {
-        if (observer === obs) { observer = null }
-        else if (observers) { observers.delete(obs) }
-      }
+      return modelVar.observe((value) => {
+        update.prev = update.next
+        update.next = value
+        update.delta = currentDelta
+        obs(update as Update<Model>)
+      })
     },
   }
 
@@ -311,15 +314,11 @@ export function programWithDelta<Model, Msg>(
       return // Handled — skip normal subscription chain
     }
 
-    // Normal path: fire all observers
-    updateObj.prev = prev
-    updateObj.next = next
-    updateObj.delta = delta
-    if (observer) {
-      observer(updateObj as Update<Model>)
-    } else if (observers) {
-      observers.forEach(obs => obs(updateObj as Update<Model>))
-    }
+    // Normal path: publish through the Var so observers (the view) fire.
+    // Stash the delta for the bridge to read inside Var observers.
+    currentDelta = delta
+    modelVar.set(next)
+    currentDelta = undefined
   }
 
   const delegator = createDelegator(container)
@@ -367,17 +366,17 @@ export function programWithSub<Model, Msg>(
 ): ProgramHandle<Model, Msg> {
   const { container, init, update, view, subscriptions, onUpdate } = config
 
-  const modelSignal = createSignal(init)
-  const updates = toUpdateStream(modelSignal)
+  const modelVar = makeVar(init)
+  const updates = nodeToUpdateStream(modelVar)
   const activeSubs = new Map<string, Teardown>()
 
   let viewTeardown: Teardown | null = null
 
   const dispatch: Dispatcher<Msg> = (msg: Msg) => {
-    const prev = modelSignal.value
+    const prev = modelVar.value
     const next = update(msg, prev)
     onUpdate?.(msg, prev, next)
-    modelSignal.setValue(next)
+    modelVar.set(next)
     diffSubs(activeSubs, subscriptions(next), dispatch)
   }
 
@@ -390,7 +389,7 @@ export function programWithSub<Model, Msg>(
 
   return {
     dispatch,
-    getModel: () => modelSignal.value,
+    getModel: () => modelVar.value,
     teardown() {
       for (const td of activeSubs.values()) td.teardown()
       activeSubs.clear()
@@ -425,17 +424,17 @@ export function elmProgram<Model, Msg>(
 ): ProgramHandle<Model, Msg> {
   const { container, init: [initModel, initCmd], update, view, subscriptions, onUpdate } = config
 
-  const modelSignal = createSignal(initModel)
-  const updates = toUpdateStream(modelSignal)
+  const modelVar = makeVar(initModel)
+  const updates = nodeToUpdateStream(modelVar)
   const activeSubs = new Map<string, Teardown>()
 
   let viewTeardown: Teardown | null = null
 
   const dispatch: Dispatcher<Msg> = (msg: Msg) => {
-    const prev = modelSignal.value
+    const prev = modelVar.value
     const [next, cmd] = update(msg, prev)
     onUpdate?.(msg, prev, next)
-    modelSignal.setValue(next)
+    modelVar.set(next)
     cmd(dispatch)
     diffSubs(activeSubs, subscriptions(next), dispatch)
   }
@@ -448,7 +447,7 @@ export function elmProgram<Model, Msg>(
 
   return {
     dispatch,
-    getModel: () => modelSignal.value,
+    getModel: () => modelVar.value,
     teardown() {
       for (const td of activeSubs.values()) td.teardown()
       activeSubs.clear()
