@@ -305,8 +305,8 @@ describe("sdomCodegen / compileFile", () => {
     const out = compileFile(src, "/x.jsx")!.code
     expect(out).toContain("registerEvent as __sdomRegisterEvent")
     expect(out).toContain('__sdomRegisterEvent(root, "click",')
-    expect(out).toContain("const __evtRef = { current: initialModel }")
-    expect(out).toContain("__evtRef.current = next")
+    expect(out).toContain("let __evtModel = initialModel")
+    expect(out).toContain("__evtModel = next")
   })
 
   it("end-to-end: event handler dispatches and sees the live model", () => {
