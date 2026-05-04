@@ -107,7 +107,7 @@ describe("sdomCodegen / compileFile", () => {
   it("bakes static string attributes into the template innerHTML", () => {
     const src = `const view = <div class="foo" id="root">{(m) => m.x}</div>\n`
     const out = compileFile(src, "/x.jsx")!.code
-    expect(out).toContain('"<div class=\\"foo\\" id=\\"root\\"></div>"')
+    expect(out).toContain('"<div class=\\"foo\\" id=\\"root\\"> </div>"')
     // No update code for static attrs.
     expect(out).not.toMatch(/__attrFn/)
   })
@@ -115,7 +115,7 @@ describe("sdomCodegen / compileFile", () => {
   it("normalizes className to class for static values", () => {
     const src = `const view = <div className="foo">{(m) => m.x}</div>\n`
     const out = compileFile(src, "/x.jsx")!.code
-    expect(out).toContain('"<div class=\\"foo\\"></div>"')
+    expect(out).toContain('"<div class=\\"foo\\"> </div>"')
   })
 
   it("escapes static attribute values for HTML", () => {
@@ -226,17 +226,20 @@ describe("sdomCodegen / compileFile", () => {
   it("bakes nested element structure into a single innerHTML string", () => {
     const src = `const view = <div><span>{(m) => m.x}</span></div>\n`
     const out = compileFile(src, "/x.jsx")!.code
-    expect(out).toContain('"<div><span></span></div>"')
+    // The span pre-bakes a placeholder text node so cloneNode produces
+    // it; setup walks via firstChild instead of appending at runtime.
+    expect(out).toContain('"<div><span> </span></div>"')
     // The inner span needs JS work, so it gets a walker alias.
     expect(out).toContain("const __el_0 = root.firstChild")
-    // Dynamic text is appended to the aliased element.
-    expect(out).toContain("__el_0.appendChild(document.createTextNode")
+    // Dynamic text walks to the pre-baked placeholder, not an appended node.
+    expect(out).toContain("const __textNode0 = __el_0.firstChild")
+    expect(out).not.toContain("appendChild(document.createTextNode")
   })
 
   it("does not allocate walker aliases for purely static descendants", () => {
     const src = `const view = <div><i>icon</i><span>{(m) => m.x}</span></div>\n`
     const out = compileFile(src, "/x.jsx")!.code
-    expect(out).toContain('"<div><i>icon</i><span></span></div>"')
+    expect(out).toContain('"<div><i>icon</i><span> </span></div>"')
     // Only the span needs work; the <i> is fully baked.
     expect(out).toContain("const __el_0 = root.firstChild.nextSibling")
     expect(out).not.toContain("__el_1")

@@ -44,6 +44,13 @@ const VOID_TAGS = new Set([
   "link", "meta", "param", "source", "track", "wbr",
 ])
 
+// Tags whose direct text children get foster-parented or otherwise displaced
+// by the HTML parser. We can't pre-bake text node placeholders inside these
+// because innerHTML parsing won't put the text node where the JSX wrote it.
+const TEXT_HOSTILE_TAGS = new Set([
+  "table", "thead", "tbody", "tfoot", "tr", "colgroup", "select", "datalist",
+])
+
 const ATTR_TO_PROP: Record<string, string> = {
   class: "className",
   for: "htmlFor",
@@ -325,6 +332,18 @@ function planHasAnyEvents(plan: ElementPlan): boolean {
   return false
 }
 
+/**
+ * True when this element has exactly one dynamic-text child and the parent
+ * tag preserves text inside innerHTML. We can pre-bake a placeholder text
+ * node into the cloned template and walk to it via `firstChild` instead of
+ * paying `document.createTextNode("") + appendChild` per row at clone time.
+ */
+function canPreBakeText(plan: ElementPlan): boolean {
+  if (TEXT_HOSTILE_TAGS.has(plan.tag)) return false
+  if (plan.children.length !== 1) return false
+  return plan.children[0]!.kind === "dynamic-text"
+}
+
 // ---------------------------------------------------------------------------
 // Code emission
 // ---------------------------------------------------------------------------
@@ -453,8 +472,23 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
   // Children: either inline-build (text-like case) or recurse into element
   // children whose subtrees were baked into innerHTML.
   const childKinds = childKindsOf(plan.children)
-  const inlineChildren = childKinds.hasDynamicText
-  if (inlineChildren) {
+  const preBake = canPreBakeText(plan)
+  const inlineChildren = childKinds.hasDynamicText && !preBake
+  if (preBake) {
+    // The placeholder space we baked into innerHTML cloned with the row.
+    // Walk to it directly and overwrite its nodeValue on initial render.
+    const child = plan.children[0] as { kind: "dynamic-text"; fnSource: string }
+    const i = ctx.textIdx++
+    ctx.setupLines.push(`  const __textNode${i} = ${elPath}.firstChild`)
+    ctx.setupLines.push(`  const __textFn${i} = ${child.fnSource}`)
+    ctx.setupLines.push(`  let __textLast${i} = __textFn${i}(initialModel)`)
+    ctx.setupLines.push(`  __textNode${i}.nodeValue = String(__textLast${i})`)
+    ctx.updateLines.push(`      const __textV${i} = __textFn${i}(next)`)
+    ctx.updateLines.push(`      if (__textV${i} !== __textLast${i}) {`)
+    ctx.updateLines.push(`        __textLast${i} = __textV${i}`)
+    ctx.updateLines.push(`        __textNode${i}.nodeValue = String(__textV${i})`)
+    ctx.updateLines.push(`      }`)
+  } else if (inlineChildren) {
     for (const child of plan.children) {
       if (child.kind === "static-text") {
         ctx.setupLines.push(
@@ -522,10 +556,15 @@ function bakeElementHtml(plan: ElementPlan, ctx: EmitContext): void {
   ctx.htmlParts.push(">")
 
   // Mirror walkPlan's children-baking logic: skip child baking when this
-  // element will create its children inline.
+  // element will create its children inline. The prebake-text shortcut
+  // bakes a placeholder text node directly so cloneNode produces it,
+  // saving one createTextNode + appendChild per row at mount time.
   const kinds = childKindsOf(plan.children)
-  const inlineChildren = kinds.hasDynamicText
-  if (!inlineChildren) {
+  const preBake = canPreBakeText(plan)
+  const inlineChildren = kinds.hasDynamicText && !preBake
+  if (preBake) {
+    ctx.htmlParts.push(" ")
+  } else if (!inlineChildren) {
     for (const child of plan.children) {
       if (child.kind === "static-text") {
         ctx.htmlParts.push(escapeHtmlText(child.text))
