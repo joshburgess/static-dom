@@ -253,27 +253,36 @@ export function registerEvent(
  * state literal so the root listener can find the row's live model and
  * dispatch during a bubble. With a delegator present, this skips the
  * closure allocation and per-element WeakMap.set that `registerEvent`
- * incurs. Returns null in that case (the property reclaims with the
- * element).
+ * incurs.
  *
  * No-delegator fallback (bare/test usage) builds the closure that
- * `registerEvent` would have built and returns a teardown.
+ * `registerEvent` would have built and pushes its teardown directly
+ * into `state.evtCleanups`, lazily allocating that array. Letting this
+ * function own the cleanup bookkeeping keeps codegen output to one
+ * line per handler (no per-event `if !== null` check + push).
  */
+interface DelegateState {
+  evtModel: unknown
+  dispatch: (msg: unknown) => void
+  evtCleanups: Array<() => void> | null
+}
 export function delegateEvent(
   el: Element,
   eventName: string,
   fn: (event: Event, model: unknown) => unknown,
-  state: { evtModel: unknown; dispatch: (msg: unknown) => void },
-): (() => void) | null {
+  state: DelegateState,
+): void {
   const d = currentDelegator
   if (d !== null) {
     d.delegateProp(el, eventName, fn)
-    return null
+    return
   }
   const listener = (event: Event) => {
     const msg = fn(event, state.evtModel)
     if (msg !== null && msg !== undefined) state.dispatch(msg)
   }
   el.addEventListener(eventName, listener)
-  return () => el.removeEventListener(eventName, listener)
+  const cleanup = (): void => el.removeEventListener(eventName, listener)
+  if (state.evtCleanups === null) state.evtCleanups = [cleanup]
+  else state.evtCleanups.push(cleanup)
 }

@@ -526,8 +526,8 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
   // the element and the root listener walks up to find it + the row's
   // `__sdom_state` back-reference, skipping the per-row listener closure
   // that closure-based delegation needed. Without a delegator (bare/test
-  // usage), delegateEvent falls back to addEventListener with a closure
-  // and returns a teardown that we collect into `s.evtCleanups`.
+  // usage), delegateEvent falls back to addEventListener and pushes its own
+  // teardown into `s.evtCleanups` (lazily allocated).
   //
   // The user fn is hoisted to module scope so every row reuses it.
   for (const evt of plan.events) {
@@ -536,10 +536,7 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
     const fnName = `__sdom_evtFn_${ctx.siteId}_${i}`
     ctx.moduleScopeLines.push(`const ${fnName} = ${evt.fnSource}`)
     ctx.setupLines.push(
-      `  const __evtC${i} = ${DELEGATE_EVENT_IMPORT_NAME}(${elPath}, ${JSON.stringify(evt.eventName)}, ${fnName}, s)`,
-    )
-    ctx.setupLines.push(
-      `  if (__evtC${i} !== null) (s.evtCleanups ?? (s.evtCleanups = [])).push(__evtC${i})`,
+      `  ${DELEGATE_EVENT_IMPORT_NAME}(${elPath}, ${JSON.stringify(evt.eventName)}, ${fnName}, s)`,
     )
   }
 
