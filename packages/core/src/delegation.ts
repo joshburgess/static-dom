@@ -30,6 +30,14 @@ export interface EventDelegator {
    */
   on(el: Element, eventName: string, handler: (event: Event) => void): () => void
 
+  /**
+   * Like `on`, but does not return an unregister function. Saves one closure
+   * allocation per call — the handler reclaims automatically once the element
+   * becomes unreachable (handlers live in a per-event WeakMap). Used by the
+   * hot mount path through `registerEvent`.
+   */
+  attach(el: Element, eventName: string, handler: (event: Event) => void): void
+
   /** Remove all root listeners. */
   teardown(): void
 }
@@ -80,6 +88,11 @@ export function createDelegator(root: Element): EventDelegator {
       const map = ensureRootListener(eventName)
       map.set(el, handler)
       return () => map.delete(el)
+    },
+
+    attach(el: Element, eventName: string, handler: (event: Event) => void): void {
+      const map = ensureRootListener(eventName)
+      map.set(el, handler)
     },
 
     teardown() {
@@ -143,7 +156,7 @@ export function registerEvent(
 ): (() => void) | null {
   const d = currentDelegator
   if (d !== null) {
-    d.on(el, eventName, listener)
+    d.attach(el, eventName, listener)
     return null
   }
   el.addEventListener(eventName, listener)

@@ -73,15 +73,22 @@ export function lis(arr: number[]): number[] {
 // ItemEntry — per-item state tracked by the reconciler
 // ---------------------------------------------------------------------------
 
+// prev/next live directly on the entry rather than on a nested update object,
+// and firstNode is stored here too instead of a sibling Map. Both shave one
+// allocation per row off the bulk mount path. The entry is structurally
+// compatible with Update<ItemModel> so it doubles as the observer payload.
 interface ItemEntry<ItemModel> {
   startMarker: Comment | null
   endMarker: Comment | null
   teardown: Teardown
   observer: Observer<Update<ItemModel>> | null
   observers: Set<Observer<Update<ItemModel>>> | null
-  // update.next doubles as the live model ref — saves one allocation per row.
-  update: { prev: ItemModel; next: ItemModel }
+  prev: ItemModel
+  next: ItemModel
+  firstNode: ChildNode | null
 }
+
+const NOOP_TEARDOWN: Teardown = { teardown() {} }
 
 // ---------------------------------------------------------------------------
 // createArrayReconciler — factory for keyed array reconciliation
@@ -148,38 +155,39 @@ export function createArrayReconciler<ItemModel, Msg>(
 
   // --- Lazy marker insertion ---
   let markersInserted = false
-  const itemFirstNodes = new Map<string, ChildNode>()
 
   /** Mount an item during initial render — no markers, appends to `target`.
    *  `target` is the container itself for one-off mounts, or a temporary
    *  DocumentFragment when the caller is bulk-mounting and will flush the
-   *  fragment to the container at the end. */
+   *  fragment to the container at the end.
+   *
+   *  The caller is responsible for installing `capturedDelegator` as the
+   *  ambient delegator before invoking this in a bulk loop — withDelegator
+   *  is hoisted up so 10k mounts share one push/pop instead of 10k. */
   function mountItemInitial(
     target: Element | DocumentFragment,
     key: string,
     itemModel: ItemModel,
   ): void {
-    const update = { prev: itemModel, next: itemModel }
     const entry: ItemEntry<ItemModel> = {
       startMarker: null, endMarker: null,
-      teardown: { teardown() {} },
-      observer: null, observers: null, update,
+      teardown: NOOP_TEARDOWN,
+      observer: null, observers: null,
+      prev: itemModel, next: itemModel,
+      firstNode: null,
     }
     liveItems.set(key, entry)
 
     const lastBefore = target.lastChild
 
     currentMountEntry = entry
-    entry.teardown = withDelegator(capturedDelegator, () =>
-      guard("attach", `${label} item "${key}"`, () =>
-        itemSdom.attach(target, itemModel, sharedUpdateStream, dispatch),
-        { teardown() {} }
-      )
+    entry.teardown = guard("attach", `${label} item "${key}"`, () =>
+      itemSdom.attach(target, itemModel, sharedUpdateStream, dispatch),
+      NOOP_TEARDOWN,
     )
     currentMountEntry = null
 
-    const firstNode = lastBefore ? lastBefore.nextSibling : target.firstChild
-    if (firstNode) itemFirstNodes.set(key, firstNode)
+    entry.firstNode = lastBefore ? lastBefore.nextSibling : target.firstChild
   }
 
   /** Mount an item during reconciliation — with markers for reordering. */
@@ -187,11 +195,12 @@ export function createArrayReconciler<ItemModel, Msg>(
     const startMarker = document.createComment(`s:${key}`)
     const endMarker = document.createComment(`e:${key}`)
 
-    const update = { prev: itemModel, next: itemModel }
     const entry: ItemEntry<ItemModel> = {
       startMarker, endMarker,
-      teardown: { teardown() {} },
-      observer: null, observers: null, update,
+      teardown: NOOP_TEARDOWN,
+      observer: null, observers: null,
+      prev: itemModel, next: itemModel,
+      firstNode: null,
     }
     liveItems.set(key, entry)
 
@@ -201,7 +210,7 @@ export function createArrayReconciler<ItemModel, Msg>(
     entry.teardown = withDelegator(capturedDelegator, () =>
       guard("attach", `${label} item "${key}"`, () =>
         itemSdom.attach(container, itemModel, sharedUpdateStream, dispatch),
-        { teardown() {} }
+        NOOP_TEARDOWN,
       )
     )
     currentMountEntry = null
@@ -210,12 +219,13 @@ export function createArrayReconciler<ItemModel, Msg>(
   }
 
   function pushItemUpdate(entry: ItemEntry<ItemModel>, itemModel: ItemModel): void {
-    entry.update.prev = entry.update.next
-    entry.update.next = itemModel
+    entry.prev = entry.next
+    entry.next = itemModel
+    const update = entry as unknown as Update<ItemModel>
     if (entry.observer) {
-      entry.observer(entry.update)
+      entry.observer(update)
     } else if (entry.observers) {
-      entry.observers.forEach(obs => obs(entry.update))
+      entry.observers.forEach(obs => obs(update))
     }
   }
 
@@ -226,7 +236,7 @@ export function createArrayReconciler<ItemModel, Msg>(
     const entries = Array.from(liveItems.entries())
     for (const [key, entry] of entries) {
       if (entry.startMarker !== null) continue
-      const firstNode = itemFirstNodes.get(key)
+      const firstNode = entry.firstNode
       if (!firstNode) continue
       const start = document.createComment(`s:${key}`)
       entry.startMarker = start
@@ -243,7 +253,9 @@ export function createArrayReconciler<ItemModel, Msg>(
       container.insertBefore(end, ref)
     }
 
-    itemFirstNodes.clear()
+    // firstNode references are no longer needed; drop them so GC can reclaim
+    // text/element nodes if the user later replaces them out-of-band.
+    for (const [, entry] of entries) entry.firstNode = null
   }
 
   /** Move all nodes in [startMarker..endMarker] before `ref`. */
@@ -346,18 +358,19 @@ export function createArrayReconciler<ItemModel, Msg>(
     if (liveItems.size === 0) {
       isFirstSync = false
       markersInserted = false
-      itemFirstNodes.clear()
       if (count === 0) {
         prevKeys = []
         return
       }
       const keys = new Array<string>(count)
       const frag = document.createDocumentFragment()
-      for (let i = 0; i < count; i++) {
-        const key = keyAt(i)
-        keys[i] = key
-        mountItemInitial(frag, key, modelAt(i))
-      }
+      withDelegator(capturedDelegator, () => {
+        for (let i = 0; i < count; i++) {
+          const key = keyAt(i)
+          keys[i] = key
+          mountItemInitial(frag, key, modelAt(i))
+        }
+      })
       container.appendChild(frag)
       prevKeys = keys
       return
@@ -390,7 +403,7 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (let i = 0; i < count; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(i)
-          if (entry.update.next !== model) {
+          if (entry.next !== model) {
             pushItemUpdate(entry, model)
           }
         }
@@ -421,7 +434,7 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (let i = 0; i < count; i++) {
           const entry = liveItems.get(newKeys[i]!)!
           const model = modelAt(i)
-          if (entry.update.next !== model) {
+          if (entry.next !== model) {
             pushItemUpdate(entry, model)
           }
         }
@@ -443,7 +456,7 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (let i = 0; i < prevKeys.length; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(i)
-          if (entry.update.next !== model) {
+          if (entry.next !== model) {
             pushItemUpdate(entry, model)
           }
         }
@@ -454,11 +467,14 @@ export function createArrayReconciler<ItemModel, Msg>(
         const newKeys = new Array<string>(count)
         for (let i = 0; i < prevKeys.length; i++) newKeys[i] = prevKeys[i]!
         const frag = document.createDocumentFragment()
-        for (let i = prevKeys.length; i < count; i++) {
-          const key = keyAt(i)
-          newKeys[i] = key
-          mountItemInitial(frag, key, modelAt(i))
-        }
+        const prevLen = prevKeys.length
+        withDelegator(capturedDelegator, () => {
+          for (let i = prevLen; i < count; i++) {
+            const key = keyAt(i)
+            newKeys[i] = key
+            mountItemInitial(frag, key, modelAt(i))
+          }
+        })
         container.appendChild(frag)
         prevKeys = newKeys
         return
@@ -474,7 +490,6 @@ export function createArrayReconciler<ItemModel, Msg>(
       for (const { teardown: td } of liveItems.values()) td.teardown()
       liveItems.clear()
       markersInserted = false
-      itemFirstNodes.clear()
       prevKeys = []
       return
     }
@@ -508,14 +523,14 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (let i = 0; i < prefixLen; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(i)
-          if (entry.update.next !== model) {
+          if (entry.next !== model) {
             pushItemUpdate(entry, model)
           }
         }
         for (let i = oldEnd + 1; i < oldLen; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(prefixLen + (i - oldEnd - 1))
-          if (entry.update.next !== model) {
+          if (entry.next !== model) {
             pushItemUpdate(entry, model)
           }
         }
@@ -537,7 +552,7 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (let i = 0; i < prefixLen; i++) {
           const entry = liveItems.get(prevKeys[i]!)!
           const model = modelAt(i)
-          if (entry.update.next !== model) {
+          if (entry.next !== model) {
             pushItemUpdate(entry, model)
           }
         }
@@ -546,7 +561,7 @@ export function createArrayReconciler<ItemModel, Msg>(
           const entry = liveItems.get(prevKeys[i]!)!
           const newIdx = newEnd + 1 + (i - suffixStart)
           const model = modelAt(newIdx)
-          if (entry.update.next !== model) {
+          if (entry.next !== model) {
             pushItemUpdate(entry, model)
           }
         }
@@ -594,11 +609,12 @@ export function createArrayReconciler<ItemModel, Msg>(
         for (const { teardown: td } of liveItems.values()) td.teardown()
         liveItems.clear()
         markersInserted = false
-        itemFirstNodes.clear()
         const frag = document.createDocumentFragment()
-        for (let i = 0; i < count; i++) {
-          mountItemInitial(frag, nextKeys[i]!, modelAt(i))
-        }
+        withDelegator(capturedDelegator, () => {
+          for (let i = 0; i < count; i++) {
+            mountItemInitial(frag, nextKeys[i]!, modelAt(i))
+          }
+        })
         container.appendChild(frag)
         prevKeys = nextKeys
         return
@@ -620,7 +636,7 @@ export function createArrayReconciler<ItemModel, Msg>(
       const entry = liveItems.get(key)
       if (!entry) {
         mountItemFull(key, model)
-      } else if (entry.update.next !== model) {
+      } else if (entry.next !== model) {
         pushItemUpdate(entry, model)
       }
     }
