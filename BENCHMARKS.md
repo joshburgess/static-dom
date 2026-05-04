@@ -25,6 +25,53 @@ npx vitest bench bench/initial-render.bench.ts --config vitest.browser.config.ts
 
 ---
 
+## krausest js-framework-benchmark
+
+[krausest/js-framework-benchmark](https://github.com/krausest/js-framework-benchmark)
+runs each operation against a 1k or 10k-row table in throttled Chromium (4x CPU
+slowdown) via Playwright CDP. Results below are 15-iteration medians.
+
+**Environment:** macOS Darwin 24.4.0, Chromium via Playwright (4x CPU throttling),
+keyed implementations.
+
+**Framework versions:** Solid 1.9.3 (keyed), static-dom 0.1.0 (keyed).
+
+**Date:** 2026-05-04.
+
+| Benchmark | Solid 1.9.3 (script ms) | static-dom 0.1.0 (script ms) | Δ |
+|---|---:|---:|---:|
+| 01_run1k (create 1k rows) | 3.7 | 3.8 | +0.1 |
+| 02_replace1k (replace 1k rows) | 8.3 | **6.9** | **-1.4** |
+| 03_update10th1k_x16 (partial update) | 1.8 | 1.8 | 0.0 |
+| 04_select1k (select row) | 1.0 | 1.1 | +0.1 |
+| 05_swap1k (swap two rows) | 1.6 | **1.0** | **-0.6** |
+| 06_remove-one-1k (remove a row) | 0.5 | 0.6 | +0.1 |
+| 07_create10k (create 10k rows) | 44.5 | 44.6 | +0.1 |
+| 08_create1k-after1k_x2 (append 1k after 1k) | 4.3 | **3.9** | **-0.4** |
+| 09_clear1k_x8 (clear 1k rows) | 15.2 | **12.7** | **-2.5** |
+
+**Takeaway:** static-dom matches or beats Solid on every keyed benchmark in the
+suite. Faster on 02, 05, 08, and 09; within ±0.1 ms on the other five.
+
+### Reproducing
+
+Both frameworks need to be built into the local
+`js-framework-benchmark/frameworks/keyed/{solid,static-dom}` directories, then
+run from `webdriver-ts/`:
+
+```bash
+cd js-framework-benchmark/webdriver-ts
+npx cross-env LANG="en_US.UTF-8" node dist/benchmarkRunner.js \
+  --framework keyed/solid keyed/static-dom \
+  --benchmark 01 02 03 04 05 06 07 08 09 \
+  --runner playwright --count 15
+```
+
+Results land in `webdriver-ts/results/<framework>_<benchmark>.json` with
+script / paint / total medians and full per-iteration values.
+
+---
+
 ## Comparative Benchmarks
 
 ### Initial Render: 10k rows
