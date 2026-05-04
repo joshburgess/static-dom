@@ -23,6 +23,15 @@
 // element registration — meaningful when 10k rows each register 1+ events.
 type EventMap = WeakMap<EventTarget, (event: Event) => void>
 
+// Per-event-type bookkeeping. The root listener and the property-based
+// handler key are computed once when the listener is installed; bundling
+// them with the WeakMap lets the hot delegateProp/attach paths grab
+// everything they need with a single Map lookup.
+interface EventBucket {
+  map: EventMap
+  handlerKey: string
+}
+
 /**
  * Property-based dispatch: the codegen stores the user's pure
  * `(event, model) => msg` function directly on the clickable element,
@@ -86,18 +95,19 @@ export interface EventDelegator {
  * `event.target` looking for a registered handler.
  */
 export function createDelegator(root: Element): EventDelegator {
-  // event name → WeakMap<el, handler>
-  const handlersByEvent = new Map<string, EventMap>()
+  // event name → bucket carrying the per-event WeakMap + cached handler key
+  const buckets = new Map<string, EventBucket>()
   const rootListeners = new Map<string, (e: Event) => void>()
 
-  function ensureRootListener(eventName: string): EventMap {
-    let map = handlersByEvent.get(eventName)
-    if (map !== undefined) return map
-    map = new WeakMap()
-    handlersByEvent.set(eventName, map)
+  function ensureBucket(eventName: string): EventBucket {
+    let bucket = buckets.get(eventName)
+    if (bucket !== undefined) return bucket
+    const map: EventMap = new WeakMap()
+    const handlerKey = handlerKeyFor(eventName)
+    bucket = { map, handlerKey }
+    buckets.set(eventName, bucket)
 
     const eventMap = map
-    const handlerKey = handlerKeyFor(eventName)
     const listener = (event: Event) => {
       // Single bubble pass that handles both dispatch flavors:
       //   1. Property-based: codegen has stored the pure fn on a clickable
@@ -140,19 +150,18 @@ export function createDelegator(root: Element): EventDelegator {
 
     rootListeners.set(eventName, listener)
     root.addEventListener(eventName, listener)
-    return map
+    return bucket
   }
 
   return {
     on(el: Element, eventName: string, handler: (event: Event) => void): () => void {
-      const map = ensureRootListener(eventName)
+      const map = ensureBucket(eventName).map
       map.set(el, handler)
       return () => map.delete(el)
     },
 
     attach(el: Element, eventName: string, handler: (event: Event) => void): void {
-      const map = ensureRootListener(eventName)
-      map.set(el, handler)
+      ensureBucket(eventName).map.set(el, handler)
     },
 
     delegateProp(
@@ -160,8 +169,10 @@ export function createDelegator(root: Element): EventDelegator {
       eventName: string,
       fn: (event: Event, model: unknown) => unknown,
     ): void {
-      ensureRootListener(eventName)
-      ;(el as ElementWithDispatch)[handlerKeyFor(eventName)] = fn
+      // Single Map lookup pulls both the (possibly-installed) root listener
+      // and the cached `__sdom_h_<event>` property name — no per-call string
+      // concat, which the bulk-mount path runs N×events times.
+      ;(el as ElementWithDispatch)[ensureBucket(eventName).handlerKey] = fn
     },
 
     teardown() {
@@ -169,7 +180,7 @@ export function createDelegator(root: Element): EventDelegator {
         root.removeEventListener(name, listener)
       }
       rootListeners.clear()
-      handlersByEvent.clear()
+      buckets.clear()
     },
   }
 }
