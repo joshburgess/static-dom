@@ -117,16 +117,38 @@ export function makeVar<T>(
     recompute: null,
     eq,
   }
-  return makeHandle(internal, (next) => {
-    if (internal.eq(internal.value, next)) return
-    internal.value = next
-    internal.stamp++
-    markDependentsDirty(internal as InternalNode<unknown>)
-    if (internal.observers.size > 0) {
-      schedulePush(internal as InternalNode<unknown>, next)
-    }
-    if (inBatch === 0) stabilize()
-  })
+  // Inlined handle (no setter closure) — saves one call frame per set on
+  // the program-runner hot path.
+  return {
+    get value() {
+      return internal.value
+    },
+    set(next: T) {
+      if (internal.eq(internal.value, next)) return
+      internal.value = next
+      internal.stamp++
+      // Leaf fast path: no derived nodes and not batched — fire observers
+      // inline. This is the hot path for program runners (modelVar has no
+      // graph dependents, only direct view subscriptions) and keeps the
+      // leaf-only cost on par with a plain notifying signal.
+      if (internal.dependents.size === 0 && inBatch === 0) {
+        internal.observers.forEach((obs) => obs(next))
+        return
+      }
+      markDependentsDirty(internal as InternalNode<unknown>)
+      if (internal.observers.size > 0) {
+        schedulePush(internal as InternalNode<unknown>, next)
+      }
+      if (inBatch === 0) stabilize()
+    },
+    observe(observer: (value: T) => void): Unsubscribe {
+      internal.observers.add(observer)
+      return () => {
+        internal.observers.delete(observer)
+      }
+    },
+    _internal: internal,
+  }
 }
 
 export function map<A, B>(
