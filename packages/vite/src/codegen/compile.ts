@@ -394,7 +394,10 @@ function emitFromPlan(
     // Live model ref shared by every event listener in this subtree, so
     // handlers always see the current model without re-registering.
     lines.push(`  const __evtRef = { current: initialModel }`)
-    lines.push(`  const __evtCleanups = []`)
+    // __evtCleanups stays null when every event registers through the
+    // ambient delegator (registerEvent returns null), so the per-row array
+    // allocation is skipped on the hot bulk-mount path.
+    lines.push(`  let __evtCleanups = null`)
   }
   for (const s of ctx.setupLines) lines.push(s)
   lines.push(`  parent.appendChild(root)`)
@@ -405,7 +408,7 @@ function emitFromPlan(
   lines.push(`    },`)
   if (ctx.hasEvents) {
     lines.push(`    teardown() {`)
-    lines.push(`      for (const __c of __evtCleanups) __c()`)
+    lines.push(`      if (__evtCleanups !== null) for (const __c of __evtCleanups) __c()`)
     lines.push(`      root.remove()`)
     lines.push(`    },`)
   } else {
@@ -466,7 +469,9 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
     ctx.setupLines.push(
       `  const __evtC${i} = ${REGISTER_EVENT_IMPORT_NAME}(${elPath}, ${JSON.stringify(evt.eventName)}, __evtL${i})`,
     )
-    ctx.setupLines.push(`  if (__evtC${i} !== null) __evtCleanups.push(__evtC${i})`)
+    ctx.setupLines.push(
+      `  if (__evtC${i} !== null) (__evtCleanups ?? (__evtCleanups = [])).push(__evtC${i})`,
+    )
   }
 
   // Children: either inline-build (text-like case) or recurse into element
@@ -510,18 +515,29 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
       }
     }
   } else {
-    let prevPath: string | null = null
+    // Walker chain: each bound child gets aliased to a `__el_N` const, and
+    // the next sibling walks from that alias rather than re-traversing
+    // `firstChild.nextSibling.nextSibling...` from the parent. This keeps
+    // the chain length per row bounded to one `.nextSibling` per child
+    // instead of growing linearly with sibling index.
+    let cursor: string | null = null
     for (const child of plan.children) {
-      // Each child node (static text or element, baked into innerHTML)
-      // advances the sibling cursor.
       const childPathExpr: string =
-        prevPath === null ? `${elPath}.firstChild` : `${prevPath}.nextSibling`
-      prevPath = childPathExpr
+        cursor === null ? `${elPath}.firstChild` : `${cursor}.nextSibling`
       if (child.kind === "element" && elementNeedsWork(child.plan)) {
+        const aliasIdxBefore = ctx.elIdx
         bindElement(child.plan, childPathExpr, ctx)
+        // bindElement allocates `__el_{aliasIdxBefore}` as the first thing
+        // it does for any non-root element with work, so a bumped counter
+        // means we can use that alias as the cursor for the next sibling.
+        cursor = ctx.elIdx > aliasIdxBefore
+          ? `__el_${aliasIdxBefore}`
+          : childPathExpr
+      } else {
+        // Pure-static element or static text: no alias allocated. Keep
+        // extending the chain so the next bound sibling sees the right node.
+        cursor = childPathExpr
       }
-      // Pure-static elements and static text were baked into innerHTML and
-      // need no JS work.
     }
   }
 }
