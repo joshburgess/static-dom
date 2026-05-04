@@ -868,6 +868,55 @@ export function compiled<Model, Msg>(
 }
 
 // ---------------------------------------------------------------------------
+// compiledState — state-based variant for codegen
+//
+// Same idea as `compiled()` but splits the per-row work into three module-scope
+// functions sharing a per-row state object. Trades the per-row instance
+// `{update, teardown}` literal + two method closures for a single state object
+// that the shared functions read and write through. Used by sdomCodegen.
+// ---------------------------------------------------------------------------
+
+/**
+ * Internal brand: parallels `__SDOM_COMPILED_SETUP__` but carries the
+ * three-part {setup, update, teardown} spec produced by `compiledState()`.
+ * The keyed array reconciler reads this brand first and, when present,
+ * allocates a single per-row state object instead of the legacy
+ * setup-returns-instance shape.
+ */
+export const __SDOM_COMPILED_STATE__: unique symbol = Symbol("sdom.compiledState")
+
+export interface CompiledStateSpec<Model, Msg, State> {
+  setup: (
+    parent: Element | DocumentFragment,
+    initialModel: Model,
+    dispatch: Dispatcher<Msg>,
+  ) => State
+  update: (state: State, prev: Model, next: Model) => void
+  teardown: (state: State) => void
+}
+
+export function compiledState<Model, Msg, State extends object>(
+  spec: CompiledStateSpec<Model, Msg, State>,
+): SDOM<Model, Msg> {
+  const sdom = makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
+    const state = spec.setup(parent, initialModel, dispatch)
+    const unsub = updates.subscribe(({ prev, next }) => {
+      spec.update(state, prev, next)
+    })
+    return {
+      teardown() {
+        unsub()
+        spec.teardown(state)
+      },
+    }
+  })
+  ;(sdom as unknown as { [__SDOM_COMPILED_STATE__]: CompiledStateSpec<Model, Msg, State> })[
+    __SDOM_COMPILED_STATE__
+  ] = spec
+  return sdom
+}
+
+// ---------------------------------------------------------------------------
 // match — discriminated union switch (N-way optional)
 // ---------------------------------------------------------------------------
 

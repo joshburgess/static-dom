@@ -10,6 +10,7 @@ import { describe, it, expect } from "vitest"
 import { compileFile } from "../src/codegen/compile"
 import {
   compiled,
+  compiledState,
   createSignal,
   registerEvent,
   toUpdateStream,
@@ -22,13 +23,15 @@ function compileAndLoad(src: string): ReturnType<typeof compiled> {
   const body = result.code.replace(/^import [^\n]+\n/gm, "")
   const factory = new Function(
     "__sdomCompiled",
+    "__sdomCompiledState",
     "__sdomRegisterEvent",
     `${body}\nreturn view`,
   ) as (
     c: typeof compiled,
+    cs: typeof compiledState,
     r: typeof registerEvent,
   ) => ReturnType<typeof compiled>
-  return factory(compiled, registerEvent)
+  return factory(compiled, compiledState, registerEvent)
 }
 
 function mountFor<M>(
@@ -63,7 +66,7 @@ describe("sdomCodegen / compileFile", () => {
     expect(out).toContain("__sdom_compiled_0")
     expect(out).toContain('document.createElement("template")')
     expect(out).toContain('cloneNode(true)')
-    expect(out).toContain("__textNode0.nodeValue")
+    expect(out).toContain("s.textNode0.nodeValue")
     expect(out).toContain("const view = __sdom_compiled_0")
     expect(out).not.toMatch(/<div>\{/)
     expect(out).not.toMatch(/<\/div>$/m)
@@ -143,22 +146,22 @@ describe("sdomCodegen / compileFile", () => {
   it("emits IDL-property assignment for dynamic IDL attrs", () => {
     const src = `const view = <input id={(m) => m.id}/>\n`
     const out = compileFile(src, "/x.jsx")!.code
-    expect(out).toContain("root.id = __attrLast0")
-    expect(out).toContain("root.id = __attrV0")
+    expect(out).toContain("root.id = s.attrLast0")
+    expect(out).toContain("s.root.id = __attrV0")
   })
 
   it("emits className assignment for dynamic class attribute", () => {
     const src = `const view = <div class={(m) => m.cls}>{(m) => m.x}</div>\n`
     const out = compileFile(src, "/x.jsx")!.code
-    expect(out).toContain("root.className = __attrLast0")
-    expect(out).toContain("root.className = __attrV0")
+    expect(out).toContain("root.className = s.attrLast0")
+    expect(out).toContain("s.root.className = __attrV0")
   })
 
   it("emits setAttribute for dynamic data-* attributes", () => {
     const src = `const view = <div data-id={(m) => m.id}>{(m) => m.x}</div>\n`
     const out = compileFile(src, "/x.jsx")!.code
-    expect(out).toContain('root.setAttribute("data-id", __attrLast0)')
-    expect(out).toContain('root.setAttribute("data-id", __attrV0)')
+    expect(out).toContain('root.setAttribute("data-id", s.attrLast0)')
+    expect(out).toContain('s.root.setAttribute("data-id", __attrV0)')
   })
 
   it("end-to-end: dynamic class updates the DOM property, not the attribute", () => {
@@ -232,7 +235,7 @@ describe("sdomCodegen / compileFile", () => {
     // The inner span needs JS work, so it gets a walker alias.
     expect(out).toContain("const __el_0 = root.firstChild")
     // Dynamic text walks to the pre-baked placeholder, not an appended node.
-    expect(out).toContain("const __textNode0 = __el_0.firstChild")
+    expect(out).toContain("s.textNode0 = __el_0.firstChild")
     expect(out).not.toContain("appendChild(document.createTextNode")
   })
 
@@ -305,8 +308,8 @@ describe("sdomCodegen / compileFile", () => {
     const out = compileFile(src, "/x.jsx")!.code
     expect(out).toContain("registerEvent as __sdomRegisterEvent")
     expect(out).toContain('__sdomRegisterEvent(root, "click",')
-    expect(out).toContain("let __evtModel = initialModel")
-    expect(out).toContain("__evtModel = next")
+    expect(out).toContain("evtModel: initialModel")
+    expect(out).toContain("s.evtModel = next")
   })
 
   it("end-to-end: event handler dispatches and sees the live model", () => {

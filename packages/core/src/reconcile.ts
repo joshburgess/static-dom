@@ -21,7 +21,12 @@ import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import { guard, __SDOM_GUARD__, getErrorHandler } from "./errors"
 import { __SDOM_DEV__, validateUniqueKeys } from "./dev"
 import { getCurrentDelegator, withDelegator } from "./delegation"
-import { __SDOM_COMPILED_SETUP__, type CompiledSetup } from "./constructors"
+import {
+  __SDOM_COMPILED_SETUP__,
+  __SDOM_COMPILED_STATE__,
+  type CompiledSetup,
+  type CompiledStateSpec,
+} from "./constructors"
 
 // ---------------------------------------------------------------------------
 // LIS — Longest Increasing Subsequence (from Inferno)
@@ -95,6 +100,17 @@ interface ItemEntry<ItemModel> {
    * object per row. Null on the slow path (handwritten attach + observer).
    */
   directUpdate: ((prev: ItemModel, next: ItemModel) => void) | null
+  /**
+   * State-based compiled path: when the item SDOM was produced by
+   * `compiledState()`, we hold a per-row state object plus pointers to the
+   * shared (module-scope) update + teardown functions. The shared functions
+   * read/write through `state` so we avoid one `{update, teardown}` literal
+   * and two method closures per row. Null when the row is on the legacy
+   * compiled() or handwritten-attach path.
+   */
+  state: object | null
+  stateUpdate: ((state: object, prev: ItemModel, next: ItemModel) => void) | null
+  stateTeardown: ((state: object) => void) | null
 }
 
 const NOOP_TEARDOWN: Teardown = { teardown() {} }
@@ -143,6 +159,14 @@ export function createArrayReconciler<ItemModel, Msg>(
     (itemSdom as unknown as { [__SDOM_COMPILED_SETUP__]?: CompiledSetup<ItemModel, Msg> })[
       __SDOM_COMPILED_SETUP__
     ] ?? null
+
+  // State-based variant: setup writes into a pre-allocated state object and
+  // the shared update + teardown functions read it. Trades the per-row
+  // instance literal + two method closures for a single state object.
+  const compiledStateSpec =
+    (itemSdom as unknown as {
+      [__SDOM_COMPILED_STATE__]?: CompiledStateSpec<ItemModel, Msg, object>
+    })[__SDOM_COMPILED_STATE__] ?? null
 
   // Shared UpdateStream — avoids per-row function object allocation.
   let currentMountEntry: ItemEntry<ItemModel> | null = null
@@ -194,16 +218,33 @@ export function createArrayReconciler<ItemModel, Msg>(
       prev: itemModel, next: itemModel,
       firstNode: null,
       directUpdate: null,
+      state: null, stateUpdate: null, stateTeardown: null,
     }
     liveItems.set(key, entry)
 
     const lastBefore = target.lastChild
 
-    if (compiledSetup !== null) {
-      // Fast path: invoke the user setup directly. It returns
-      // `{update, teardown}`, which already satisfies the Teardown protocol,
-      // so we reuse the instance object as `entry.teardown` instead of
-      // allocating a wrapper.
+    if (compiledStateSpec !== null) {
+      // Fast path: setup returns a single per-row state object and the
+      // shared (module-scope) update + teardown functions read/write it.
+      // Drops the per-row {update, teardown} literal and its two method
+      // closures relative to the legacy compiled() path.
+      const state = guard(
+        "attach",
+        `${label} item "${key}"`,
+        () => compiledStateSpec.setup(target, itemModel, dispatch),
+        null as unknown as object,
+      )
+      if (state !== null) {
+        entry.state = state
+        entry.stateUpdate = compiledStateSpec.update as (s: object, p: ItemModel, n: ItemModel) => void
+        entry.stateTeardown = compiledStateSpec.teardown as (s: object) => void
+      }
+    } else if (compiledSetup !== null) {
+      // Legacy compiled() fast path: invoke the user setup directly. It
+      // returns `{update, teardown}`, which already satisfies the Teardown
+      // protocol, so we reuse the instance object as `entry.teardown`
+      // instead of allocating a wrapper.
       const instance = guard(
         "attach",
         `${label} item "${key}"`,
@@ -238,12 +279,27 @@ export function createArrayReconciler<ItemModel, Msg>(
       prev: itemModel, next: itemModel,
       firstNode: null,
       directUpdate: null,
+      state: null, stateUpdate: null, stateTeardown: null,
     }
     liveItems.set(key, entry)
 
     container.appendChild(startMarker)
 
-    if (compiledSetup !== null) {
+    if (compiledStateSpec !== null) {
+      const state = withDelegator(capturedDelegator, () =>
+        guard(
+          "attach",
+          `${label} item "${key}"`,
+          () => compiledStateSpec.setup(container, itemModel, dispatch),
+          null as unknown as object,
+        ),
+      )
+      if (state !== null) {
+        entry.state = state
+        entry.stateUpdate = compiledStateSpec.update as (s: object, p: ItemModel, n: ItemModel) => void
+        entry.stateTeardown = compiledStateSpec.teardown as (s: object) => void
+      }
+    } else if (compiledSetup !== null) {
       const instance = withDelegator(capturedDelegator, () =>
         guard(
           "attach",
@@ -274,6 +330,11 @@ export function createArrayReconciler<ItemModel, Msg>(
     const prev = entry.next
     entry.prev = prev
     entry.next = itemModel
+    const stateUpdate = entry.stateUpdate
+    if (stateUpdate !== null) {
+      stateUpdate(entry.state!, prev, itemModel)
+      return
+    }
     const directUpdate = entry.directUpdate
     if (directUpdate !== null) {
       directUpdate(prev, itemModel)
@@ -332,7 +393,11 @@ export function createArrayReconciler<ItemModel, Msg>(
   function removeItem(key: string): void {
     const entry = liveItems.get(key)
     if (!entry) return
-    entry.teardown.teardown()
+    if (entry.stateTeardown !== null) {
+      entry.stateTeardown(entry.state!)
+    } else {
+      entry.teardown.teardown()
+    }
     entry.startMarker?.remove()
     entry.endMarker?.remove()
     liveItems.delete(key)
@@ -545,7 +610,10 @@ export function createArrayReconciler<ItemModel, Msg>(
     // collapse into one textContent="" wipe.
     if (count === 0 && liveItems.size > 0) {
       container.textContent = ""
-      for (const { teardown: td } of liveItems.values()) td.teardown()
+      for (const entry of liveItems.values()) {
+        if (entry.stateTeardown !== null) entry.stateTeardown(entry.state!)
+        else entry.teardown.teardown()
+      }
       liveItems.clear()
       markersInserted = false
       prevKeys = []
@@ -664,7 +732,10 @@ export function createArrayReconciler<ItemModel, Msg>(
       }
       if (noOverlap) {
         container.textContent = ""
-        for (const { teardown: td } of liveItems.values()) td.teardown()
+        for (const entry of liveItems.values()) {
+          if (entry.stateTeardown !== null) entry.stateTeardown(entry.state!)
+          else entry.teardown.teardown()
+        }
         liveItems.clear()
         markersInserted = false
         const frag = document.createDocumentFragment()
@@ -706,10 +777,11 @@ export function createArrayReconciler<ItemModel, Msg>(
   }
 
   function teardown(): void {
-    for (const { teardown: td, startMarker, endMarker } of liveItems.values()) {
-      td.teardown()
-      startMarker?.remove()
-      endMarker?.remove()
+    for (const entry of liveItems.values()) {
+      if (entry.stateTeardown !== null) entry.stateTeardown(entry.state!)
+      else entry.teardown.teardown()
+      entry.startMarker?.remove()
+      entry.endMarker?.remove()
     }
     container.remove()
   }

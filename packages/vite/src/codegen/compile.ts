@@ -34,6 +34,7 @@ export interface CompileResult {
 }
 
 const COMPILED_IMPORT_NAME = "__sdomCompiled"
+const COMPILED_STATE_IMPORT_NAME = "__sdomCompiledState"
 const REGISTER_EVENT_IMPORT_NAME = "__sdomRegisterEvent"
 const COMPILED_IMPORT_SPECIFIER = "@static-dom/core"
 
@@ -352,8 +353,14 @@ interface EmitContext {
   htmlParts: string[]
   /** Module-scope lines: hoisted user functions, defined once per build. */
   moduleScopeLines: string[]
+  /** Lines emitted into the body of the per-site setup function. */
   setupLines: string[]
+  /** Lines emitted into the body of the per-site update function. */
   updateLines: string[]
+  /** Lines emitted into the body of the per-site teardown function. */
+  teardownLines: string[]
+  /** Initial property bindings for the row state object literal. */
+  stateInitProps: string[]
   attrIdx: number
   textIdx: number
   elIdx: number
@@ -374,6 +381,8 @@ function emitFromPlan(
     moduleScopeLines: [],
     setupLines: [],
     updateLines: [],
+    teardownLines: [],
+    stateInitProps: [],
     attrIdx: 0,
     textIdx: 0,
     elIdx: 0,
@@ -389,46 +398,64 @@ function emitFromPlan(
   bindElement(plan, "root", ctx)
 
   const innerHtml = ctx.htmlParts.join("")
+  const setupName = `__sdom_setup_${siteId}`
+  const updateName = `__sdom_update_${siteId}`
+  const teardownName = `__sdom_teardown_${siteId}`
   const lines: string[] = []
   // Hoist user arrow functions (attr, text, event) to module scope so each
-  // row instantiation doesn't re-allocate them. Per-row state still lives
-  // inside the setup closure, but the user fns themselves are pointers to
-  // module-scope consts.
+  // row instantiation doesn't re-allocate them.
   for (const m of ctx.moduleScopeLines) lines.push(m)
   lines.push(`const ${tplName} = (() => {`)
   lines.push(`  const __t = document.createElement("template")`)
   lines.push(`  __t.innerHTML = ${JSON.stringify(innerHtml)}`)
   lines.push(`  return __t.content.firstChild`)
   lines.push(`})()`)
-  lines.push(`const ${compiledName} = ${COMPILED_IMPORT_NAME}((parent, initialModel, dispatch) => {`)
+
+  // Module-scope shared setup. Returns a single per-row state object that
+  // carries every field update + teardown need. Listener closures capture
+  // `s` (and `dispatch`) so they can read the live model from `s.evtModel`.
+  lines.push(`const ${setupName} = (parent, initialModel, dispatch) => {`)
   lines.push(`  const root = ${tplName}.cloneNode(true)`)
+  // Build the state object literal in a single shape so V8 can settle on a
+  // monomorphic hidden class for every row of this template.
+  lines.push(`  const s = {`)
+  lines.push(`    root,`)
   if (ctx.hasEvents) {
-    // Live model captured as a closure-mutable `let`, shared by every event
-    // listener in this subtree so handlers always see the current model.
-    // Closing over a binding instead of allocating { current: m } drops one
-    // heap object per row when the row template has events.
-    lines.push(`  let __evtModel = initialModel`)
-    // __evtCleanups stays null when every event registers through the
-    // ambient delegator (registerEvent returns null), so the per-row array
-    // allocation is skipped on the hot bulk-mount path.
-    lines.push(`  let __evtCleanups = null`)
+    lines.push(`    dispatch,`)
+    // Live model — listeners read s.evtModel and update reassigns it.
+    lines.push(`    evtModel: initialModel,`)
+    // Stays null when every event registers through the ambient delegator
+    // (registerEvent returns null on the hot bulk-mount path).
+    lines.push(`    evtCleanups: null,`)
   }
+  for (const p of ctx.stateInitProps) lines.push(p)
+  lines.push(`  }`)
   for (const s of ctx.setupLines) lines.push(s)
   lines.push(`  parent.appendChild(root)`)
-  lines.push(`  return {`)
-  lines.push(`    update(_prev, next) {`)
-  if (ctx.hasEvents) lines.push(`      __evtModel = next`)
+  lines.push(`  return s`)
+  lines.push(`}`)
+
+  // Module-scope shared update. Reads `s.attrLast*` / `s.textLast*` slots,
+  // writes them on change, and forwards next-model into `s.evtModel`.
+  lines.push(`const ${updateName} = (s, _prev, next) => {`)
+  if (ctx.hasEvents) lines.push(`  s.evtModel = next`)
   for (const u of ctx.updateLines) lines.push(u)
-  lines.push(`    },`)
+  lines.push(`}`)
+
+  // Module-scope shared teardown.
+  lines.push(`const ${teardownName} = (s) => {`)
   if (ctx.hasEvents) {
-    lines.push(`    teardown() {`)
-    lines.push(`      if (__evtCleanups !== null) for (const __c of __evtCleanups) __c()`)
-    lines.push(`      root.remove()`)
-    lines.push(`    },`)
-  } else {
-    lines.push(`    teardown() { root.remove() },`)
+    lines.push(`  const __c = s.evtCleanups`)
+    lines.push(`  if (__c !== null) for (const __t of __c) __t()`)
   }
-  lines.push(`  }`)
+  for (const t of ctx.teardownLines) lines.push(t)
+  lines.push(`  s.root.remove()`)
+  lines.push(`}`)
+
+  lines.push(`const ${compiledName} = ${COMPILED_STATE_IMPORT_NAME}({`)
+  lines.push(`  setup: ${setupName},`)
+  lines.push(`  update: ${updateName},`)
+  lines.push(`  teardown: ${teardownName},`)
   lines.push(`})`)
   return lines.join("\n")
 }
@@ -437,6 +464,11 @@ function emitFromPlan(
  * JS pass: emit alias allocations, attribute bindings, child node creation,
  * and recurse into element children that need work. Assumes the innerHTML
  * for this subtree was already produced by `bakeElementHtml`.
+ *
+ * Setup writes per-row state into a single `s` literal whose hidden class
+ * stays monomorphic across all rows of this template. Update + teardown
+ * are module-scope shared functions that reach back into `s` for any
+ * element/text node/attr-last value they need to read or rewrite.
  */
 function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): void {
   // Allocate a walker alias for this element if it has any runtime work.
@@ -447,51 +479,64 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
     ctx.setupLines.push(`  const ${elPath} = ${pathExpr}`)
   }
 
-  // Dynamic attributes on this element. The user's function is hoisted to
-  // module scope (see __sdom_attrFn_*) so each row only allocates the
-  // `__attrLast${i}` slot, not the function itself.
+  // Update reads the target element via `s.<elKey>` because update doesn't
+  // share scope with setup. For the root that's the always-present `s.root`
+  // slot; for any other bound element we lazily promote `__el_N` onto `s`.
+  const updateElKey =
+    elPath === "root" ? "root" : elPath.replace(/^__el_/, "el")
+  let updateElPersisted = elPath === "root"
+  const ensureUpdateElPersisted = (): void => {
+    if (updateElPersisted) return
+    updateElPersisted = true
+    ctx.stateInitProps.push(`    ${updateElKey}: undefined,`)
+    ctx.setupLines.push(`  s.${updateElKey} = ${elPath}`)
+  }
+
   for (const attr of plan.dynamicAttrs) {
     const i = ctx.attrIdx++
     const fnName = `__sdom_attrFn_${ctx.siteId}_${i}`
     ctx.moduleScopeLines.push(`const ${fnName} = ${attr.fnSource}`)
-    ctx.setupLines.push(`  let __attrLast${i} = ${fnName}(initialModel)`)
+    ctx.stateInitProps.push(`    attrLast${i}: undefined,`)
+    ctx.setupLines.push(`  s.attrLast${i} = ${fnName}(initialModel)`)
     ctx.setupLines.push(
       attr.propName !== null
-        ? `  ${elPath}.${attr.propName} = __attrLast${i}`
-        : `  ${elPath}.setAttribute(${JSON.stringify(attr.attrName)}, __attrLast${i})`,
+        ? `  ${elPath}.${attr.propName} = s.attrLast${i}`
+        : `  ${elPath}.setAttribute(${JSON.stringify(attr.attrName)}, s.attrLast${i})`,
     )
-    ctx.updateLines.push(`      const __attrV${i} = ${fnName}(next)`)
-    ctx.updateLines.push(`      if (__attrV${i} !== __attrLast${i}) {`)
-    ctx.updateLines.push(`        __attrLast${i} = __attrV${i}`)
+    ensureUpdateElPersisted()
+    ctx.updateLines.push(`  const __attrV${i} = ${fnName}(next)`)
+    ctx.updateLines.push(`  if (__attrV${i} !== s.attrLast${i}) {`)
+    ctx.updateLines.push(`    s.attrLast${i} = __attrV${i}`)
     ctx.updateLines.push(
       attr.propName !== null
-        ? `        ${elPath}.${attr.propName} = __attrV${i}`
-        : `        ${elPath}.setAttribute(${JSON.stringify(attr.attrName)}, __attrV${i})`,
+        ? `    s.${updateElKey}.${attr.propName} = __attrV${i}`
+        : `    s.${updateElKey}.setAttribute(${JSON.stringify(attr.attrName)}, __attrV${i})`,
     )
-    ctx.updateLines.push(`      }`)
+    ctx.updateLines.push(`  }`)
   }
 
   // Event handlers: route through registerEvent so the program's ambient
   // delegator picks them up. With no delegator (e.g. tests using bare
   // `attach`), registerEvent falls back to addEventListener and returns a
-  // teardown function that we collect into __evtCleanups.
+  // teardown function that we collect into s.evtCleanups.
   //
-  // The handler body itself is hoisted to module scope; only the listener
-  // wrapper stays per-row because it must close over the per-row __evtModel.
+  // The handler body itself is hoisted to module scope; the per-row
+  // listener wrapper closes over `s` so it sees the live model and
+  // dispatch through the state object.
   for (const evt of plan.events) {
     ctx.hasEvents = true
     const i = ctx.evtIdx++
     const fnName = `__sdom_evtFn_${ctx.siteId}_${i}`
     ctx.moduleScopeLines.push(`const ${fnName} = ${evt.fnSource}`)
     ctx.setupLines.push(`  const __evtL${i} = (event) => {`)
-    ctx.setupLines.push(`    const __m = ${fnName}(event, __evtModel)`)
-    ctx.setupLines.push(`    if (__m !== null && __m !== undefined) dispatch(__m)`)
+    ctx.setupLines.push(`    const __m = ${fnName}(event, s.evtModel)`)
+    ctx.setupLines.push(`    if (__m !== null && __m !== undefined) s.dispatch(__m)`)
     ctx.setupLines.push(`  }`)
     ctx.setupLines.push(
       `  const __evtC${i} = ${REGISTER_EVENT_IMPORT_NAME}(${elPath}, ${JSON.stringify(evt.eventName)}, __evtL${i})`,
     )
     ctx.setupLines.push(
-      `  if (__evtC${i} !== null) (__evtCleanups ?? (__evtCleanups = [])).push(__evtC${i})`,
+      `  if (__evtC${i} !== null) (s.evtCleanups ?? (s.evtCleanups = [])).push(__evtC${i})`,
     )
   }
 
@@ -507,14 +552,16 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
     const i = ctx.textIdx++
     const fnName = `__sdom_textFn_${ctx.siteId}_${i}`
     ctx.moduleScopeLines.push(`const ${fnName} = ${child.fnSource}`)
-    ctx.setupLines.push(`  const __textNode${i} = ${elPath}.firstChild`)
-    ctx.setupLines.push(`  let __textLast${i} = ${fnName}(initialModel)`)
-    ctx.setupLines.push(`  __textNode${i}.nodeValue = String(__textLast${i})`)
-    ctx.updateLines.push(`      const __textV${i} = ${fnName}(next)`)
-    ctx.updateLines.push(`      if (__textV${i} !== __textLast${i}) {`)
-    ctx.updateLines.push(`        __textLast${i} = __textV${i}`)
-    ctx.updateLines.push(`        __textNode${i}.nodeValue = String(__textV${i})`)
-    ctx.updateLines.push(`      }`)
+    ctx.stateInitProps.push(`    textNode${i}: undefined,`)
+    ctx.stateInitProps.push(`    textLast${i}: undefined,`)
+    ctx.setupLines.push(`  s.textNode${i} = ${elPath}.firstChild`)
+    ctx.setupLines.push(`  s.textLast${i} = ${fnName}(initialModel)`)
+    ctx.setupLines.push(`  s.textNode${i}.nodeValue = String(s.textLast${i})`)
+    ctx.updateLines.push(`  const __textV${i} = ${fnName}(next)`)
+    ctx.updateLines.push(`  if (__textV${i} !== s.textLast${i}) {`)
+    ctx.updateLines.push(`    s.textLast${i} = __textV${i}`)
+    ctx.updateLines.push(`    s.textNode${i}.nodeValue = String(__textV${i})`)
+    ctx.updateLines.push(`  }`)
   } else if (inlineChildren) {
     for (const child of plan.children) {
       if (child.kind === "static-text") {
@@ -525,16 +572,18 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
         const i = ctx.textIdx++
         const fnName = `__sdom_textFn_${ctx.siteId}_${i}`
         ctx.moduleScopeLines.push(`const ${fnName} = ${child.fnSource}`)
+        ctx.stateInitProps.push(`    textNode${i}: undefined,`)
+        ctx.stateInitProps.push(`    textLast${i}: undefined,`)
         ctx.setupLines.push(
-          `  const __textNode${i} = ${elPath}.appendChild(document.createTextNode(""))`,
+          `  s.textNode${i} = ${elPath}.appendChild(document.createTextNode(""))`,
         )
-        ctx.setupLines.push(`  let __textLast${i} = ${fnName}(initialModel)`)
-        ctx.setupLines.push(`  __textNode${i}.nodeValue = String(__textLast${i})`)
-        ctx.updateLines.push(`      const __textV${i} = ${fnName}(next)`)
-        ctx.updateLines.push(`      if (__textV${i} !== __textLast${i}) {`)
-        ctx.updateLines.push(`        __textLast${i} = __textV${i}`)
-        ctx.updateLines.push(`        __textNode${i}.nodeValue = String(__textV${i})`)
-        ctx.updateLines.push(`      }`)
+        ctx.setupLines.push(`  s.textLast${i} = ${fnName}(initialModel)`)
+        ctx.setupLines.push(`  s.textNode${i}.nodeValue = String(s.textLast${i})`)
+        ctx.updateLines.push(`  const __textV${i} = ${fnName}(next)`)
+        ctx.updateLines.push(`  if (__textV${i} !== s.textLast${i}) {`)
+        ctx.updateLines.push(`    s.textLast${i} = __textV${i}`)
+        ctx.updateLines.push(`    s.textNode${i}.nodeValue = String(__textV${i})`)
+        ctx.updateLines.push(`  }`)
       }
     }
   } else {
@@ -637,7 +686,7 @@ function applyTransforms(code: string, sites: CompiledSite[]): string {
     out = out.slice(0, site.start) + site.identifier + out.slice(site.end)
   }
   const importLine =
-    `import { compiled as ${COMPILED_IMPORT_NAME}, registerEvent as ${REGISTER_EVENT_IMPORT_NAME} } from "${COMPILED_IMPORT_SPECIFIER}"\n`
+    `import { compiled as ${COMPILED_IMPORT_NAME}, compiledState as ${COMPILED_STATE_IMPORT_NAME}, registerEvent as ${REGISTER_EVENT_IMPORT_NAME} } from "${COMPILED_IMPORT_SPECIFIER}"\n`
   const hoisted = sites.map(s => s.hoistedCode).join("\n\n") + "\n\n"
   return importLine + hoisted + out
 }
