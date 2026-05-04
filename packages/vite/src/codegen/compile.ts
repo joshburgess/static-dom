@@ -12,8 +12,9 @@
  *     template's innerHTML) or single arrow / function expressions
  *     (emitted as a per-attr binding).
  *   - Event handler props (onClick, onInput, etc.) routed through
- *     `registerEvent` so they go through the program's ambient
- *     delegator when one is installed.
+ *     `delegateEvent` so they go through the program's ambient
+ *     delegator (property-based dispatch — no per-row closure) when
+ *     one is installed, or fall back to addEventListener otherwise.
  *   - Children that are static text, single arrow / function
  *     expressions (dynamic text), and nested JSX elements with the
  *     same restrictions (recursive).
@@ -35,7 +36,7 @@ export interface CompileResult {
 
 const COMPILED_IMPORT_NAME = "__sdomCompiled"
 const COMPILED_STATE_IMPORT_NAME = "__sdomCompiledState"
-const REGISTER_EVENT_IMPORT_NAME = "__sdomRegisterEvent"
+const DELEGATE_EVENT_IMPORT_NAME = "__sdomDelegateEvent"
 const COMPILED_IMPORT_SPECIFIER = "@static-dom/core"
 
 const EVENT_RE = /^on[A-Z]/
@@ -425,11 +426,16 @@ function emitFromPlan(
     // Live model — listeners read s.evtModel and update reassigns it.
     lines.push(`    evtModel: initialModel,`)
     // Stays null when every event registers through the ambient delegator
-    // (registerEvent returns null on the hot bulk-mount path).
+    // (delegateEvent returns null on the hot bulk-mount path).
     lines.push(`    evtCleanups: null,`)
   }
   for (const p of ctx.stateInitProps) lines.push(p)
   lines.push(`  }`)
+  // Property-based delegation back-reference: the root listener walks up
+  // from event.target until it finds an element carrying `__sdom_state`,
+  // then dispatches with the live `s.evtModel`. Setting this once per row
+  // lets per-event registration skip the per-row listener closure.
+  if (ctx.hasEvents) lines.push(`  root.__sdom_state = s`)
   for (const s of ctx.setupLines) lines.push(s)
   lines.push(`  parent.appendChild(root)`)
   lines.push(`  return s`)
@@ -515,25 +521,22 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
     ctx.updateLines.push(`  }`)
   }
 
-  // Event handlers: route through registerEvent so the program's ambient
-  // delegator picks them up. With no delegator (e.g. tests using bare
-  // `attach`), registerEvent falls back to addEventListener and returns a
-  // teardown function that we collect into s.evtCleanups.
+  // Event handlers: route through delegateEvent. With an ambient delegator
+  // installed (the program() path), the user fn is stored as a property on
+  // the element and the root listener walks up to find it + the row's
+  // `__sdom_state` back-reference, skipping the per-row listener closure
+  // that closure-based delegation needed. Without a delegator (bare/test
+  // usage), delegateEvent falls back to addEventListener with a closure
+  // and returns a teardown that we collect into `s.evtCleanups`.
   //
-  // The handler body itself is hoisted to module scope; the per-row
-  // listener wrapper closes over `s` so it sees the live model and
-  // dispatch through the state object.
+  // The user fn is hoisted to module scope so every row reuses it.
   for (const evt of plan.events) {
     ctx.hasEvents = true
     const i = ctx.evtIdx++
     const fnName = `__sdom_evtFn_${ctx.siteId}_${i}`
     ctx.moduleScopeLines.push(`const ${fnName} = ${evt.fnSource}`)
-    ctx.setupLines.push(`  const __evtL${i} = (event) => {`)
-    ctx.setupLines.push(`    const __m = ${fnName}(event, s.evtModel)`)
-    ctx.setupLines.push(`    if (__m !== null && __m !== undefined) s.dispatch(__m)`)
-    ctx.setupLines.push(`  }`)
     ctx.setupLines.push(
-      `  const __evtC${i} = ${REGISTER_EVENT_IMPORT_NAME}(${elPath}, ${JSON.stringify(evt.eventName)}, __evtL${i})`,
+      `  const __evtC${i} = ${DELEGATE_EVENT_IMPORT_NAME}(${elPath}, ${JSON.stringify(evt.eventName)}, ${fnName}, s)`,
     )
     ctx.setupLines.push(
       `  if (__evtC${i} !== null) (s.evtCleanups ?? (s.evtCleanups = [])).push(__evtC${i})`,
@@ -686,7 +689,7 @@ function applyTransforms(code: string, sites: CompiledSite[]): string {
     out = out.slice(0, site.start) + site.identifier + out.slice(site.end)
   }
   const importLine =
-    `import { compiled as ${COMPILED_IMPORT_NAME}, compiledState as ${COMPILED_STATE_IMPORT_NAME}, registerEvent as ${REGISTER_EVENT_IMPORT_NAME} } from "${COMPILED_IMPORT_SPECIFIER}"\n`
+    `import { compiled as ${COMPILED_IMPORT_NAME}, compiledState as ${COMPILED_STATE_IMPORT_NAME}, delegateEvent as ${DELEGATE_EVENT_IMPORT_NAME} } from "${COMPILED_IMPORT_SPECIFIER}"\n`
   const hoisted = sites.map(s => s.hoistedCode).join("\n\n") + "\n\n"
   return importLine + hoisted + out
 }

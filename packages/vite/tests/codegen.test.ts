@@ -12,7 +12,7 @@ import {
   compiled,
   compiledState,
   createSignal,
-  registerEvent,
+  delegateEvent,
   toUpdateStream,
 } from "@static-dom/core"
 
@@ -24,14 +24,14 @@ function compileAndLoad(src: string): ReturnType<typeof compiled> {
   const factory = new Function(
     "__sdomCompiled",
     "__sdomCompiledState",
-    "__sdomRegisterEvent",
+    "__sdomDelegateEvent",
     `${body}\nreturn view`,
   ) as (
     c: typeof compiled,
     cs: typeof compiledState,
-    r: typeof registerEvent,
+    d: typeof delegateEvent,
   ) => ReturnType<typeof compiled>
-  return factory(compiled, compiledState, registerEvent)
+  return factory(compiled, compiledState, delegateEvent)
 }
 
 function mountFor<M>(
@@ -300,16 +300,17 @@ describe("sdomCodegen / compileFile", () => {
   })
 
   // ---------------------------------------------------------------------------
-  // Event handlers: registered via registerEvent, dispatched messages flow.
+  // Event handlers: registered via delegateEvent, dispatched messages flow.
   // ---------------------------------------------------------------------------
 
-  it("emits a registerEvent call for onClick", () => {
+  it("emits a delegateEvent call for onClick", () => {
     const src = `const view = <button onClick={(e, m) => ({ type: "go" })}>x</button>\n`
     const out = compileFile(src, "/x.jsx")!.code
-    expect(out).toContain("registerEvent as __sdomRegisterEvent")
-    expect(out).toContain('__sdomRegisterEvent(root, "click",')
+    expect(out).toContain("delegateEvent as __sdomDelegateEvent")
+    expect(out).toContain('__sdomDelegateEvent(root, "click",')
     expect(out).toContain("evtModel: initialModel")
     expect(out).toContain("s.evtModel = next")
+    expect(out).toContain("root.__sdom_state = s")
   })
 
   it("end-to-end: event handler dispatches and sees the live model", () => {

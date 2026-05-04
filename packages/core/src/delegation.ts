@@ -23,6 +23,29 @@
 // element registration — meaningful when 10k rows each register 1+ events.
 type EventMap = WeakMap<EventTarget, (event: Event) => void>
 
+/**
+ * Property-based dispatch: the codegen stores the user's pure
+ * `(event, model) => msg` function directly on the clickable element,
+ * and the row state on the row root. The root listener walks up to find
+ * both, calls fn with the live model, and routes the result through
+ * dispatch. Skipping the per-row closure + WeakMap.set is a measurable
+ * win on bulk mount.
+ */
+const STATE_KEY = "__sdom_state"
+function handlerKeyFor(eventName: string): string {
+  return "__sdom_h_" + eventName
+}
+
+interface RowState {
+  evtModel: unknown
+  dispatch: (msg: unknown) => void
+}
+
+interface ElementWithDispatch extends Element {
+  [STATE_KEY]?: RowState
+  [key: string]: unknown
+}
+
 export interface EventDelegator {
   /**
    * Register an event handler for a specific element.
@@ -37,6 +60,19 @@ export interface EventDelegator {
    * hot mount path through `registerEvent`.
    */
   attach(el: Element, eventName: string, handler: (event: Event) => void): void
+
+  /**
+   * Property-based dispatch: store a pure `(event, model) => msg` directly on
+   * the element and let the root listener walk up to a row root carrying
+   * `__sdom_state`. The codegen uses this to skip allocating a per-row
+   * closure that captures `s` — that closure was the bulk of the per-row
+   * event registration cost on the 10k-row mount path.
+   */
+  delegateProp(
+    el: Element,
+    eventName: string,
+    fn: (event: Event, model: unknown) => unknown,
+  ): void
 
   /** Remove all root listeners. */
   teardown(): void
@@ -61,17 +97,41 @@ export function createDelegator(root: Element): EventDelegator {
     handlersByEvent.set(eventName, map)
 
     const eventMap = map
+    const handlerKey = handlerKeyFor(eventName)
     const listener = (event: Event) => {
-      let target = event.target as Element | null
+      // Single bubble pass that handles both dispatch flavors:
+      //   1. Property-based: codegen has stored the pure fn on a clickable
+      //      element and `s` on the row root. Walk up tracking the first
+      //      pure fn we encounter; on the first row root with `__sdom_state`,
+      //      dispatch and stop.
+      //   2. Closure-based: handwritten code went through `attach`/`on`,
+      //      registering a closure in the per-event WeakMap. Honor those
+      //      while we walk so existing users aren't broken.
+      let target = event.target as ElementWithDispatch | null
+      let propFn: ((event: Event, model: unknown) => unknown) | null = null
       while (target !== null && target !== root) {
+        if (propFn === null) {
+          const fn = target[handlerKey] as
+            | ((event: Event, model: unknown) => unknown)
+            | undefined
+          if (fn !== undefined) propFn = fn
+        }
+        const state = target[STATE_KEY]
+        if (state !== undefined) {
+          if (propFn !== null) {
+            const msg = propFn(event, state.evtModel)
+            if (msg !== null && msg !== undefined) state.dispatch(msg)
+          }
+          return
+        }
         const handler = eventMap.get(target)
-        if (handler) {
+        if (handler !== undefined) {
           handler(event)
           // Don't return — allow bubbling to continue for analytics/logging
           // Handlers that want to stop propagation can call event.stopPropagation()
           return
         }
-        target = target.parentElement
+        target = target.parentElement as ElementWithDispatch | null
       }
       // Also check the root itself
       const rootHandler = eventMap.get(root)
@@ -93,6 +153,15 @@ export function createDelegator(root: Element): EventDelegator {
     attach(el: Element, eventName: string, handler: (event: Event) => void): void {
       const map = ensureRootListener(eventName)
       map.set(el, handler)
+    },
+
+    delegateProp(
+      el: Element,
+      eventName: string,
+      fn: (event: Event, model: unknown) => unknown,
+    ): void {
+      ensureRootListener(eventName)
+      ;(el as ElementWithDispatch)[handlerKeyFor(eventName)] = fn
     },
 
     teardown() {
@@ -158,6 +227,41 @@ export function registerEvent(
   if (d !== null) {
     d.attach(el, eventName, listener)
     return null
+  }
+  el.addEventListener(eventName, listener)
+  return () => el.removeEventListener(eventName, listener)
+}
+
+/**
+ * Property-based event delegation used by sdomCodegen on the bulk-mount
+ * hot path. Stores the user's pure `(event, model) => msg` function as
+ * a property on the element so the root listener can call it directly
+ * without an intermediate per-row closure.
+ *
+ * Caller sets `s.root.__sdom_state = s` once after building the row
+ * state literal so the root listener can find the row's live model and
+ * dispatch during a bubble. With a delegator present, this skips the
+ * closure allocation and per-element WeakMap.set that `registerEvent`
+ * incurs. Returns null in that case (the property reclaims with the
+ * element).
+ *
+ * No-delegator fallback (bare/test usage) builds the closure that
+ * `registerEvent` would have built and returns a teardown.
+ */
+export function delegateEvent(
+  el: Element,
+  eventName: string,
+  fn: (event: Event, model: unknown) => unknown,
+  state: { evtModel: unknown; dispatch: (msg: unknown) => void },
+): (() => void) | null {
+  const d = currentDelegator
+  if (d !== null) {
+    d.delegateProp(el, eventName, fn)
+    return null
+  }
+  const listener = (event: Event) => {
+    const msg = fn(event, state.evtModel)
+    if (msg !== null && msg !== undefined) state.dispatch(msg)
   }
   el.addEventListener(eventName, listener)
   return () => el.removeEventListener(eventName, listener)

@@ -174,7 +174,7 @@ export {
 
 // Event delegation (from Inferno)
 export type { EventDelegator } from "./delegation"
-export { createDelegator, registerEvent } from "./delegation"
+export { createDelegator, registerEvent, delegateEvent } from "./delegation"
 
 // JSX utilities
 export { typed } from "./jsx-runtime"
