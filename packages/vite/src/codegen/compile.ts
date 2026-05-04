@@ -7,22 +7,21 @@
  * eliminated.
  *
  * Supported shapes (current slice):
- *   - Lowercase intrinsic tag (`<div>`, `<span>`, ...).
+ *   - Lowercase intrinsic tags only.
  *   - Attributes whose values are string literals (baked into the
  *     template's innerHTML) or single arrow / function expressions
  *     (emitted as a per-attr binding).
- *   - Children that are static text (JsxText), or single arrow /
- *     function expressions (emitted as a per-text-node binding).
+ *   - Children that are static text, single arrow / function
+ *     expressions (dynamic text), and nested JSX elements with the
+ *     same restrictions (recursive).
+ *   - Pure-static subtrees collapse fully into innerHTML; only
+ *     descendants with bindings get walker aliases.
  *
  * Out of scope (deferred to later slices):
- *   - Events (`onClick`, ...), `style` object form, `classes` map,
- *     refs, keys, spread attributes.
- *   - Nested JSX elements.
- *   - Expressions other than a single arrow/function (string literals,
- *     identifiers, member expressions, ternaries, etc.).
- *
- * Files containing no compilable JSX return `null` so they pass
- * through untouched.
+ *   - Events, `style` object form, `classes` map, refs, keys, spread.
+ *   - An element whose children mix dynamic-text holes with element
+ *     children at the same level (would need insertBefore plumbing).
+ *   - Expressions other than a single arrow/function or a literal.
  */
 
 import ts from "typescript"
@@ -34,13 +33,11 @@ export interface CompileResult {
 const COMPILED_IMPORT_NAME = "__sdomCompiled"
 const COMPILED_IMPORT_SPECIFIER = "@static-dom/core"
 
-// HTML void elements: emitted as `<tag>` (no closing) inside innerHTML.
 const VOID_TAGS = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input",
   "link", "meta", "param", "source", "track", "wbr",
 ])
 
-// Attribute name -> DOM property name. Mirrors the runtime's ATTR_TO_PROP.
 const ATTR_TO_PROP: Record<string, string> = {
   class: "className",
   for: "htmlFor",
@@ -57,8 +54,6 @@ const ATTR_TO_PROP: Record<string, string> = {
   accesskey: "accessKey",
 }
 
-// IDL properties that are set via direct property assignment, not setAttribute.
-// Mirrors the runtime's IDL_PROPS in shared.ts.
 const IDL_PROPS = new Set([
   "value", "checked", "disabled", "readOnly", "multiple", "selected",
   "defaultValue", "defaultChecked", "indeterminate",
@@ -81,31 +76,28 @@ const IDL_PROPS = new Set([
 ])
 
 // ---------------------------------------------------------------------------
-// CompilePlan — the structured representation we build from the JSX AST
-// before emitting code.
+// Plan types
 // ---------------------------------------------------------------------------
 
 interface DynamicAttr {
-  /** The attribute name as written in JSX (or normalized for class/className). */
   attrName: string
-  /** DOM property to assign to, or null if `setAttribute(attrName, ...)` is required. */
   propName: string | null
-  /** Source text of the user's arrow/function expression. */
   fnSource: string
 }
 
 type ChildPlan =
   | { kind: "static-text"; text: string }
   | { kind: "dynamic-text"; fnSource: string }
+  | { kind: "element"; plan: ElementPlan }
 
-interface CompilePlan {
+interface ElementPlan {
   tag: string
-  /** Attributes baked into the template's innerHTML as `name="value"` pairs. */
   staticAttrs: Array<{ name: string; value: string }>
-  /** Attributes that update from a function projection of the model. */
   dynamicAttrs: DynamicAttr[]
   children: ChildPlan[]
-  /** Source range of the JSX expression in the original file. */
+}
+
+interface RootPlan extends ElementPlan {
   start: number
   end: number
 }
@@ -149,11 +141,10 @@ export function compileFile(code: string, id: string): CompileResult | null {
         })
         nextId += 1
       }
-      // Don't descend into JSX subtrees: an outer non-compilable element
-      // owns its children, and substituting an inner element with an
-      // identifier in a text-child position would break the parent.
-      // When nested-element compilation lands, the analyzer will handle
-      // the whole tree at once.
+      // JSX nodes are atomic from the visitor's perspective: an outer
+      // non-compilable element owns its children, so substituting an
+      // inner element with an identifier in a text-child position would
+      // break the parent. Wider compilation lives inside `analyzeJsx`.
       return
     }
     ts.forEachChild(node, visit)
@@ -161,15 +152,24 @@ export function compileFile(code: string, id: string): CompileResult | null {
   visit(sf)
 
   if (sites.length === 0) return null
-
   return { code: applyTransforms(code, sites) }
 }
 
 // ---------------------------------------------------------------------------
-// AST analysis: JsxElement / JsxSelfClosingElement  ->  CompilePlan | null
+// AST analysis
 // ---------------------------------------------------------------------------
 
-function analyzeJsx(node: ts.JsxElement | ts.JsxSelfClosingElement): CompilePlan | null {
+function analyzeJsx(
+  node: ts.JsxElement | ts.JsxSelfClosingElement,
+): RootPlan | null {
+  const plan = analyzeElement(node)
+  if (plan === null) return null
+  return { ...plan, start: node.getStart(), end: node.getEnd() }
+}
+
+function analyzeElement(
+  node: ts.JsxElement | ts.JsxSelfClosingElement,
+): ElementPlan | null {
   const opening = ts.isJsxElement(node) ? node.openingElement : node
   const tagName = opening.tagName
   if (!ts.isIdentifier(tagName)) return null
@@ -180,21 +180,18 @@ function analyzeJsx(node: ts.JsxElement | ts.JsxSelfClosingElement): CompilePlan
   const dynamicAttrs: DynamicAttr[] = []
 
   for (const prop of opening.attributes.properties) {
-    if (!ts.isJsxAttribute(prop)) return null // spreads are out of scope
+    if (!ts.isJsxAttribute(prop)) return null
     if (!ts.isIdentifier(prop.name)) return null
 
     const rawName = prop.name.text
-    // Defer events / style / classes for now.
     if (rawName.startsWith("on") && /^on[A-Z]/.test(rawName)) return null
     if (rawName === "style" || rawName === "classes") return null
     if (rawName === "key" || rawName === "ref") return null
 
-    // Normalize className -> class (matches runtime classifyProps behavior).
     const attrName = rawName === "className" ? "class" : rawName
 
     const init = prop.initializer
     if (init === undefined) {
-      // Boolean attribute with no value, e.g. `<input disabled>`.
       staticAttrs.push({ name: attrName, value: "" })
       continue
     }
@@ -213,41 +210,37 @@ function analyzeJsx(node: ts.JsxElement | ts.JsxSelfClosingElement): CompilePlan
         dynamicAttrs.push({ attrName, propName, fnSource: expr.getText() })
         continue
       }
-      // Other expression forms (identifiers, member access, conditionals)
-      // are out of scope for this slice.
       return null
     }
     return null
   }
 
-  const childPlan = analyzeChildren(ts.isJsxElement(node) ? node.children : undefined)
-  if (childPlan === null) return null
+  const children = ts.isJsxElement(node)
+    ? analyzeChildren(node.children)
+    : []
+  if (children === null) return null
 
-  return {
-    tag,
-    staticAttrs,
-    dynamicAttrs,
-    children: childPlan,
-    start: node.getStart(),
-    end: node.getEnd(),
-  }
+  return { tag, staticAttrs, dynamicAttrs, children }
 }
 
-function analyzeChildren(children: ts.NodeArray<ts.JsxChild> | undefined): ChildPlan[] | null {
-  if (children === undefined || children.length === 0) return []
+function analyzeChildren(
+  children: ts.NodeArray<ts.JsxChild>,
+): ChildPlan[] | null {
+  if (children.length === 0) return []
 
   const out: ChildPlan[] = []
+  let hasDynamicText = false
+  let hasElement = false
+
   for (const child of children) {
     if (ts.isJsxText(child)) {
       const text = child.text
-      // Skip whitespace-only JSX text per the standard JSX rule, where it
-      // doesn't survive into the rendered output.
       if (text.trim() === "") continue
       out.push({ kind: "static-text", text })
       continue
     }
     if (ts.isJsxExpression(child)) {
-      if (child.expression === undefined) continue // empty `{}`
+      if (child.expression === undefined) continue
       const expr = child.expression
       if (ts.isStringLiteral(expr) || ts.isNumericLiteral(expr)) {
         out.push({ kind: "static-text", text: expr.text })
@@ -255,12 +248,23 @@ function analyzeChildren(children: ts.NodeArray<ts.JsxChild> | undefined): Child
       }
       if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) {
         out.push({ kind: "dynamic-text", fnSource: expr.getText() })
+        hasDynamicText = true
         continue
       }
-      return null // other expression forms deferred
+      return null
     }
-    return null // nested elements, fragments, etc. deferred
+    if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child)) {
+      const inner = analyzeElement(child)
+      if (inner === null) return null
+      out.push({ kind: "element", plan: inner })
+      hasElement = true
+      continue
+    }
+    return null
   }
+
+  // Reject the mixed case (dynamic text + element children at the same level).
+  if (hasDynamicText && hasElement) return null
   return out
 }
 
@@ -271,97 +275,208 @@ function resolvePropName(attrName: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// "Needs binding" analysis
+//
+// An element needs runtime work (alias allocation, child node creation, attr
+// binding) iff it has dynamic attrs, dynamic text children, or descendants
+// that themselves need work. Pure-static subtrees collapse fully into the
+// template's innerHTML and never get touched at clone time.
+// ---------------------------------------------------------------------------
+
+function elementNeedsWork(plan: ElementPlan): boolean {
+  if (plan.dynamicAttrs.length > 0) return true
+  for (const c of plan.children) {
+    if (c.kind === "dynamic-text") return true
+    if (c.kind === "element" && elementNeedsWork(c.plan)) return true
+  }
+  return false
+}
+
+// ---------------------------------------------------------------------------
 // Code emission
 // ---------------------------------------------------------------------------
 
-function emitFromPlan(plan: CompilePlan, tplName: string, compiledName: string): string {
-  const lines: string[] = []
+interface EmitContext {
+  htmlParts: string[]
+  setupLines: string[]
+  updateLines: string[]
+  attrIdx: number
+  textIdx: number
+  elIdx: number
+}
 
-  // Template element: bake static attrs into innerHTML.
-  const innerHtml = buildInnerHtml(plan)
+function emitFromPlan(
+  plan: RootPlan,
+  tplName: string,
+  compiledName: string,
+): string {
+  const ctx: EmitContext = {
+    htmlParts: [],
+    setupLines: [],
+    updateLines: [],
+    attrIdx: 0,
+    textIdx: 0,
+    elIdx: 0,
+  }
+
+  // Two passes: build innerHTML for the whole tree, then walk the tree
+  // again to emit JS for dynamic attrs / dynamic text / nested bindings.
+  // The root reuses the literal `root` ident as its path expression.
+  bakeElementHtml(plan, ctx)
+  bindElement(plan, "root", ctx)
+
+  const innerHtml = ctx.htmlParts.join("")
+  const lines: string[] = []
   lines.push(`const ${tplName} = (() => {`)
   lines.push(`  const __t = document.createElement("template")`)
   lines.push(`  __t.innerHTML = ${JSON.stringify(innerHtml)}`)
   lines.push(`  return __t.content.firstChild`)
   lines.push(`})()`)
-
-  // Dynamic-attr declarations -> closure-scoped vars.
-  // Dynamic-text children -> closure-scoped vars + appended text nodes.
   lines.push(`const ${compiledName} = ${COMPILED_IMPORT_NAME}((parent, initialModel, _dispatch) => {`)
   lines.push(`  const root = ${tplName}.cloneNode(true)`)
-
-  // Per-attr setup.
-  plan.dynamicAttrs.forEach((attr, i) => {
-    lines.push(`  const __attrFn${i} = ${attr.fnSource}`)
-    lines.push(`  let __attrLast${i} = __attrFn${i}(initialModel)`)
-    if (attr.propName !== null) {
-      lines.push(`  root.${attr.propName} = __attrLast${i}`)
-    } else {
-      lines.push(`  root.setAttribute(${JSON.stringify(attr.attrName)}, __attrLast${i})`)
-    }
-  })
-
-  // Per-child setup.
-  plan.children.forEach((child, i) => {
-    if (child.kind === "static-text") {
-      lines.push(
-        `  root.appendChild(document.createTextNode(${JSON.stringify(child.text)}))`,
-      )
-    } else {
-      lines.push(`  const __textNode${i} = root.appendChild(document.createTextNode(""))`)
-      lines.push(`  const __textFn${i} = ${child.fnSource}`)
-      lines.push(`  let __textLast${i} = __textFn${i}(initialModel)`)
-      lines.push(`  __textNode${i}.nodeValue = String(__textLast${i})`)
-    }
-  })
-
+  for (const s of ctx.setupLines) lines.push(s)
   lines.push(`  parent.appendChild(root)`)
-
-  // update body.
   lines.push(`  return {`)
   lines.push(`    update(_prev, next) {`)
-  plan.dynamicAttrs.forEach((attr, i) => {
-    lines.push(`      const __attrV${i} = __attrFn${i}(next)`)
-    lines.push(`      if (__attrV${i} !== __attrLast${i}) {`)
-    lines.push(`        __attrLast${i} = __attrV${i}`)
-    if (attr.propName !== null) {
-      lines.push(`        root.${attr.propName} = __attrV${i}`)
-    } else {
-      lines.push(`        root.setAttribute(${JSON.stringify(attr.attrName)}, __attrV${i})`)
-    }
-    lines.push(`      }`)
-  })
-  plan.children.forEach((child, i) => {
-    if (child.kind !== "dynamic-text") return
-    lines.push(`      const __textV${i} = __textFn${i}(next)`)
-    lines.push(`      if (__textV${i} !== __textLast${i}) {`)
-    lines.push(`        __textLast${i} = __textV${i}`)
-    lines.push(`        __textNode${i}.nodeValue = String(__textV${i})`)
-    lines.push(`      }`)
-  })
+  for (const u of ctx.updateLines) lines.push(u)
   lines.push(`    },`)
   lines.push(`    teardown() { root.remove() },`)
   lines.push(`  }`)
   lines.push(`})`)
-
   return lines.join("\n")
 }
 
-function buildInnerHtml(plan: CompilePlan): string {
-  const attrStr = plan.staticAttrs
-    .map(a => {
-      if (a.value === "") return ` ${a.name}`
-      return ` ${a.name}="${escapeAttrValue(a.value)}"`
-    })
-    .join("")
-  if (VOID_TAGS.has(plan.tag)) {
-    return `<${plan.tag}${attrStr}>`
+/**
+ * JS pass: emit alias allocations, attribute bindings, child node creation,
+ * and recurse into element children that need work. Assumes the innerHTML
+ * for this subtree was already produced by `bakeElementHtml`.
+ */
+function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): void {
+  // Allocate a walker alias for this element if it has any runtime work.
+  // The root reuses the literal `root` ident, so skip aliasing there.
+  let elPath = pathExpr
+  if (pathExpr !== "root" && elementNeedsWork(plan)) {
+    elPath = `__el_${ctx.elIdx++}`
+    ctx.setupLines.push(`  const ${elPath} = ${pathExpr}`)
   }
-  return `<${plan.tag}${attrStr}></${plan.tag}>`
+
+  // Dynamic attributes on this element.
+  for (const attr of plan.dynamicAttrs) {
+    const i = ctx.attrIdx++
+    ctx.setupLines.push(`  const __attrFn${i} = ${attr.fnSource}`)
+    ctx.setupLines.push(`  let __attrLast${i} = __attrFn${i}(initialModel)`)
+    ctx.setupLines.push(
+      attr.propName !== null
+        ? `  ${elPath}.${attr.propName} = __attrLast${i}`
+        : `  ${elPath}.setAttribute(${JSON.stringify(attr.attrName)}, __attrLast${i})`,
+    )
+    ctx.updateLines.push(`      const __attrV${i} = __attrFn${i}(next)`)
+    ctx.updateLines.push(`      if (__attrV${i} !== __attrLast${i}) {`)
+    ctx.updateLines.push(`        __attrLast${i} = __attrV${i}`)
+    ctx.updateLines.push(
+      attr.propName !== null
+        ? `        ${elPath}.${attr.propName} = __attrV${i}`
+        : `        ${elPath}.setAttribute(${JSON.stringify(attr.attrName)}, __attrV${i})`,
+    )
+    ctx.updateLines.push(`      }`)
+  }
+
+  // Children: either inline-build (text-like case) or recurse into element
+  // children whose subtrees were baked into innerHTML.
+  const childKinds = childKindsOf(plan.children)
+  const inlineChildren = childKinds.hasDynamicText
+  if (inlineChildren) {
+    for (const child of plan.children) {
+      if (child.kind === "static-text") {
+        ctx.setupLines.push(
+          `  ${elPath}.appendChild(document.createTextNode(${JSON.stringify(child.text)}))`,
+        )
+      } else if (child.kind === "dynamic-text") {
+        const i = ctx.textIdx++
+        ctx.setupLines.push(
+          `  const __textNode${i} = ${elPath}.appendChild(document.createTextNode(""))`,
+        )
+        ctx.setupLines.push(`  const __textFn${i} = ${child.fnSource}`)
+        ctx.setupLines.push(`  let __textLast${i} = __textFn${i}(initialModel)`)
+        ctx.setupLines.push(`  __textNode${i}.nodeValue = String(__textLast${i})`)
+        ctx.updateLines.push(`      const __textV${i} = __textFn${i}(next)`)
+        ctx.updateLines.push(`      if (__textV${i} !== __textLast${i}) {`)
+        ctx.updateLines.push(`        __textLast${i} = __textV${i}`)
+        ctx.updateLines.push(`        __textNode${i}.nodeValue = String(__textV${i})`)
+        ctx.updateLines.push(`      }`)
+      }
+    }
+  } else {
+    let prevPath: string | null = null
+    for (const child of plan.children) {
+      // Each child node (static text or element, baked into innerHTML)
+      // advances the sibling cursor.
+      const childPathExpr: string =
+        prevPath === null ? `${elPath}.firstChild` : `${prevPath}.nextSibling`
+      prevPath = childPathExpr
+      if (child.kind === "element" && elementNeedsWork(child.plan)) {
+        bindElement(child.plan, childPathExpr, ctx)
+      }
+      // Pure-static elements and static text were baked into innerHTML and
+      // need no JS work.
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function childKindsOf(children: ChildPlan[]): {
+  hasStaticText: boolean
+  hasDynamicText: boolean
+  hasElement: boolean
+} {
+  let hasStaticText = false
+  let hasDynamicText = false
+  let hasElement = false
+  for (const c of children) {
+    if (c.kind === "static-text") hasStaticText = true
+    else if (c.kind === "dynamic-text") hasDynamicText = true
+    else if (c.kind === "element") hasElement = true
+  }
+  return { hasStaticText, hasDynamicText, hasElement }
+}
+
+/** Recursively serialize a plan's static structure into the innerHTML buffer. */
+function bakeElementHtml(plan: ElementPlan, ctx: EmitContext): void {
+  ctx.htmlParts.push(`<${plan.tag}`)
+  for (const a of plan.staticAttrs) {
+    if (a.value === "") ctx.htmlParts.push(` ${a.name}`)
+    else ctx.htmlParts.push(` ${a.name}="${escapeAttrValue(a.value)}"`)
+  }
+  ctx.htmlParts.push(">")
+
+  // Mirror walkPlan's children-baking logic: skip child baking when this
+  // element will create its children inline.
+  const kinds = childKindsOf(plan.children)
+  const inlineChildren = kinds.hasDynamicText
+  if (!inlineChildren) {
+    for (const child of plan.children) {
+      if (child.kind === "static-text") {
+        ctx.htmlParts.push(escapeHtmlText(child.text))
+      } else if (child.kind === "element") {
+        bakeElementHtml(child.plan, ctx)
+      }
+    }
+  }
+
+  if (!VOID_TAGS.has(plan.tag)) {
+    ctx.htmlParts.push(`</${plan.tag}>`)
+  }
 }
 
 function escapeAttrValue(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+}
+
+function escapeHtmlText(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
 
 // ---------------------------------------------------------------------------

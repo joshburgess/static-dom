@@ -204,9 +204,85 @@ describe("sdomCodegen / compileFile", () => {
     expect(result).toBeNull()
   })
 
-  it("leaves nested elements alone (deferred slice)", () => {
-    const src = `const view = <div><span>{(m) => m.x}</span></div>\n`
+  it("rejects mixing dynamic text and element children at the same level", () => {
+    // This shape needs a comment-marker / insertBefore approach; deferred.
+    const src = `const view = <div>{(m) => m.label}<span>x</span></div>\n`
     const result = compileFile(src, "/x.jsx")
     expect(result).toBeNull()
+  })
+
+  // ---------------------------------------------------------------------------
+  // Nested elements: subtree bakes into innerHTML; only descendants with
+  // bindings get walker aliases.
+  // ---------------------------------------------------------------------------
+
+  it("bakes nested element structure into a single innerHTML string", () => {
+    const src = `const view = <div><span>{(m) => m.x}</span></div>\n`
+    const out = compileFile(src, "/x.jsx")!.code
+    expect(out).toContain('"<div><span></span></div>"')
+    // The inner span needs JS work, so it gets a walker alias.
+    expect(out).toContain("const __el_0 = root.firstChild")
+    // Dynamic text is appended to the aliased element.
+    expect(out).toContain("__el_0.appendChild(document.createTextNode")
+  })
+
+  it("does not allocate walker aliases for purely static descendants", () => {
+    const src = `const view = <div><i>icon</i><span>{(m) => m.x}</span></div>\n`
+    const out = compileFile(src, "/x.jsx")!.code
+    expect(out).toContain('"<div><i>icon</i><span></span></div>"')
+    // Only the span needs work; the <i> is fully baked.
+    expect(out).toContain("const __el_0 = root.firstChild.nextSibling")
+    expect(out).not.toContain("__el_1")
+  })
+
+  it("end-to-end: nested element with dynamic text mounts and updates", () => {
+    const view = compileAndLoad(
+      `const view = <div><span>{(m) => m.label}</span></div>\n`,
+    )
+    const { container, signal, teardown } = mountFor(view, { label: "alpha" })
+    const root = container.firstElementChild as HTMLElement
+    expect(root.tagName).toBe("DIV")
+    expect(root.firstElementChild?.tagName).toBe("SPAN")
+    expect(root.firstElementChild?.textContent).toBe("alpha")
+
+    signal.setValue({ label: "beta" })
+    expect(root.firstElementChild?.textContent).toBe("beta")
+
+    teardown.teardown()
+    container.remove()
+  })
+
+  it("end-to-end: krausest-style row with multiple dynamic descendants", () => {
+    const view = compileAndLoad(
+      [
+        `const view = <tr class={(m) => m.cls}>`,
+        `<td class="col-md-1">{(m) => m.id}</td>`,
+        `<td class="col-md-4"><a>{(m) => m.label}</a></td>`,
+        `<td class="col-md-1"><a><span class="glyphicon glyphicon-remove"/></a></td>`,
+        `<td class="col-md-6"/>`,
+        `</tr>\n`,
+      ].join(""),
+    )
+    const { container, signal, teardown } = mountFor(view, {
+      cls: "",
+      id: 1,
+      label: "first",
+    })
+    const tr = container.firstElementChild as HTMLElement
+    expect(tr.tagName).toBe("TR")
+    expect(tr.children.length).toBe(4)
+    expect(tr.children[0]?.textContent).toBe("1")
+    expect(tr.children[1]?.firstElementChild?.tagName).toBe("A")
+    expect(tr.children[1]?.textContent).toBe("first")
+    expect(tr.children[2]?.firstElementChild?.firstElementChild?.getAttribute("class"))
+      .toBe("glyphicon glyphicon-remove")
+
+    signal.setValue({ cls: "danger", id: 42, label: "updated" })
+    expect(tr.className).toBe("danger")
+    expect(tr.children[0]?.textContent).toBe("42")
+    expect(tr.children[1]?.textContent).toBe("updated")
+
+    teardown.teardown()
+    container.remove()
   })
 })
