@@ -83,6 +83,12 @@ export function lis(arr: number[]): number[] {
 // and firstNode is stored here too instead of a sibling Map. Both shave one
 // allocation per row off the bulk mount path. The entry is structurally
 // compatible with Update<ItemModel> so it doubles as the observer payload.
+//
+// The compiled-path discriminator (which update/teardown function to call)
+// lives at the closure level — every entry under a given reconciler walks
+// the same code path, so storing it per row is pure waste. `state` carries
+// the per-row state for compiledState()-mounted rows; the shared update +
+// teardown functions are read off the closure.
 interface ItemEntry<ItemModel> {
   startMarker: Comment | null
   endMarker: Comment | null
@@ -94,23 +100,16 @@ interface ItemEntry<ItemModel> {
   firstNode: ChildNode | null
   /**
    * Direct (prev, next) update path used when the item SDOM was produced by
-   * `compiled()`: we mount via the brand-stashed setup and route updates
-   * straight to its `update` function instead of through `sharedUpdateStream`,
-   * skipping a subscribe closure, an unsub closure, and a wrapper Teardown
-   * object per row. Null on the slow path (handwritten attach + observer).
+   * `compiled()` — mirrors the `update` half of the instance returned by the
+   * brand-stashed setup. Null on every other path.
    */
   directUpdate: ((prev: ItemModel, next: ItemModel) => void) | null
   /**
-   * State-based compiled path: when the item SDOM was produced by
-   * `compiledState()`, we hold a per-row state object plus pointers to the
-   * shared (module-scope) update + teardown functions. The shared functions
-   * read/write through `state` so we avoid one `{update, teardown}` literal
-   * and two method closures per row. Null when the row is on the legacy
-   * compiled() or handwritten-attach path.
+   * State-based compiled path: per-row state object created by
+   * `compiledState()`'s setup. The shared module-scope update + teardown
+   * functions read/write through it.
    */
   state: object | null
-  stateUpdate: ((state: object, prev: ItemModel, next: ItemModel) => void) | null
-  stateTeardown: ((state: object) => void) | null
 }
 
 const NOOP_TEARDOWN: Teardown = { teardown() {} }
@@ -168,6 +167,12 @@ export function createArrayReconciler<ItemModel, Msg>(
       [__SDOM_COMPILED_STATE__]?: CompiledStateSpec<ItemModel, Msg, object>
     })[__SDOM_COMPILED_STATE__] ?? null
 
+  // Pre-extract the shared functions once. Hot paths read these directly
+  // off the closure instead of indirecting through entry fields.
+  const compiledStateSetup = compiledStateSpec ? compiledStateSpec.setup : null
+  const compiledStateUpdate = compiledStateSpec ? compiledStateSpec.update : null
+  const compiledStateTeardown = compiledStateSpec ? compiledStateSpec.teardown : null
+
   // Shared UpdateStream — avoids per-row function object allocation.
   let currentMountEntry: ItemEntry<ItemModel> | null = null
   const sharedUpdateStream: UpdateStream<ItemModel> = {
@@ -218,28 +223,23 @@ export function createArrayReconciler<ItemModel, Msg>(
       prev: itemModel, next: itemModel,
       firstNode: null,
       directUpdate: null,
-      state: null, stateUpdate: null, stateTeardown: null,
+      state: null,
     }
     liveItems.set(key, entry)
 
     const lastBefore = target.lastChild
 
-    if (compiledStateSpec !== null) {
-      // Fast path: setup returns a single per-row state object and the
-      // shared (module-scope) update + teardown functions read/write it.
-      // Drops the per-row {update, teardown} literal and its two method
-      // closures relative to the legacy compiled() path.
+    if (compiledStateSetup !== null) {
+      // Fast path: setup returns a single per-row state object. The shared
+      // (module-scope) update + teardown functions are kept on the closure
+      // and read directly when needed.
       const state = guard(
         "attach",
         `${label} item "${key}"`,
-        () => compiledStateSpec.setup(target, itemModel, dispatch),
+        () => compiledStateSetup(target, itemModel, dispatch),
         null as unknown as object,
       )
-      if (state !== null) {
-        entry.state = state
-        entry.stateUpdate = compiledStateSpec.update as (s: object, p: ItemModel, n: ItemModel) => void
-        entry.stateTeardown = compiledStateSpec.teardown as (s: object) => void
-      }
+      if (state !== null) entry.state = state
     } else if (compiledSetup !== null) {
       // Legacy compiled() fast path: invoke the user setup directly. It
       // returns `{update, teardown}`, which already satisfies the Teardown
@@ -279,26 +279,22 @@ export function createArrayReconciler<ItemModel, Msg>(
       prev: itemModel, next: itemModel,
       firstNode: null,
       directUpdate: null,
-      state: null, stateUpdate: null, stateTeardown: null,
+      state: null,
     }
     liveItems.set(key, entry)
 
     container.appendChild(startMarker)
 
-    if (compiledStateSpec !== null) {
+    if (compiledStateSetup !== null) {
       const state = withDelegator(capturedDelegator, () =>
         guard(
           "attach",
           `${label} item "${key}"`,
-          () => compiledStateSpec.setup(container, itemModel, dispatch),
+          () => compiledStateSetup(container, itemModel, dispatch),
           null as unknown as object,
         ),
       )
-      if (state !== null) {
-        entry.state = state
-        entry.stateUpdate = compiledStateSpec.update as (s: object, p: ItemModel, n: ItemModel) => void
-        entry.stateTeardown = compiledStateSpec.teardown as (s: object) => void
-      }
+      if (state !== null) entry.state = state
     } else if (compiledSetup !== null) {
       const instance = withDelegator(capturedDelegator, () =>
         guard(
@@ -330,9 +326,8 @@ export function createArrayReconciler<ItemModel, Msg>(
     const prev = entry.next
     entry.prev = prev
     entry.next = itemModel
-    const stateUpdate = entry.stateUpdate
-    if (stateUpdate !== null) {
-      stateUpdate(entry.state!, prev, itemModel)
+    if (compiledStateUpdate !== null) {
+      compiledStateUpdate(entry.state!, prev, itemModel)
       return
     }
     const directUpdate = entry.directUpdate
@@ -346,6 +341,11 @@ export function createArrayReconciler<ItemModel, Msg>(
     } else if (entry.observers) {
       entry.observers.forEach(obs => obs(update))
     }
+  }
+
+  function teardownEntry(entry: ItemEntry<ItemModel>): void {
+    if (compiledStateTeardown !== null) compiledStateTeardown(entry.state!)
+    else entry.teardown.teardown()
   }
 
   function ensureMarkers(): void {
@@ -393,11 +393,7 @@ export function createArrayReconciler<ItemModel, Msg>(
   function removeItem(key: string): void {
     const entry = liveItems.get(key)
     if (!entry) return
-    if (entry.stateTeardown !== null) {
-      entry.stateTeardown(entry.state!)
-    } else {
-      entry.teardown.teardown()
-    }
+    teardownEntry(entry)
     entry.startMarker?.remove()
     entry.endMarker?.remove()
     liveItems.delete(key)
@@ -610,10 +606,7 @@ export function createArrayReconciler<ItemModel, Msg>(
     // collapse into one textContent="" wipe.
     if (count === 0 && liveItems.size > 0) {
       container.textContent = ""
-      for (const entry of liveItems.values()) {
-        if (entry.stateTeardown !== null) entry.stateTeardown(entry.state!)
-        else entry.teardown.teardown()
-      }
+      for (const entry of liveItems.values()) teardownEntry(entry)
       liveItems.clear()
       markersInserted = false
       prevKeys = []
@@ -732,10 +725,7 @@ export function createArrayReconciler<ItemModel, Msg>(
       }
       if (noOverlap) {
         container.textContent = ""
-        for (const entry of liveItems.values()) {
-          if (entry.stateTeardown !== null) entry.stateTeardown(entry.state!)
-          else entry.teardown.teardown()
-        }
+        for (const entry of liveItems.values()) teardownEntry(entry)
         liveItems.clear()
         markersInserted = false
         const frag = document.createDocumentFragment()
@@ -778,8 +768,7 @@ export function createArrayReconciler<ItemModel, Msg>(
 
   function teardown(): void {
     for (const entry of liveItems.values()) {
-      if (entry.stateTeardown !== null) entry.stateTeardown(entry.state!)
-      else entry.teardown.teardown()
+      teardownEntry(entry)
       entry.startMarker?.remove()
       entry.endMarker?.remove()
     }
