@@ -38,3 +38,5 @@ export function sdomJsx(): VitePlugin {
     },
   }
 }
+
+export { sdomCodegen } from "./codegen/index"

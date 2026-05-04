@@ -154,16 +154,22 @@ importers:
 
   packages/vite:
     dependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
       vite:
         specifier: ^5.0.0 || ^6.0.0
         version: 6.4.2(@types/node@20.19.39)
     devDependencies:
+      '@static-dom/core':
+        specifier: workspace:*
+        version: link:../core
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.39
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
+      happy-dom:
+        specifier: ^20.8.9
+        version: 20.9.0
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@20.19.39)(@vitest/browser@3.2.4)(happy-dom@20.9.0)

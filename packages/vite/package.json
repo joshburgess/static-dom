@@ -52,9 +52,13 @@
   "peerDependencies": {
     "vite": "^5.0.0 || ^6.0.0"
   },
+  "dependencies": {
+    "typescript": "^5.9.3"
+  },
   "devDependencies": {
+    "@static-dom/core": "workspace:*",
     "@types/node": "^20.0.0",
-    "typescript": "^5.9.3",
+    "happy-dom": "^20.8.9",
     "vitest": "^3.2.4"
   }
 }
