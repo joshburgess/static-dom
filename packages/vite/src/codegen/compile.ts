@@ -11,6 +11,9 @@
  *   - Attributes whose values are string literals (baked into the
  *     template's innerHTML) or single arrow / function expressions
  *     (emitted as a per-attr binding).
+ *   - Event handler props (onClick, onInput, etc.) routed through
+ *     `registerEvent` so they go through the program's ambient
+ *     delegator when one is installed.
  *   - Children that are static text, single arrow / function
  *     expressions (dynamic text), and nested JSX elements with the
  *     same restrictions (recursive).
@@ -18,7 +21,7 @@
  *     descendants with bindings get walker aliases.
  *
  * Out of scope (deferred to later slices):
- *   - Events, `style` object form, `classes` map, refs, keys, spread.
+ *   - `style` object form, `classes` map, refs, keys, spread.
  *   - An element whose children mix dynamic-text holes with element
  *     children at the same level (would need insertBefore plumbing).
  *   - Expressions other than a single arrow/function or a literal.
@@ -31,7 +34,10 @@ export interface CompileResult {
 }
 
 const COMPILED_IMPORT_NAME = "__sdomCompiled"
+const REGISTER_EVENT_IMPORT_NAME = "__sdomRegisterEvent"
 const COMPILED_IMPORT_SPECIFIER = "@static-dom/core"
+
+const EVENT_RE = /^on[A-Z]/
 
 const VOID_TAGS = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input",
@@ -85,6 +91,12 @@ interface DynamicAttr {
   fnSource: string
 }
 
+interface EventHandler {
+  /** DOM event name, e.g. "click" or "input". */
+  eventName: string
+  fnSource: string
+}
+
 type ChildPlan =
   | { kind: "static-text"; text: string }
   | { kind: "dynamic-text"; fnSource: string }
@@ -94,6 +106,7 @@ interface ElementPlan {
   tag: string
   staticAttrs: Array<{ name: string; value: string }>
   dynamicAttrs: DynamicAttr[]
+  events: EventHandler[]
   children: ChildPlan[]
 }
 
@@ -178,15 +191,26 @@ function analyzeElement(
 
   const staticAttrs: Array<{ name: string; value: string }> = []
   const dynamicAttrs: DynamicAttr[] = []
+  const events: EventHandler[] = []
 
   for (const prop of opening.attributes.properties) {
     if (!ts.isJsxAttribute(prop)) return null
     if (!ts.isIdentifier(prop.name)) return null
 
     const rawName = prop.name.text
-    if (rawName.startsWith("on") && /^on[A-Z]/.test(rawName)) return null
     if (rawName === "style" || rawName === "classes") return null
     if (rawName === "key" || rawName === "ref") return null
+
+    if (EVENT_RE.test(rawName)) {
+      const init = prop.initializer
+      if (init === undefined) return null
+      if (!ts.isJsxExpression(init) || init.expression === undefined) return null
+      const expr = init.expression
+      if (!ts.isArrowFunction(expr) && !ts.isFunctionExpression(expr)) return null
+      const eventName = rawName[2]!.toLowerCase() + rawName.slice(3)
+      events.push({ eventName, fnSource: expr.getText() })
+      continue
+    }
 
     const attrName = rawName === "className" ? "class" : rawName
 
@@ -220,7 +244,7 @@ function analyzeElement(
     : []
   if (children === null) return null
 
-  return { tag, staticAttrs, dynamicAttrs, children }
+  return { tag, staticAttrs, dynamicAttrs, events, children }
 }
 
 function analyzeChildren(
@@ -285,9 +309,18 @@ function resolvePropName(attrName: string): string | null {
 
 function elementNeedsWork(plan: ElementPlan): boolean {
   if (plan.dynamicAttrs.length > 0) return true
+  if (plan.events.length > 0) return true
   for (const c of plan.children) {
     if (c.kind === "dynamic-text") return true
     if (c.kind === "element" && elementNeedsWork(c.plan)) return true
+  }
+  return false
+}
+
+function planHasAnyEvents(plan: ElementPlan): boolean {
+  if (plan.events.length > 0) return true
+  for (const c of plan.children) {
+    if (c.kind === "element" && planHasAnyEvents(c.plan)) return true
   }
   return false
 }
@@ -303,6 +336,8 @@ interface EmitContext {
   attrIdx: number
   textIdx: number
   elIdx: number
+  evtIdx: number
+  hasEvents: boolean
 }
 
 function emitFromPlan(
@@ -317,11 +352,13 @@ function emitFromPlan(
     attrIdx: 0,
     textIdx: 0,
     elIdx: 0,
+    evtIdx: 0,
+    hasEvents: false,
   }
 
   // Two passes: build innerHTML for the whole tree, then walk the tree
-  // again to emit JS for dynamic attrs / dynamic text / nested bindings.
-  // The root reuses the literal `root` ident as its path expression.
+  // again to emit JS for dynamic attrs / dynamic text / events / nested
+  // bindings. The root reuses the literal `root` ident as its path expr.
   bakeElementHtml(plan, ctx)
   bindElement(plan, "root", ctx)
 
@@ -332,15 +369,29 @@ function emitFromPlan(
   lines.push(`  __t.innerHTML = ${JSON.stringify(innerHtml)}`)
   lines.push(`  return __t.content.firstChild`)
   lines.push(`})()`)
-  lines.push(`const ${compiledName} = ${COMPILED_IMPORT_NAME}((parent, initialModel, _dispatch) => {`)
+  lines.push(`const ${compiledName} = ${COMPILED_IMPORT_NAME}((parent, initialModel, dispatch) => {`)
   lines.push(`  const root = ${tplName}.cloneNode(true)`)
+  if (ctx.hasEvents) {
+    // Live model ref shared by every event listener in this subtree, so
+    // handlers always see the current model without re-registering.
+    lines.push(`  const __evtRef = { current: initialModel }`)
+    lines.push(`  const __evtCleanups = []`)
+  }
   for (const s of ctx.setupLines) lines.push(s)
   lines.push(`  parent.appendChild(root)`)
   lines.push(`  return {`)
   lines.push(`    update(_prev, next) {`)
+  if (ctx.hasEvents) lines.push(`      __evtRef.current = next`)
   for (const u of ctx.updateLines) lines.push(u)
   lines.push(`    },`)
-  lines.push(`    teardown() { root.remove() },`)
+  if (ctx.hasEvents) {
+    lines.push(`    teardown() {`)
+    lines.push(`      for (const __c of __evtCleanups) __c()`)
+    lines.push(`      root.remove()`)
+    lines.push(`    },`)
+  } else {
+    lines.push(`    teardown() { root.remove() },`)
+  }
   lines.push(`  }`)
   lines.push(`})`)
   return lines.join("\n")
@@ -379,6 +430,24 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
         : `        ${elPath}.setAttribute(${JSON.stringify(attr.attrName)}, __attrV${i})`,
     )
     ctx.updateLines.push(`      }`)
+  }
+
+  // Event handlers: route through registerEvent so the program's ambient
+  // delegator picks them up. With no delegator (e.g. tests using bare
+  // `attach`), registerEvent falls back to addEventListener and returns a
+  // teardown function that we collect into __evtCleanups.
+  for (const evt of plan.events) {
+    ctx.hasEvents = true
+    const i = ctx.evtIdx++
+    ctx.setupLines.push(`  const __evtFn${i} = ${evt.fnSource}`)
+    ctx.setupLines.push(`  const __evtL${i} = (event) => {`)
+    ctx.setupLines.push(`    const __m = __evtFn${i}(event, __evtRef.current)`)
+    ctx.setupLines.push(`    if (__m !== null && __m !== undefined) dispatch(__m)`)
+    ctx.setupLines.push(`  }`)
+    ctx.setupLines.push(
+      `  const __evtC${i} = ${REGISTER_EVENT_IMPORT_NAME}(${elPath}, ${JSON.stringify(evt.eventName)}, __evtL${i})`,
+    )
+    ctx.setupLines.push(`  if (__evtC${i} !== null) __evtCleanups.push(__evtC${i})`)
   }
 
   // Children: either inline-build (text-like case) or recurse into element
@@ -489,7 +558,8 @@ function applyTransforms(code: string, sites: CompiledSite[]): string {
   for (const site of sorted) {
     out = out.slice(0, site.start) + site.identifier + out.slice(site.end)
   }
-  const importLine = `import { compiled as ${COMPILED_IMPORT_NAME} } from "${COMPILED_IMPORT_SPECIFIER}"\n`
+  const importLine =
+    `import { compiled as ${COMPILED_IMPORT_NAME}, registerEvent as ${REGISTER_EVENT_IMPORT_NAME} } from "${COMPILED_IMPORT_SPECIFIER}"\n`
   const hoisted = sites.map(s => s.hoistedCode).join("\n\n") + "\n\n"
   return importLine + hoisted + out
 }

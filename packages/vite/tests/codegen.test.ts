@@ -8,26 +8,39 @@
 
 import { describe, it, expect } from "vitest"
 import { compileFile } from "../src/codegen/compile"
-import { compiled, createSignal, toUpdateStream } from "@static-dom/core"
+import {
+  compiled,
+  createSignal,
+  registerEvent,
+  toUpdateStream,
+} from "@static-dom/core"
 
 // Compile + evaluate a fixture, returning the SDOM bound to the `view` const.
 function compileAndLoad(src: string): ReturnType<typeof compiled> {
   const result = compileFile(src, "/x.jsx")
   if (result === null) throw new Error("expected compileFile to produce output")
-  const body = result.code.replace(/^import [^\n]+\n/m, "")
+  const body = result.code.replace(/^import [^\n]+\n/gm, "")
   const factory = new Function(
     "__sdomCompiled",
+    "__sdomRegisterEvent",
     `${body}\nreturn view`,
-  ) as (c: typeof compiled) => ReturnType<typeof compiled>
-  return factory(compiled)
+  ) as (
+    c: typeof compiled,
+    r: typeof registerEvent,
+  ) => ReturnType<typeof compiled>
+  return factory(compiled, registerEvent)
 }
 
-function mountFor<M>(view: ReturnType<typeof compiled>, initial: M) {
+function mountFor<M>(
+  view: ReturnType<typeof compiled>,
+  initial: M,
+  dispatch: (msg: unknown) => void = () => {},
+) {
   const container = document.createElement("section")
   document.body.appendChild(container)
   const signal = createSignal(initial)
   const updates = toUpdateStream(signal)
-  const teardown = view.attach(container, initial, updates, () => {})
+  const teardown = view.attach(container, initial, updates, dispatch)
   return { container, signal, teardown }
 }
 
@@ -198,12 +211,6 @@ describe("sdomCodegen / compileFile", () => {
   // Out-of-slice cases still bypass codegen.
   // ---------------------------------------------------------------------------
 
-  it("leaves event handlers alone (deferred slice)", () => {
-    const src = `const view = <button onClick={() => {}}>x</button>\n`
-    const result = compileFile(src, "/x.jsx")
-    expect(result).toBeNull()
-  })
-
   it("rejects mixing dynamic text and element children at the same level", () => {
     // This shape needs a comment-marker / insertBefore approach; deferred.
     const src = `const view = <div>{(m) => m.label}<span>x</span></div>\n`
@@ -283,6 +290,102 @@ describe("sdomCodegen / compileFile", () => {
     expect(tr.children[1]?.textContent).toBe("updated")
 
     teardown.teardown()
+    container.remove()
+  })
+
+  // ---------------------------------------------------------------------------
+  // Event handlers: registered via registerEvent, dispatched messages flow.
+  // ---------------------------------------------------------------------------
+
+  it("emits a registerEvent call for onClick", () => {
+    const src = `const view = <button onClick={(e, m) => ({ type: "go" })}>x</button>\n`
+    const out = compileFile(src, "/x.jsx")!.code
+    expect(out).toContain("registerEvent as __sdomRegisterEvent")
+    expect(out).toContain('__sdomRegisterEvent(root, "click",')
+    expect(out).toContain("const __evtRef = { current: initialModel }")
+    expect(out).toContain("__evtRef.current = next")
+  })
+
+  it("end-to-end: event handler dispatches and sees the live model", () => {
+    const dispatched: unknown[] = []
+    const view = compileAndLoad(
+      `const view = <button onClick={(e, m) => ({ type: "click", id: m.id })}>{(m) => m.label}</button>\n`,
+    )
+    const { container, signal, teardown } = mountFor(
+      view,
+      { id: 1, label: "L1" },
+      (msg) => dispatched.push(msg),
+    )
+    const btn = container.firstElementChild as HTMLButtonElement
+    btn.click()
+    expect(dispatched).toEqual([{ type: "click", id: 1 }])
+
+    signal.setValue({ id: 2, label: "L2" })
+    btn.click()
+    expect(dispatched).toEqual([
+      { type: "click", id: 1 },
+      { type: "click", id: 2 },
+    ])
+
+    teardown.teardown()
+    // After teardown the listener is removed; clicking the detached node
+    // (the click happens before insertion to avoid happy-dom's event path
+    // requiring a connected element) should not dispatch.
+    container.remove()
+  })
+
+  it("end-to-end: handler returning null/undefined does not dispatch", () => {
+    const dispatched: unknown[] = []
+    const view = compileAndLoad(
+      `const view = <button onClick={(e, m) => null}>x</button>\n`,
+    )
+    const { container, teardown } = mountFor(
+      view,
+      { x: 1 },
+      (msg) => dispatched.push(msg),
+    )
+    const btn = container.firstElementChild as HTMLButtonElement
+    btn.click()
+    expect(dispatched).toEqual([])
+
+    teardown.teardown()
+    container.remove()
+  })
+
+  it("end-to-end: event handler on nested element still gets registered", () => {
+    const dispatched: unknown[] = []
+    const view = compileAndLoad(
+      `const view = <div><button onClick={(e, m) => ({ type: "tap", v: m.v })}>{(m) => m.label}</button></div>\n`,
+    )
+    const { container, teardown } = mountFor(
+      view,
+      { v: 7, label: "go" },
+      (msg) => dispatched.push(msg),
+    )
+    const btn = container.querySelector("button") as HTMLButtonElement
+    btn.click()
+    expect(dispatched).toEqual([{ type: "tap", v: 7 }])
+
+    teardown.teardown()
+    container.remove()
+  })
+
+  it("end-to-end: teardown removes the event listener", () => {
+    const dispatched: unknown[] = []
+    const view = compileAndLoad(
+      `const view = <button onClick={(e, m) => ({ type: "click" })}>x</button>\n`,
+    )
+    const { container, teardown } = mountFor(view, {}, (msg) => dispatched.push(msg))
+    const btn = container.firstElementChild as HTMLButtonElement
+    btn.click()
+    expect(dispatched.length).toBe(1)
+
+    teardown.teardown()
+    // Element is detached after teardown; manually re-insert and click to
+    // confirm the listener is gone.
+    container.appendChild(btn)
+    btn.click()
+    expect(dispatched.length).toBe(1)
     container.remove()
   })
 })
