@@ -21,6 +21,7 @@ import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import { guard, __SDOM_GUARD__, getErrorHandler } from "./errors"
 import { __SDOM_DEV__, validateUniqueKeys } from "./dev"
 import { getCurrentDelegator, withDelegator } from "./delegation"
+import { __SDOM_COMPILED_SETUP__, type CompiledSetup } from "./constructors"
 
 // ---------------------------------------------------------------------------
 // LIS — Longest Increasing Subsequence (from Inferno)
@@ -86,6 +87,14 @@ interface ItemEntry<ItemModel> {
   prev: ItemModel
   next: ItemModel
   firstNode: ChildNode | null
+  /**
+   * Direct (prev, next) update path used when the item SDOM was produced by
+   * `compiled()`: we mount via the brand-stashed setup and route updates
+   * straight to its `update` function instead of through `sharedUpdateStream`,
+   * skipping a subscribe closure, an unsub closure, and a wrapper Teardown
+   * object per row. Null on the slow path (handwritten attach + observer).
+   */
+  directUpdate: ((prev: ItemModel, next: ItemModel) => void) | null
 }
 
 const NOOP_TEARDOWN: Teardown = { teardown() {} }
@@ -125,6 +134,15 @@ export function createArrayReconciler<ItemModel, Msg>(
   // program's root listener.
   const capturedDelegator = getCurrentDelegator()
   const liveItems = new Map<string, ItemEntry<ItemModel>>()
+
+  // Detect compiled() at factory time: when the item SDOM carries the
+  // `__SDOM_COMPILED_SETUP__` brand we can drive each row through the
+  // bare setup function and skip the per-row subscribe / unsub / wrapper
+  // Teardown allocations that compiled()'s own attach would do.
+  const compiledSetup =
+    (itemSdom as unknown as { [__SDOM_COMPILED_SETUP__]?: CompiledSetup<ItemModel, Msg> })[
+      __SDOM_COMPILED_SETUP__
+    ] ?? null
 
   // Shared UpdateStream — avoids per-row function object allocation.
   let currentMountEntry: ItemEntry<ItemModel> | null = null
@@ -175,17 +193,35 @@ export function createArrayReconciler<ItemModel, Msg>(
       observer: null, observers: null,
       prev: itemModel, next: itemModel,
       firstNode: null,
+      directUpdate: null,
     }
     liveItems.set(key, entry)
 
     const lastBefore = target.lastChild
 
-    currentMountEntry = entry
-    entry.teardown = guard("attach", `${label} item "${key}"`, () =>
-      itemSdom.attach(target, itemModel, sharedUpdateStream, dispatch),
-      NOOP_TEARDOWN,
-    )
-    currentMountEntry = null
+    if (compiledSetup !== null) {
+      // Fast path: invoke the user setup directly. It returns
+      // `{update, teardown}`, which already satisfies the Teardown protocol,
+      // so we reuse the instance object as `entry.teardown` instead of
+      // allocating a wrapper.
+      const instance = guard(
+        "attach",
+        `${label} item "${key}"`,
+        () => compiledSetup(target, itemModel, dispatch),
+        null as unknown as { update: (p: ItemModel, n: ItemModel) => void; teardown: () => void },
+      )
+      if (instance !== null) {
+        entry.teardown = instance
+        entry.directUpdate = instance.update
+      }
+    } else {
+      currentMountEntry = entry
+      entry.teardown = guard("attach", `${label} item "${key}"`, () =>
+        itemSdom.attach(target, itemModel, sharedUpdateStream, dispatch),
+        NOOP_TEARDOWN,
+      )
+      currentMountEntry = null
+    }
 
     entry.firstNode = lastBefore ? lastBefore.nextSibling : target.firstChild
   }
@@ -201,26 +237,48 @@ export function createArrayReconciler<ItemModel, Msg>(
       observer: null, observers: null,
       prev: itemModel, next: itemModel,
       firstNode: null,
+      directUpdate: null,
     }
     liveItems.set(key, entry)
 
     container.appendChild(startMarker)
 
-    currentMountEntry = entry
-    entry.teardown = withDelegator(capturedDelegator, () =>
-      guard("attach", `${label} item "${key}"`, () =>
-        itemSdom.attach(container, itemModel, sharedUpdateStream, dispatch),
-        NOOP_TEARDOWN,
+    if (compiledSetup !== null) {
+      const instance = withDelegator(capturedDelegator, () =>
+        guard(
+          "attach",
+          `${label} item "${key}"`,
+          () => compiledSetup(container, itemModel, dispatch),
+          null as unknown as { update: (p: ItemModel, n: ItemModel) => void; teardown: () => void },
+        ),
       )
-    )
-    currentMountEntry = null
+      if (instance !== null) {
+        entry.teardown = instance
+        entry.directUpdate = instance.update
+      }
+    } else {
+      currentMountEntry = entry
+      entry.teardown = withDelegator(capturedDelegator, () =>
+        guard("attach", `${label} item "${key}"`, () =>
+          itemSdom.attach(container, itemModel, sharedUpdateStream, dispatch),
+          NOOP_TEARDOWN,
+        )
+      )
+      currentMountEntry = null
+    }
 
     container.appendChild(endMarker)
   }
 
   function pushItemUpdate(entry: ItemEntry<ItemModel>, itemModel: ItemModel): void {
-    entry.prev = entry.next
+    const prev = entry.next
+    entry.prev = prev
     entry.next = itemModel
+    const directUpdate = entry.directUpdate
+    if (directUpdate !== null) {
+      directUpdate(prev, itemModel)
+      return
+    }
     const update = entry as unknown as Update<ItemModel>
     if (entry.observer) {
       entry.observer(update)

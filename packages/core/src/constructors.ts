@@ -827,17 +827,29 @@ export function component<Model, Msg = never>(
  * })
  * ```
  */
+/**
+ * Internal brand: when `compiled()` produces an SDOM the user setup is also
+ * stashed on the SDOM under this symbol. The keyed array reconciler reads it
+ * at factory time and, when present, mounts each row by invoking the setup
+ * directly — skipping the subscribe / unsub / wrapper-Teardown layer that
+ * `compiled()`'s own attach normally allocates per row. The symbol-keyed
+ * field is invisible to combinator chaining and the public type.
+ */
+export const __SDOM_COMPILED_SETUP__: unique symbol = Symbol("sdom.compiledSetup")
+
+export type CompiledSetup<Model, Msg> = (
+  parent: Element | DocumentFragment,
+  initialModel: Model,
+  dispatch: Dispatcher<Msg>,
+) => {
+  update: (prev: Model, next: Model) => void
+  teardown: () => void
+}
+
 export function compiled<Model, Msg>(
-  setup: (
-    parent: Element | DocumentFragment,
-    initialModel: Model,
-    dispatch: Dispatcher<Msg>
-  ) => {
-    update: (prev: Model, next: Model) => void
-    teardown: () => void
-  }
+  setup: CompiledSetup<Model, Msg>,
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
+  const sdom = makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
     const instance = setup(parent, initialModel, dispatch)
     const unsub = updates.subscribe(({ prev, next }) => {
       instance.update(prev, next)
@@ -849,6 +861,10 @@ export function compiled<Model, Msg>(
       },
     }
   })
+  ;(sdom as unknown as { [__SDOM_COMPILED_SETUP__]: CompiledSetup<Model, Msg> })[
+    __SDOM_COMPILED_SETUP__
+  ] = setup
+  return sdom
 }
 
 // ---------------------------------------------------------------------------
