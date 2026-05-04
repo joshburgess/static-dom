@@ -150,7 +150,7 @@ export function compileFile(code: string, id: string): CompileResult | null {
           start: plan.start,
           end: plan.end,
           identifier,
-          hoistedCode: emitFromPlan(plan, tplName, identifier),
+          hoistedCode: emitFromPlan(plan, tplName, identifier, nextId),
         })
         nextId += 1
       }
@@ -331,6 +331,8 @@ function planHasAnyEvents(plan: ElementPlan): boolean {
 
 interface EmitContext {
   htmlParts: string[]
+  /** Module-scope lines: hoisted user functions, defined once per build. */
+  moduleScopeLines: string[]
   setupLines: string[]
   updateLines: string[]
   attrIdx: number
@@ -338,15 +340,19 @@ interface EmitContext {
   elIdx: number
   evtIdx: number
   hasEvents: boolean
+  /** Site index, used to namespace hoisted identifiers across compiled sites. */
+  siteId: number
 }
 
 function emitFromPlan(
   plan: RootPlan,
   tplName: string,
   compiledName: string,
+  siteId: number,
 ): string {
   const ctx: EmitContext = {
     htmlParts: [],
+    moduleScopeLines: [],
     setupLines: [],
     updateLines: [],
     attrIdx: 0,
@@ -354,6 +360,7 @@ function emitFromPlan(
     elIdx: 0,
     evtIdx: 0,
     hasEvents: false,
+    siteId,
   }
 
   // Two passes: build innerHTML for the whole tree, then walk the tree
@@ -364,6 +371,9 @@ function emitFromPlan(
 
   const innerHtml = ctx.htmlParts.join("")
   const lines: string[] = []
+  // Hoist user arrow functions to module scope so each row instantiation
+  // doesn't re-allocate them. Major win on row-template benchmarks.
+  for (const m of ctx.moduleScopeLines) lines.push(m)
   lines.push(`const ${tplName} = (() => {`)
   lines.push(`  const __t = document.createElement("template")`)
   lines.push(`  __t.innerHTML = ${JSON.stringify(innerHtml)}`)
@@ -411,17 +421,20 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
     ctx.setupLines.push(`  const ${elPath} = ${pathExpr}`)
   }
 
-  // Dynamic attributes on this element.
+  // Dynamic attributes on this element. The user's function is hoisted
+  // to module scope (see __sdom_attrFn_*) so each row only allocates the
+  // `__attrLast${i}` slot, not the function itself.
   for (const attr of plan.dynamicAttrs) {
     const i = ctx.attrIdx++
-    ctx.setupLines.push(`  const __attrFn${i} = ${attr.fnSource}`)
-    ctx.setupLines.push(`  let __attrLast${i} = __attrFn${i}(initialModel)`)
+    const fnName = `__sdom_attrFn_${ctx.siteId}_${i}`
+    ctx.moduleScopeLines.push(`const ${fnName} = ${attr.fnSource}`)
+    ctx.setupLines.push(`  let __attrLast${i} = ${fnName}(initialModel)`)
     ctx.setupLines.push(
       attr.propName !== null
         ? `  ${elPath}.${attr.propName} = __attrLast${i}`
         : `  ${elPath}.setAttribute(${JSON.stringify(attr.attrName)}, __attrLast${i})`,
     )
-    ctx.updateLines.push(`      const __attrV${i} = __attrFn${i}(next)`)
+    ctx.updateLines.push(`      const __attrV${i} = ${fnName}(next)`)
     ctx.updateLines.push(`      if (__attrV${i} !== __attrLast${i}) {`)
     ctx.updateLines.push(`        __attrLast${i} = __attrV${i}`)
     ctx.updateLines.push(
@@ -436,12 +449,16 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
   // delegator picks them up. With no delegator (e.g. tests using bare
   // `attach`), registerEvent falls back to addEventListener and returns a
   // teardown function that we collect into __evtCleanups.
+  //
+  // The handler body itself is hoisted to module scope; only the listener
+  // wrapper stays per-row because it must close over the per-row __evtRef.
   for (const evt of plan.events) {
     ctx.hasEvents = true
     const i = ctx.evtIdx++
-    ctx.setupLines.push(`  const __evtFn${i} = ${evt.fnSource}`)
+    const fnName = `__sdom_evtFn_${ctx.siteId}_${i}`
+    ctx.moduleScopeLines.push(`const ${fnName} = ${evt.fnSource}`)
     ctx.setupLines.push(`  const __evtL${i} = (event) => {`)
-    ctx.setupLines.push(`    const __m = __evtFn${i}(event, __evtRef.current)`)
+    ctx.setupLines.push(`    const __m = ${fnName}(event, __evtRef.current)`)
     ctx.setupLines.push(`    if (__m !== null && __m !== undefined) dispatch(__m)`)
     ctx.setupLines.push(`  }`)
     ctx.setupLines.push(
@@ -462,13 +479,14 @@ function bindElement(plan: ElementPlan, pathExpr: string, ctx: EmitContext): voi
         )
       } else if (child.kind === "dynamic-text") {
         const i = ctx.textIdx++
+        const fnName = `__sdom_textFn_${ctx.siteId}_${i}`
+        ctx.moduleScopeLines.push(`const ${fnName} = ${child.fnSource}`)
         ctx.setupLines.push(
           `  const __textNode${i} = ${elPath}.appendChild(document.createTextNode(""))`,
         )
-        ctx.setupLines.push(`  const __textFn${i} = ${child.fnSource}`)
-        ctx.setupLines.push(`  let __textLast${i} = __textFn${i}(initialModel)`)
+        ctx.setupLines.push(`  let __textLast${i} = ${fnName}(initialModel)`)
         ctx.setupLines.push(`  __textNode${i}.nodeValue = String(__textLast${i})`)
-        ctx.updateLines.push(`      const __textV${i} = __textFn${i}(next)`)
+        ctx.updateLines.push(`      const __textV${i} = ${fnName}(next)`)
         ctx.updateLines.push(`      if (__textV${i} !== __textLast${i}) {`)
         ctx.updateLines.push(`        __textLast${i} = __textV${i}`)
         ctx.updateLines.push(`        __textNode${i}.nodeValue = String(__textV${i})`)
