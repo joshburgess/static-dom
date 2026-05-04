@@ -22,6 +22,7 @@ import type { SDOM, Teardown } from "./types"
 import { _tryFastPatch } from "./incremental"
 import { diffSubs, type Sub } from "./subscription"
 import { createDelegator, withDelegator } from "./delegation"
+import { makeVar, nodeToUpdateStream } from "./incremental-graph"
 
 // ---------------------------------------------------------------------------
 // Program types
@@ -86,16 +87,20 @@ export function program<Model, Msg>(
 ): ProgramHandle<Model, Msg> {
   const { container, init, update, view, onUpdate } = config
 
-  const modelSignal = createSignal(init)
-  const updates = toUpdateStream(modelSignal)
+  // The model is a single Var in the incremental graph. Views consume it
+  // through the UpdateStream bridge so existing constructors (and the
+  // codegen's compiled rows) see the same {prev, next} surface they did
+  // when the model lived in a Signal.
+  const modelVar = makeVar(init)
+  const updates = nodeToUpdateStream(modelVar)
 
   let viewTeardown: Teardown | null = null
 
   const dispatch: Dispatcher<Msg> = (msg: Msg) => {
-    const prev = modelSignal.value
+    const prev = modelVar.value
     const next = update(msg, prev)
     onUpdate?.(msg, prev, next)
-    modelSignal.setValue(next)
+    modelVar.set(next)
   }
 
   // One root delegator per program. Per-element addEventListener calls
@@ -109,7 +114,7 @@ export function program<Model, Msg>(
 
   return {
     dispatch,
-    getModel: () => modelSignal.value,
+    getModel: () => modelVar.value,
     teardown() {
       viewTeardown?.teardown()
       viewTeardown = null
