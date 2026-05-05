@@ -149,6 +149,34 @@ elmProgram<Model, Msg>({
 
 **Ports:** `createInPort`, `createOutPort`, `portSub`, `portCmd` (typed JS interop)
 
+### Reactive primitives
+
+Underneath the program runners is a small OCaml-Incremental-flavored
+dependency graph. You don't need to touch it for app-style code, but the
+primitives are exported for auxiliary state, computed combinations across
+independent sources, or interop with imperative code:
+
+```typescript
+import { makeVar, mapCell, mapCell2, batch, cellToUpdateStream } from "static-dom"
+
+const x = makeVar(2)
+const y = makeVar(3)
+const sum = mapCell2(x, y, (a, b) => a + b)
+const doubled = mapCell(sum, (n) => n * 2)
+
+batch(() => { x.set(5); y.set(7) })  // single stabilize sweep
+doubled.value                         // 24
+```
+
+Cells are diamond-correct: in an `a -> b, a -> c, (b, c) -> d` shape, `d`
+recomputes once per change to `a`, not twice. Each cell has an equality
+cutoff (`===` by default) that stops propagation when a derivation produces
+an unchanged value.
+
+Bridge a cell into a program-style view with `cellToUpdateStream(cell)`.
+The same primitives back the runners internally, so app model state and
+externally-derived state share one notification mechanism.
+
 ## Lists
 
 Choose a list constructor based on your update pattern:
@@ -340,7 +368,7 @@ function App({ model, onMsg }) {
 
 ## Performance
 
-On targeted updates (single row in a 1,000-row table), static-dom's incremental path reaches 88% of Solid.js throughput while using a simpler whole-model architecture: no signals, no dependency tracking. On bulk attribute updates, the basic `array()` path beats Solid by 17%.
+On targeted updates (single row in a 1,000-row table), static-dom's incremental path reaches 88% of Solid.js throughput while routing all state through a single whole-model `update(msg, model)` function rather than fine-grained per-leaf signals. On bulk attribute updates, the basic `array()` path beats Solid by 17%. On the krausest js-framework-benchmark suite, static-dom matches or beats Solid 1.9.3 across all nine keyed benchmarks.
 
 See [BENCHMARKS.md](./BENCHMARKS.md) for full results and [RECOMMENDATION.md](./RECOMMENDATION.md) for tuning guidance.
 
