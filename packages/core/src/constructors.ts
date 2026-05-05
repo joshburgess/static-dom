@@ -486,45 +486,84 @@ export function array<
   getItems: (model: Model) => KeyedItem<ItemModel>[],
   itemSdom: SDOM<ItemModel, Msg>
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const container = document.createElement(containerTag)
-    parent.appendChild(container)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
 
-    const reconciler = createArrayReconciler<ItemModel, Msg>(
-      container, itemSdom, dispatch, "array",
-    )
-
-    // Cache the previous items for array-identity fast path.
-    let prevItems: KeyedItem<ItemModel>[] | null = null
-
-    // Initial mount
-    const initialItems = getItems(initialModel)
-    reconciler.sync(
-      initialItems.length,
-      i => initialItems[i]!.key,
-      i => initialItems[i]!.model,
-    )
-    prevItems = initialItems
-
-    const unsub = updates.subscribe(({ next }) => {
-      const nextItems = getItems(next)
-      // Array-identity fast path: skip when same reference
-      if (nextItems === prevItems) return
-      reconciler.sync(
-        nextItems.length,
-        i => nextItems[i]!.key,
-        i => nextItems[i]!.model,
+      const reconciler = createArrayReconciler<ItemModel, Msg>(
+        container, itemSdom, dispatch, "array",
       )
-      prevItems = nextItems
-    })
 
-    return {
-      teardown() {
-        unsub()
-        reconciler.teardown()
-      },
-    }
-  })
+      // Cache the previous items for array-identity fast path.
+      let prevItems: KeyedItem<ItemModel>[] | null = null
+
+      // Initial mount
+      const initialItems = getItems(initialModel)
+      reconciler.sync(
+        initialItems.length,
+        i => initialItems[i]!.key,
+        i => initialItems[i]!.model,
+      )
+      prevItems = initialItems
+
+      const unsub = updates.subscribe(({ next }) => {
+        const nextItems = getItems(next)
+        // Array-identity fast path: skip when same reference
+        if (nextItems === prevItems) return
+        reconciler.sync(
+          nextItems.length,
+          i => nextItems[i]!.key,
+          i => nextItems[i]!.model,
+        )
+        prevItems = nextItems
+      })
+
+      return {
+        teardown() {
+          unsub()
+          reconciler.teardown()
+        },
+      }
+    },
+    // Cell-native path: each non-compiled row mounts through attachCell
+    // against a per-row Var that the reconciler advances on update.
+    (parent, cell, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
+
+      const reconciler = createArrayReconciler<ItemModel, Msg>(
+        container, itemSdom, dispatch, "array", true,
+      )
+
+      let prevItems: KeyedItem<ItemModel>[] | null = null
+      const initialItems = getItems(cell.value)
+      reconciler.sync(
+        initialItems.length,
+        i => initialItems[i]!.key,
+        i => initialItems[i]!.model,
+      )
+      prevItems = initialItems
+
+      const unsub = cell.observe((next) => {
+        const nextItems = getItems(next)
+        if (nextItems === prevItems) return
+        reconciler.sync(
+          nextItems.length,
+          i => nextItems[i]!.key,
+          i => nextItems[i]!.model,
+        )
+        prevItems = nextItems
+      })
+
+      return {
+        teardown() {
+          unsub()
+          reconciler.teardown()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -558,45 +597,82 @@ export function arrayBy<
   getKey: (item: ItemModel) => string,
   itemSdom: SDOM<ItemModel, Msg>,
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const container = document.createElement(containerTag)
-    parent.appendChild(container)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
 
-    const reconciler = createArrayReconciler<ItemModel, Msg>(
-      container, itemSdom, dispatch, "arrayBy",
-    )
-
-    // Array reference cache — enables O(1) identity check.
-    let prevItemsRef: readonly ItemModel[] | null = null
-
-    // Initial mount
-    const initialItems = getItems(initialModel)
-    reconciler.sync(
-      initialItems.length,
-      i => getKey(initialItems[i]!),
-      i => initialItems[i]!,
-    )
-    prevItemsRef = initialItems
-
-    const unsub = updates.subscribe(({ next }) => {
-      const nextItems = getItems(next)
-      // Array-identity fast path: skip when same reference
-      if (nextItems === prevItemsRef) return
-      reconciler.sync(
-        nextItems.length,
-        i => getKey(nextItems[i]!),
-        i => nextItems[i]!,
+      const reconciler = createArrayReconciler<ItemModel, Msg>(
+        container, itemSdom, dispatch, "arrayBy",
       )
-      prevItemsRef = nextItems
-    })
 
-    return {
-      teardown() {
-        unsub()
-        reconciler.teardown()
-      },
-    }
-  })
+      // Array reference cache — enables O(1) identity check.
+      let prevItemsRef: readonly ItemModel[] | null = null
+
+      // Initial mount
+      const initialItems = getItems(initialModel)
+      reconciler.sync(
+        initialItems.length,
+        i => getKey(initialItems[i]!),
+        i => initialItems[i]!,
+      )
+      prevItemsRef = initialItems
+
+      const unsub = updates.subscribe(({ next }) => {
+        const nextItems = getItems(next)
+        // Array-identity fast path: skip when same reference
+        if (nextItems === prevItemsRef) return
+        reconciler.sync(
+          nextItems.length,
+          i => getKey(nextItems[i]!),
+          i => nextItems[i]!,
+        )
+        prevItemsRef = nextItems
+      })
+
+      return {
+        teardown() {
+          unsub()
+          reconciler.teardown()
+        },
+      }
+    },
+    (parent, cell, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
+
+      const reconciler = createArrayReconciler<ItemModel, Msg>(
+        container, itemSdom, dispatch, "arrayBy", true,
+      )
+
+      let prevItemsRef: readonly ItemModel[] | null = null
+      const initialItems = getItems(cell.value)
+      reconciler.sync(
+        initialItems.length,
+        i => getKey(initialItems[i]!),
+        i => initialItems[i]!,
+      )
+      prevItemsRef = initialItems
+
+      const unsub = cell.observe((next) => {
+        const nextItems = getItems(next)
+        if (nextItems === prevItemsRef) return
+        reconciler.sync(
+          nextItems.length,
+          i => getKey(nextItems[i]!),
+          i => nextItems[i]!,
+        )
+        prevItemsRef = nextItems
+      })
+
+      return {
+        teardown() {
+          unsub()
+          reconciler.teardown()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -627,83 +703,138 @@ export function indexedArray<Model, ItemModel, Msg>(
   getItems: (model: Model) => ItemModel[],
   itemSdom: SDOM<ItemModel, Msg>
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const container = document.createElement(containerTag)
-    parent.appendChild(container)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
 
-    // Capture the ambient delegator so deferred per-item mounts still
-    // register through the program's root listener.
-    const capturedDelegator = getCurrentDelegator()
+      // Capture the ambient delegator so deferred per-item mounts still
+      // register through the program's root listener.
+      const capturedDelegator = getCurrentDelegator()
 
-    type Slot = {
-      teardown: Teardown
-      modelRef: { current: ItemModel }
-      observer: Observer<Update<ItemModel>> | null
-      update: { prev: ItemModel; next: ItemModel }
-    }
+      type Slot = {
+        teardown: Teardown
+        modelRef: { current: ItemModel }
+        observer: Observer<Update<ItemModel>> | null
+        update: { prev: ItemModel; next: ItemModel }
+      }
 
-    const slots: Slot[] = []
+      const slots: Slot[] = []
 
-    function mountSlot(itemModel: ItemModel): void {
-      const modelRef = { current: itemModel }
-      const update = { prev: itemModel, next: itemModel }
-      const slot: Slot = { teardown: { teardown() {} }, modelRef, observer: null, update }
+      function mountSlot(itemModel: ItemModel): void {
+        const modelRef = { current: itemModel }
+        const update = { prev: itemModel, next: itemModel }
+        const slot: Slot = { teardown: { teardown() {} }, modelRef, observer: null, update }
 
-      const itemUpdates: UpdateStream<ItemModel> = {
-        subscribe(obs) {
-          slot.observer = obs
-          return () => { slot.observer = null }
+        const itemUpdates: UpdateStream<ItemModel> = {
+          subscribe(obs) {
+            slot.observer = obs
+            return () => { slot.observer = null }
+          },
+        }
+
+        slot.teardown = withDelegator(capturedDelegator, () =>
+          itemSdom.attach(container, itemModel, itemUpdates, dispatch))
+        slots.push(slot)
+      }
+
+      function unmountLast(): void {
+        const slot = slots.pop()!
+        slot.teardown.teardown()
+      }
+
+      // Initial mount
+      const initialItems = getItems(initialModel)
+      for (const item of initialItems) mountSlot(item)
+
+      const unsub = updates.subscribe(({ next }) => {
+        const nextItems = getItems(next)
+        const prevLen = slots.length
+        const nextLen = nextItems.length
+
+        // Patch existing slots (up to min of old/new length)
+        const patchLen = prevLen < nextLen ? prevLen : nextLen
+        for (let i = 0; i < patchLen; i++) {
+          const slot = slots[i]!
+          const newModel = nextItems[i]!
+          if (slot.modelRef.current !== newModel) {
+            const prev = slot.modelRef.current
+            slot.modelRef.current = newModel
+            slot.update.prev = prev
+            slot.update.next = newModel
+            slot.observer?.(slot.update as Update<ItemModel>)
+          }
+        }
+
+        // Shrink: unmount excess from end
+        for (let i = prevLen - 1; i >= nextLen; i--) unmountLast()
+
+        // Grow: mount new at end
+        for (let i = prevLen; i < nextLen; i++) mountSlot(nextItems[i]!)
+      })
+
+      return {
+        teardown() {
+          unsub()
+          for (const slot of slots) slot.teardown.teardown()
+          container.remove()
         },
       }
+    },
+    // Cell-native path: each slot mounts through attachCell against its
+    // own Var, which the patch loop advances with `set(model)` instead
+    // of pushing through a per-slot UpdateStream.
+    (parent, cell, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
 
-      slot.teardown = withDelegator(capturedDelegator, () =>
-        itemSdom.attach(container, itemModel, itemUpdates, dispatch))
-      slots.push(slot)
-    }
+      const capturedDelegator = getCurrentDelegator()
 
-    function unmountLast(): void {
-      const slot = slots.pop()!
-      slot.teardown.teardown()
-    }
+      type Slot = { teardown: Teardown; itemVar: Var<ItemModel> }
+      const slots: Slot[] = []
 
-    // Initial mount
-    const initialItems = getItems(initialModel)
-    for (const item of initialItems) mountSlot(item)
-
-    const unsub = updates.subscribe(({ next }) => {
-      const nextItems = getItems(next)
-      const prevLen = slots.length
-      const nextLen = nextItems.length
-
-      // Patch existing slots (up to min of old/new length)
-      const patchLen = prevLen < nextLen ? prevLen : nextLen
-      for (let i = 0; i < patchLen; i++) {
-        const slot = slots[i]!
-        const newModel = nextItems[i]!
-        if (slot.modelRef.current !== newModel) {
-          const prev = slot.modelRef.current
-          slot.modelRef.current = newModel
-          slot.update.prev = prev
-          slot.update.next = newModel
-          slot.observer?.(slot.update as Update<ItemModel>)
-        }
+      function mountSlot(itemModel: ItemModel): void {
+        const itemVar = makeVar(itemModel)
+        const teardown = withDelegator(capturedDelegator, () =>
+          itemSdom.attachCell(container, itemVar, dispatch))
+        slots.push({ teardown, itemVar })
       }
 
-      // Shrink: unmount excess from end
-      for (let i = prevLen - 1; i >= nextLen; i--) unmountLast()
+      function unmountLast(): void {
+        const slot = slots.pop()!
+        slot.teardown.teardown()
+      }
 
-      // Grow: mount new at end
-      for (let i = prevLen; i < nextLen; i++) mountSlot(nextItems[i]!)
-    })
+      const initialItems = getItems(cell.value)
+      for (const item of initialItems) mountSlot(item)
 
-    return {
-      teardown() {
-        unsub()
-        for (const slot of slots) slot.teardown.teardown()
-        container.remove()
-      },
-    }
-  })
+      const unsub = cell.observe((next) => {
+        const nextItems = getItems(next)
+        const prevLen = slots.length
+        const nextLen = nextItems.length
+
+        const patchLen = prevLen < nextLen ? prevLen : nextLen
+        for (let i = 0; i < patchLen; i++) {
+          const slot = slots[i]!
+          const newModel = nextItems[i]!
+          if (slot.itemVar.value !== newModel) {
+            slot.itemVar.set(newModel)
+          }
+        }
+
+        for (let i = prevLen - 1; i >= nextLen; i--) unmountLast()
+        for (let i = prevLen; i < nextLen; i++) mountSlot(nextItems[i]!)
+      })
+
+      return {
+        teardown() {
+          unsub()
+          for (const slot of slots) slot.teardown.teardown()
+          container.remove()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------

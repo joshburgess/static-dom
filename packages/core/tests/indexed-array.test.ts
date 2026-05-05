@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { indexedArray, text, element } from "../src/constructors"
-import type { SDOM } from "../src/types"
+import { attachToCell } from "../src/program"
+import { makeVar } from "../src/incremental-graph"
+import type { SDOM, Teardown } from "../src/types"
 import { mount, cleanup, type TestHarness } from "./helpers"
 
 interface Item { label: string }
@@ -102,5 +104,43 @@ describe("indexedArray", () => {
     // Same DOM node, just updated content
     expect(h.container.querySelector("li")).toBe(li)
     expect(li.textContent).toBe("A updated")
+  })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    it("patches existing slots in place and grows/shrinks at the end", () => {
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar<M>({
+        items: [{ label: "A" }, { label: "B" }],
+      })
+      td = attachToCell(container, makeIndexed(), v, () => {})
+      const liA = container.querySelectorAll("li")[0]!
+      const liB = container.querySelectorAll("li")[1]!
+      expect(liA.textContent).toBe("A")
+
+      // Patch slot 0 in place — same DOM node, new label.
+      v.set({ items: [{ label: "A2" }, { label: "B" }] })
+      expect(container.querySelectorAll("li")[0]).toBe(liA)
+      expect(liA.textContent).toBe("A2")
+
+      // Grow.
+      v.set({ items: [{ label: "A2" }, { label: "B" }, { label: "C" }] })
+      expect(container.querySelectorAll("li").length).toBe(3)
+      expect(container.querySelectorAll("li")[0]).toBe(liA)
+      expect(container.querySelectorAll("li")[1]).toBe(liB)
+
+      // Shrink from end.
+      v.set({ items: [{ label: "A2" }] })
+      expect(container.querySelectorAll("li").length).toBe(1)
+      expect(container.querySelector("li")).toBe(liA)
+    })
   })
 })

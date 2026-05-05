@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { arrayBy, element, text } from "../src/constructors"
-import type { SDOM } from "../src/types"
+import { attachToCell } from "../src/program"
+import { makeVar } from "../src/incremental-graph"
+import type { SDOM, Teardown } from "../src/types"
 import { mount, cleanup, type TestHarness } from "./helpers"
 
 interface Item { id: string; label: string }
@@ -162,5 +164,36 @@ describe("arrayBy", () => {
     const after3 = swap(after2)
     h.set({ items: after3 })
     expect(labels()).toEqual(["1", "5", "3", "4", "2", "6"])
+  })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    it("patches rows in place by key under a cell mount", () => {
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar<M>({ items: [
+        { id: "a", label: "A1" },
+        { id: "b", label: "B1" },
+      ]})
+      td = attachToCell(container, makeArrayBy(), v, () => {})
+      const liA = container.querySelector("li")!
+      expect(liA.textContent).toBe("A1")
+
+      v.set({ items: [
+        { id: "a", label: "A2" },
+        { id: "b", label: "B2" },
+      ]})
+      const lis = container.querySelectorAll("li")
+      expect(lis[0]).toBe(liA)
+      expect(lis[0]!.textContent).toBe("A2")
+      expect(lis[1]!.textContent).toBe("B2")
+    })
   })
 })
