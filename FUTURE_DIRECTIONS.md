@@ -404,6 +404,63 @@ skeleton all stay. The diff-on-re-eval reconcile gets replaced with
 graph stabilization. The "render is a pure function of model" property
 is preserved; we are just computing that function incrementally.
 
+### Implementation status
+
+Direction 2 has landed. The branch carries:
+
+1. **Graph primitives.** `Cell`, `Var`, `mapCell` / `mapCell2` /
+   `mapCell3`, `bindCell`, `bindPrism`, `batch`, `stabilize`, with
+   topo-height scheduling, per-cell cutoff, and observer-driven GC.
+   Public surface is `Cell` / `Var` / `mapCell` (see the README
+   reactive-primitives section).
+2. **Optic lifting.** Lenses, getters, prisms, and affine traversals
+   lift over `Cell<S>` to `Cell<A>` (or `Cell<A | null>` for prisms /
+   affines via `preview`). The optics module proper is untouched; the
+   lifting layer sits next to it.
+3. **Program runners regrounded on the graph.** `program`,
+   `programWithEffects`, `programWithSubscriptions`,
+   `programWithDelta`, and `elmProgram` all now drive their views off
+   a `Var<Model>`. New `attachToCell` / `programFromVar` runners
+   expose the graph entry point directly for code that already has a
+   `Cell`.
+4. **Native Cell consumption through every SDOM constructor.** Every
+   `makeSDOM` call site in `packages/core/src/constructors.ts`
+   provides an `attachCell` implementation: `text`, `staticText`,
+   `element`, `array`, `arrayBy`, `indexedArray`, `match`, `dynamic`,
+   `optional`, `fragment`, `component`, `compiled`, `compiledState`,
+   and `wrapChannel`. None of these fall back to the
+   `cellToUpdateStream` bridge anymore.
+5. **Per-branch / per-row Var pattern.** Sub-trees that need to see
+   only a focused slice of the model (a `match` branch, an `optional`
+   sub-model, an `indexedArray` slot, an `array` row) get their own
+   `Var`. The parent observer writes into that `Var`; the child's
+   `attachCell` observes it. This preserves the filtering invariant
+   the legacy UpdateStream path relied on without re-introducing a
+   second bridge.
+
+What is intentionally still UpdateStream-based:
+
+- **`SDOMWithChannel.attach`.** The channel-flavored sibling of
+  `SDOM.attach` used internally by the keyed array reconciler and
+  by `wrapChannel`'s inner. It still consumes an `UpdateStream`
+  because the merged-stream semantics it requires (outer model
+  updates merged with locally-applied channel-event transforms)
+  do not have a clean Cell-native counterpart yet. `wrapChannel`
+  itself observes the outer cell directly; it just bridges to an
+  internal `UpdateStream` to feed the inner.
+
+What's deferred:
+
+- **`SDOMWithChannel.attachCell`.** Adding a Cell-native variant to
+  the channel-flavored interface would let `wrapChannel` and the
+  array reconciler stop allocating the inner merged-stream observer
+  set. Tractable but mechanically large; revisit if a profile points
+  here.
+- **Re-running krausest.** The per-row mount path is the same shape
+  as before, so the create benchmarks should be unchanged. Point
+  updates (`03_update`, `05_swap1k`) are the ones to re-measure
+  once the dust settles.
+
 ## Layering
 
 The two directions are orthogonal and can be done independently:
@@ -418,15 +475,11 @@ updates. Both layers stay fully compatible with the sdom model.
 
 ## Recommendation
 
-If the goal is benchmark numbers (and it is, near-term), do Direction 1
-first and skip the graph rewrite. Build-time codegen via the Vite plugin
-is the highest-ROI path, closes the 1.3-1.6x create-path gap, and is
-strictly additive to today's runtime.
-
-If the goal is the right architecture for an optics-first sdom library,
-the Incremental approach is the principled answer and worth doing for
-that reason alone. It happens to also let us delete some code. It will
-not move the create benchmarks much without codegen on top.
+Direction 2 has landed. The remaining ROI for benchmark numbers is
+Direction 1: build-time codegen via the Vite plugin. It targets the
+per-row template instantiation cost, which is the dominant remaining
+gap to the VDOM peers on the create benchmarks and which the graph
+rewrite, by design, does not move.
 
 ## What we explicitly will not do
 
