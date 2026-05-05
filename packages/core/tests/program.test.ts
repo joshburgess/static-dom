@@ -2,10 +2,14 @@ import { describe, it, expect, afterEach } from "vitest"
 import { element, text } from "../src/constructors"
 import {
   attachToCell,
+  elmProgramFromVar,
   noCmd,
   program,
   programFromVar,
+  programWithDeltaFromVar,
   programWithEffects,
+  programWithEffectsFromVar,
+  programWithSubFromVar,
   type Cmd,
 } from "../src/program"
 import type { ProgramHandle } from "../src/program"
@@ -219,6 +223,81 @@ describe("programFromVar", () => {
     // External writes to the Var also flow through.
     v.set({ count: 99 })
     expect(container.querySelector("div")!.textContent).toBe("99")
+  })
+
+  it("programWithEffectsFromVar runs init Cmd against the caller-supplied Var", () => {
+    const v = makeVar({ n: 0 })
+    handle = programWithEffectsFromVar({
+      container: freshContainer(),
+      modelVar: v,
+      initCmd: (dispatch) => dispatch("from-init"),
+      update: (_msg: string, m): [{ n: number }, Cmd<string>] => [
+        { n: m.n + 1 },
+        noCmd(),
+      ],
+      view: element<"div", { n: number }, string>("div", {}, [
+        text(m => String(m.n)),
+      ]),
+    })
+    expect(v.value).toEqual({ n: 1 })
+    expect(container.querySelector("div")!.textContent).toBe("1")
+  })
+
+  it("programWithSubFromVar wires subscriptions and the caller-supplied Var", () => {
+    const v = makeVar({ n: 0 })
+    handle = programWithSubFromVar({
+      container: freshContainer(),
+      modelVar: v,
+      update: (_msg: "tick", m) => ({ n: m.n + 1 }),
+      view: element<"div", { n: number }, "tick">("div", {}, [
+        text(m => String(m.n)),
+      ]),
+      subscriptions: () => [],
+    })
+    handle.dispatch("tick")
+    expect(v.value).toEqual({ n: 1 })
+    expect(container.querySelector("div")!.textContent).toBe("1")
+  })
+
+  it("programWithDeltaFromVar mounts and dispatches off a caller-supplied Var", () => {
+    const v = makeVar({ n: 0 })
+    handle = programWithDeltaFromVar({
+      container: freshContainer(),
+      modelVar: v,
+      update: (_msg: "inc", m) => [{ n: m.n + 1 }, undefined],
+      view: element<"div", { n: number }, "inc">("div", {}, [
+        text(m => String(m.n)),
+      ]),
+    })
+    expect(container.querySelector("div")!.textContent).toBe("0")
+    handle.dispatch("inc")
+    expect(container.querySelector("div")!.textContent).toBe("1")
+    expect(handle.getModel()).toEqual({ n: 1 })
+  })
+
+  it("elmProgramFromVar runs init Cmd, dispatches, and uses the caller's Var", () => {
+    const v = makeVar({ n: 0 })
+    const subKeys: string[] = []
+    handle = elmProgramFromVar({
+      container: freshContainer(),
+      modelVar: v,
+      initCmd: (dispatch) => dispatch("boot"),
+      update: (_msg: string, m): [{ n: number }, Cmd<string>] => [
+        { n: m.n + 1 },
+        noCmd(),
+      ],
+      view: element<"div", { n: number }, string>("div", {}, [
+        text(m => String(m.n)),
+      ]),
+      subscriptions: (m) => {
+        subKeys.push(`call@${m.n}`)
+        return []
+      },
+    })
+    expect(v.value).toEqual({ n: 1 })
+    expect(container.querySelector("div")!.textContent).toBe("1")
+    // Subscriptions called once at mount and once after the boot dispatch.
+    expect(subKeys).toEqual(["call@1", "call@1"])
   })
 
   it("supports mounting two views against focused slices of one Var", () => {

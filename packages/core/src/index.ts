@@ -174,8 +174,18 @@ export { liftGetter, liftLens, liftPrism, liftAffine, liftFold, focusVar, bindPr
 export { text, staticText, element, array, arrayBy, indexedArray, optional, match, dynamic, component, compiled, compiledState, fragment, wrapChannel, lis } from "./constructors"
 
 // Program runners
-export type { ProgramConfig, ProgramHandle, EffectProgramConfig, DeltaProgramConfig, SubProgramConfig, ElmProgramConfig, VarProgramConfig, Cmd } from "./program"
-export { program, programWithEffects, programWithDelta, programWithSub, elmProgram, programFromVar, attachToCell, noCmd, batchCmd } from "./program"
+export type {
+  ProgramConfig, ProgramHandle, Cmd,
+  EffectProgramConfig, DeltaProgramConfig, SubProgramConfig, ElmProgramConfig,
+  VarProgramConfig, VarEffectProgramConfig, VarDeltaProgramConfig,
+  VarSubProgramConfig, VarElmProgramConfig,
+} from "./program"
+export {
+  program, programWithEffects, programWithDelta, programWithSub, elmProgram,
+  programFromVar, programWithEffectsFromVar, programWithDeltaFromVar,
+  programWithSubFromVar, elmProgramFromVar,
+  attachToCell, noCmd, batchCmd,
+} from "./program"
 
 // Subscriptions (Elm-style)
 export type { Sub } from "./subscription"
