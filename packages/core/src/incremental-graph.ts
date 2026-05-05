@@ -244,6 +244,44 @@ function enqueueDirty(n: InternalNode<unknown>): void {
   if (n.height > dirtyMaxHeight) dirtyMaxHeight = n.height
 }
 
+/**
+ * Lift a node's height to at least `newHeight`, cascading the bump to its
+ * dependents. Used by `bindCell` when the inner cell it wires in has a
+ * height greater than or equal to the bind node's current height: the
+ * topo-order invariant requires bind to sit strictly above its inner, and
+ * everything reading bind has to step up too.
+ *
+ * Dirty nodes get relocated to their new bucket. Since dependents are
+ * always strictly above their parents, a bumped dependent's new bucket is
+ * always at a height greater than the one currently being swept, so the
+ * relocation is guaranteed to land in a bucket the sweep has not yet
+ * reached.
+ */
+function bumpHeight(n: InternalNode<unknown>, newHeight: number): void {
+  if (newHeight <= n.height) return
+  const oldHeight = n.height
+  n.height = newHeight
+  if (n.dirty) {
+    const oldBucket = dirtyBuckets[oldHeight]
+    if (oldBucket !== undefined) oldBucket.delete(n)
+    let newBucket = dirtyBuckets[newHeight]
+    if (newBucket === undefined) {
+      newBucket = new Set()
+      dirtyBuckets[newHeight] = newBucket
+    }
+    newBucket.add(n)
+    if (newHeight > dirtyMaxHeight) dirtyMaxHeight = newHeight
+  }
+  const first = n.dependentsFirst
+  if (first !== null) {
+    bumpHeight(first, newHeight + 1)
+    const rest = n.dependentsRest
+    if (rest !== null) {
+      for (const d of rest) bumpHeight(d, newHeight + 1)
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -413,6 +451,88 @@ export function mapCell3<A, B, C, D>(
     },
     _internal: internal,
   } as Cell<D>
+}
+
+/**
+ * Dynamic graph reshaping (the `bind` of self-adjusting computation).
+ *
+ * `bindCell(parent, f)` returns a cell whose *structure* depends on
+ * `parent.value`: every recompute calls `f(parent.value)` to obtain an
+ * inner `Cell<B>`, and the bind node tracks that inner cell's value. When
+ * `f` returns a different inner across recomputes, the bind detaches from
+ * the old inner and attaches to the new one. When the same inner's value
+ * changes, the bind picks it up directly because the inner is wired in as
+ * a graph parent.
+ *
+ * Height is `max(parent.height, inner.height) + 1`. If a freshly-wired
+ * inner is at or above the bind's current height, the bind bumps its own
+ * height (and that of every transitive dependent) to preserve the topo
+ * invariant `parent.height < dependent.height`.
+ *
+ * Caveats:
+ *
+ *   - `f` is re-run on every recompute, including ones triggered by inner
+ *     changes only. Memoize an expensive `f` at the call site if needed.
+ *   - The bind does not own cells produced by `f` and does not dispose
+ *     them on swap. For lifts that allocate fresh subgraphs per call,
+ *     wrap the inner cell with caller-side disposal until the graph
+ *     grows scope tracking.
+ */
+export function bindCell<A, B>(
+  parent: Cell<A>,
+  f: (a: A) => Cell<B>,
+  eq: (a: B, b: B) => boolean = defaultEq,
+): Cell<B> {
+  const lhs = parent._internal as InternalNode<unknown>
+  let currentInner: InternalNode<unknown> | null = null
+
+  let internal!: InternalNode<B>
+  const recompute = (): B => {
+    const newInner = f(lhs.value as A)._internal as InternalNode<unknown>
+    if (newInner !== currentInner) {
+      const self = internal as unknown as InternalNode<unknown>
+      if (currentInner !== null) {
+        removeDependent(currentInner, self)
+      }
+      addDependent(newInner, self)
+      const parents = internal.parents
+      if (parents !== null) {
+        if (parents.length === 1) parents.push(newInner)
+        else parents[1] = newInner
+      }
+      currentInner = newInner
+      if (newInner.height >= internal.height) {
+        bumpHeight(self, newInner.height + 1)
+      }
+    }
+    return newInner.value as B
+  }
+
+  internal = {
+    id: nextId++,
+    value: undefined as unknown as B,
+    height: lhs.height + 1,
+    dirty: false,
+    parents: [lhs],
+    dependentsFirst: null,
+    dependentsRest: null,
+    observersFirst: null,
+    observersRest: null,
+    recompute,
+    eq,
+  }
+  addDependent(lhs, internal as unknown as InternalNode<unknown>)
+  internal.value = recompute()
+  return {
+    get value() {
+      return internal.value
+    },
+    observe(observer: (value: B) => void): Unsubscribe {
+      addObserver(internal, observer)
+      return () => removeObserver(internal, observer)
+    },
+    _internal: internal,
+  } as Cell<B>
 }
 
 /**

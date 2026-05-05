@@ -156,6 +156,7 @@ export {
   mapCell,
   mapCell2,
   mapCell3,
+  bindCell,
   batch,
   stabilize,
   disposeCell,

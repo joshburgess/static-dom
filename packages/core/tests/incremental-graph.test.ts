@@ -4,6 +4,7 @@ import {
   mapCell,
   mapCell2,
   mapCell3,
+  bindCell,
   batch,
   stabilize,
   disposeCell,
@@ -187,6 +188,90 @@ describe("incremental-graph", () => {
     v.set(5)
     // doubled is detached — value frozen at last computed value
     expect(doubled.value).toBe(2)
+  })
+
+  it("bindCell switches the inner cell based on the parent's value", () => {
+    const left = makeVar("L")
+    const right = makeVar("R")
+    const choice = makeVar<"left" | "right">("left")
+    const result = bindCell(choice, (c) => (c === "left" ? left : right))
+    expect(result.value).toBe("L")
+    choice.set("right")
+    expect(result.value).toBe("R")
+    choice.set("left")
+    expect(result.value).toBe("L")
+  })
+
+  it("bindCell tracks the current inner cell's value updates", () => {
+    const a = makeVar("a1")
+    const b = makeVar("b1")
+    const choice = makeVar<"a" | "b">("a")
+    const result = bindCell(choice, (c) => (c === "a" ? a : b))
+    expect(result.value).toBe("a1")
+    a.set("a2")
+    expect(result.value).toBe("a2")
+    choice.set("b")
+    expect(result.value).toBe("b1")
+    b.set("b2")
+    expect(result.value).toBe("b2")
+    a.set("a3")
+    // After switching away, updates to the previous inner do not leak in.
+    expect(result.value).toBe("b2")
+  })
+
+  it("bindCell uses cutoff to suppress same-value switches", () => {
+    const a = makeVar(1)
+    const b = makeVar(1)
+    const choice = makeVar<"a" | "b">("a")
+    const result = bindCell(choice, (c) => (c === "a" ? a : b))
+    const obs = vi.fn()
+    result.observe(obs)
+    choice.set("b")
+    expect(obs).not.toHaveBeenCalled()
+    b.set(2)
+    expect(obs).toHaveBeenCalledTimes(1)
+    expect(obs).toHaveBeenCalledWith(2)
+  })
+
+  it("bindCell bumps its height when wired to a deeper inner", () => {
+    const root = makeVar(1)
+    const a1 = mapCell(root, (x) => x + 1)
+    const a2 = mapCell(a1, (x) => x + 10)
+    const a3 = mapCell(a2, (x) => x + 100)
+    const choice = makeVar<"shallow" | "deep">("shallow")
+    const result = bindCell(choice, (c) => (c === "shallow" ? a1 : a3))
+    expect(result.value).toBe(2)
+    choice.set("deep")
+    expect(result.value).toBe(112)
+    // Updating root must propagate through the chain before result settles.
+    root.set(10)
+    expect(result.value).toBe(121)
+  })
+
+  it("bindCell propagates correctly through a downstream cell across switches", () => {
+    const a = makeVar(10)
+    const b = makeVar(20)
+    const choice = makeVar<"a" | "b">("a")
+    const inner = bindCell(choice, (c) => (c === "a" ? a : b))
+    const doubled = mapCell(inner, (x) => x * 2)
+    expect(doubled.value).toBe(20)
+    choice.set("b")
+    expect(doubled.value).toBe(40)
+    b.set(30)
+    expect(doubled.value).toBe(60)
+  })
+
+  it("disposeCell on a bind cell detaches it from both parent and current inner", () => {
+    const a = makeVar(10)
+    const b = makeVar(20)
+    const choice = makeVar<"a" | "b">("a")
+    const result = bindCell(choice, (c) => (c === "a" ? a : b))
+    expect(result.value).toBe(10)
+    disposeCell(result)
+    choice.set("b")
+    expect(result.value).toBe(10)
+    a.set(99)
+    expect(result.value).toBe(10)
   })
 
   it("custom eq on mapCell cuts off based on a domain notion of equality", () => {
