@@ -1045,27 +1045,50 @@ export function component<Model, Msg = never>(
     teardown: () => void
   }
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const el = document.createElement("div")
-    parent.appendChild(el)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const el = document.createElement("div")
+      parent.appendChild(el)
 
-    const instance = guard("attach", "component setup", () =>
-      setup(el, initialModel, dispatch),
-      { update: () => {}, teardown: () => {} }
-    )
+      const instance = guard("attach", "component setup", () =>
+        setup(el, initialModel, dispatch),
+        { update: () => {}, teardown: () => {} }
+      )
 
-    const unsub = updates.subscribe(({ next }) => {
-      guard("update", "component update", () => { instance.update(next) }, undefined)
-    })
+      const unsub = updates.subscribe(({ next }) => {
+        guard("update", "component update", () => { instance.update(next) }, undefined)
+      })
 
-    return {
-      teardown() {
-        unsub()
-        instance.teardown()
-        el.remove()
-      },
-    }
-  })
+      return {
+        teardown() {
+          unsub()
+          instance.teardown()
+          el.remove()
+        },
+      }
+    },
+    (parent, cell, dispatch) => {
+      const el = document.createElement("div")
+      parent.appendChild(el)
+
+      const instance = guard("attach", "component setup", () =>
+        setup(el, cell.value, dispatch),
+        { update: () => {}, teardown: () => {} }
+      )
+
+      const unsub = cell.observe((next) => {
+        guard("update", "component update", () => { instance.update(next) }, undefined)
+      })
+
+      return {
+        teardown() {
+          unsub()
+          instance.teardown()
+          el.remove()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,18 +1160,35 @@ export type CompiledSetup<Model, Msg> = (
 export function compiled<Model, Msg>(
   setup: CompiledSetup<Model, Msg>,
 ): SDOM<Model, Msg> {
-  const sdom = makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const instance = setup(parent, initialModel, dispatch)
-    const unsub = updates.subscribe(({ prev, next }) => {
-      instance.update(prev, next)
-    })
-    return {
-      teardown() {
-        unsub()
-        instance.teardown()
-      },
-    }
-  })
+  const sdom = makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const instance = setup(parent, initialModel, dispatch)
+      const unsub = updates.subscribe(({ prev, next }) => {
+        instance.update(prev, next)
+      })
+      return {
+        teardown() {
+          unsub()
+          instance.teardown()
+        },
+      }
+    },
+    (parent, cell, dispatch) => {
+      const initialModel = cell.value
+      const instance = setup(parent, initialModel, dispatch)
+      let prev = initialModel
+      const unsub = cell.observe((next) => {
+        instance.update(prev, next)
+        prev = next
+      })
+      return {
+        teardown() {
+          unsub()
+          instance.teardown()
+        },
+      }
+    },
+  )
   ;(sdom as unknown as { [__SDOM_COMPILED_SETUP__]: CompiledSetup<Model, Msg> })[
     __SDOM_COMPILED_SETUP__
   ] = setup
@@ -1186,18 +1226,35 @@ export interface CompiledStateSpec<Model, Msg, State> {
 export function compiledState<Model, Msg, State extends object>(
   spec: CompiledStateSpec<Model, Msg, State>,
 ): SDOM<Model, Msg> {
-  const sdom = makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const state = spec.setup(parent, initialModel, dispatch)
-    const unsub = updates.subscribe(({ prev, next }) => {
-      spec.update(state, prev, next)
-    })
-    return {
-      teardown() {
-        unsub()
-        spec.teardown(state)
-      },
-    }
-  })
+  const sdom = makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const state = spec.setup(parent, initialModel, dispatch)
+      const unsub = updates.subscribe(({ prev, next }) => {
+        spec.update(state, prev, next)
+      })
+      return {
+        teardown() {
+          unsub()
+          spec.teardown(state)
+        },
+      }
+    },
+    (parent, cell, dispatch) => {
+      const initialModel = cell.value
+      const state = spec.setup(parent, initialModel, dispatch)
+      let prev = initialModel
+      const unsub = cell.observe((next) => {
+        spec.update(state, prev, next)
+        prev = next
+      })
+      return {
+        teardown() {
+          unsub()
+          spec.teardown(state)
+        },
+      }
+    },
+  )
   ;(sdom as unknown as { [__SDOM_COMPILED_STATE__]: CompiledStateSpec<Model, Msg, State> })[
     __SDOM_COMPILED_STATE__
   ] = spec

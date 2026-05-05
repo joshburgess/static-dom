@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { component, compiled, fragment, wrapChannel, text, element } from "../src/constructors"
-import { makeSDOM, type ChannelEvent, type SDOMWithChannel, type SDOM } from "../src/types"
+import { component, compiled, compiledState, fragment, wrapChannel, text, element } from "../src/constructors"
+import { makeSDOM, type ChannelEvent, type SDOMWithChannel, type SDOM, type Teardown } from "../src/types"
+import { attachToCell } from "../src/program"
+import { makeVar } from "../src/incremental-graph"
 import { mount, cleanup, type TestHarness } from "./helpers"
 import type { Dispatcher, Observer, Update, UpdateStream } from "../src/observable"
 
@@ -89,6 +91,46 @@ describe("component", () => {
     // Prevent double-teardown in afterEach
     h.container.remove()
     h = undefined as any
+  })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    it("invokes update with each new model and tears down cleanly", () => {
+      const updates: string[] = []
+      let tornDown = false
+      const sdom = component<string, never>((el, model, _dispatch) => {
+        el.textContent = model
+        return {
+          update: (next: string) => {
+            updates.push(next)
+            el.textContent = next
+          },
+          teardown: () => { tornDown = true },
+        }
+      })
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar("first")
+      td = attachToCell(container, sdom, v, () => {})
+      expect(container.querySelector("div")!.textContent).toBe("first")
+
+      v.set("second")
+      v.set("third")
+      expect(updates).toEqual(["second", "third"])
+      expect(container.querySelector("div")!.textContent).toBe("third")
+
+      td.teardown()
+      td = null
+      expect(tornDown).toBe(true)
+      expect(container.querySelector("div")).toBeNull()
+    })
   })
 })
 
@@ -181,6 +223,173 @@ describe("compiled", () => {
 
     h.container.remove()
     h = undefined as any
+  })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    it("invokes update with (prev, next) across cell sets and tears down cleanly", () => {
+      const received: Array<{ prev: string; next: string }> = []
+      let tornDown = false
+      const sdom = compiled<string, never>((parent, model, _dispatch) => {
+        const span = document.createElement("span")
+        span.textContent = model
+        parent.appendChild(span)
+        return {
+          update: (prev, next) => {
+            received.push({ prev, next })
+            span.textContent = next
+          },
+          teardown: () => {
+            tornDown = true
+            span.remove()
+          },
+        }
+      })
+
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar("a")
+      td = attachToCell(container, sdom, v, () => {})
+      expect(container.querySelector("span")!.textContent).toBe("a")
+
+      v.set("b")
+      v.set("c")
+      expect(received).toEqual([
+        { prev: "a", next: "b" },
+        { prev: "b", next: "c" },
+      ])
+      expect(container.querySelector("span")!.textContent).toBe("c")
+
+      td.teardown()
+      td = null
+      expect(tornDown).toBe(true)
+      expect(container.querySelector("span")).toBeNull()
+    })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// compiledState
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("compiledState", () => {
+  it("calls setup with parent and initial model, calls update with (prev, next)", () => {
+    interface State { node: Text }
+    const received: Array<{ prev: string; next: string }> = []
+    const sdom = compiledState<string, never, State>({
+      setup: (parent, model, _dispatch) => {
+        const node = document.createTextNode(model)
+        parent.appendChild(node)
+        return { node }
+      },
+      update: (state, prev, next) => {
+        received.push({ prev, next })
+        state.node.textContent = next
+      },
+      teardown: (state) => {
+        state.node.remove()
+      },
+    })
+
+    h = mount(sdom, "a")
+    expect(h.container.textContent).toBe("a")
+
+    h.set("b")
+    h.set("c")
+    expect(received).toEqual([
+      { prev: "a", next: "b" },
+      { prev: "b", next: "c" },
+    ])
+    expect(h.container.textContent).toBe("c")
+  })
+
+  it("cleans up on teardown", () => {
+    interface State { node: Text; tornDown: boolean }
+    let tornDownState: State | null = null
+    const sdom = compiledState<string, never, State>({
+      setup: (parent, model, _dispatch) => {
+        const node = document.createTextNode(model)
+        parent.appendChild(node)
+        const s: State = { node, tornDown: false }
+        return s
+      },
+      update: (state, _prev, next) => {
+        state.node.textContent = next
+      },
+      teardown: (state) => {
+        state.tornDown = true
+        state.node.remove()
+        tornDownState = state
+      },
+    })
+
+    h = mount(sdom, "init")
+    expect(h.container.textContent).toBe("init")
+
+    h.teardown.teardown()
+    expect(tornDownState).not.toBeNull()
+    expect(tornDownState!.tornDown).toBe(true)
+    expect(h.container.textContent).toBe("")
+
+    h.container.remove()
+    h = undefined as any
+  })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    it("threads prev/next through update under a cell mount", () => {
+      interface State { node: Text }
+      const received: Array<{ prev: string; next: string }> = []
+      let tornDown = false
+      const sdom = compiledState<string, never, State>({
+        setup: (parent, model, _dispatch) => {
+          const node = document.createTextNode(model)
+          parent.appendChild(node)
+          return { node }
+        },
+        update: (state, prev, next) => {
+          received.push({ prev, next })
+          state.node.textContent = next
+        },
+        teardown: (state) => {
+          tornDown = true
+          state.node.remove()
+        },
+      })
+
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar("a")
+      td = attachToCell(container, sdom, v, () => {})
+      expect(container.textContent).toBe("a")
+
+      v.set("b")
+      v.set("c")
+      expect(received).toEqual([
+        { prev: "a", next: "b" },
+        { prev: "b", next: "c" },
+      ])
+      expect(container.textContent).toBe("c")
+
+      td.teardown()
+      td = null
+      expect(tornDown).toBe(true)
+      expect(container.textContent).toBe("")
+    })
   })
 })
 
