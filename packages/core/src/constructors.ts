@@ -165,41 +165,76 @@ interface IUpdater<M> { run(prev: M, next: M): void }
  * @param value  Function from model to text content.
  */
 export function text<Model>(value: (model: Model) => string): SDOM<Model, never> {
-  return makeSDOM<Model, never>((parent, initialModel, updates, _dispatch) => {
-    let lastText = guardApply("attach", "text derive", value, initialModel, "")
-    const node = document.createTextNode(lastText)
-    parent.appendChild(node)
+  return makeSDOM<Model, never>(
+    (parent, initialModel, updates, _dispatch) => {
+      let lastText = guardApply("attach", "text derive", value, initialModel, "")
+      const node = document.createTextNode(lastText)
+      parent.appendChild(node)
 
-    const checkShape = validateModelShape("text", initialModel)
-    const unsub = updates.subscribe(({ next }) => {
-      checkShape(next)
-      const nextText = __SDOM_GUARD__
-        ? guard("update", "text derive", () => value(next), "")
-        : value(next)
-      if (nextText !== lastText) {
-        lastText = nextText
-        node.textContent = nextText
+      const checkShape = validateModelShape("text", initialModel)
+      const unsub = updates.subscribe(({ next }) => {
+        checkShape(next)
+        const nextText = __SDOM_GUARD__
+          ? guard("update", "text derive", () => value(next), "")
+          : value(next)
+        if (nextText !== lastText) {
+          lastText = nextText
+          node.textContent = nextText
+        }
+      })
+
+      return {
+        teardown() {
+          unsub()
+          node.remove()
+        },
       }
-    })
+    },
+    // Cell-native fast path: skip the UpdateStream bridge.
+    (parent, cell, _dispatch) => {
+      const initialModel = cell.value
+      let lastText = guardApply("attach", "text derive", value, initialModel, "")
+      const node = document.createTextNode(lastText)
+      parent.appendChild(node)
 
-    return {
-      teardown() {
-        unsub()
-        node.remove()
-      },
-    }
-  })
+      const checkShape = validateModelShape("text", initialModel)
+      const unsub = cell.observe((next) => {
+        checkShape(next)
+        const nextText = __SDOM_GUARD__
+          ? guard("update", "text derive", () => value(next), "")
+          : value(next)
+        if (nextText !== lastText) {
+          lastText = nextText
+          node.textContent = nextText
+        }
+      })
+
+      return {
+        teardown() {
+          unsub()
+          node.remove()
+        },
+      }
+    },
+  )
 }
 
 /**
  * A static text node — no model dependency.
  */
 export function staticText(content: string): SDOM<unknown, never> {
-  return makeSDOM<unknown, never>((parent, _m, _u, _d) => {
-    const node = document.createTextNode(content)
-    parent.appendChild(node)
-    return { teardown: () => node.remove() }
-  })
+  return makeSDOM<unknown, never>(
+    (parent, _m, _u, _d) => {
+      const node = document.createTextNode(content)
+      parent.appendChild(node)
+      return { teardown: () => node.remove() }
+    },
+    (parent, _cell, _d) => {
+      const node = document.createTextNode(content)
+      parent.appendChild(node)
+      return { teardown: () => node.remove() }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -241,125 +276,177 @@ export function element<
   const HAS_ATTRS = attrList.length > 0
   const HAS_CHILDREN = children.length > 0
 
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
+  // Shared setup that's identical between the UpdateStream and Cell paths.
+  // Returns the element, its updaters, event teardowns, and shape check.
+  // The caller wires the appropriate observer source.
+  function buildElement(initialModel: Model, dispatch: Dispatcher<Msg>) {
     const el = document.createElement(tag) as HTMLElementTagNameMap[Tag] & Element
-
-    let childTeardowns: Teardown[] | null = null
     const checkShape = validateModelShape(`element<"${tag}">`, initialModel)
-
-    // ── Attr setup ──
-    // Prototype-based updater classes (from Most.js): each class has a stable
-    // hidden class and a prototype `run` method, giving V8 monomorphic dispatch
-    // within each updater type instead of megamorphic closure calls.
-    // Bitwise flag HAS_ATTRS gates the entire loop — skip for static elements.
     let attrUpdaters: IUpdater<Model>[] | null = null
     let eventTeardowns: Array<() => void> | null = null
 
     if (HAS_ATTRS) {
-    attrUpdaters = []
-    eventTeardowns = []
+      attrUpdaters = []
+      eventTeardowns = []
 
-    for (const rawAttr of attrList) {
-      const attr = rawAttr as SDOMAttr<Model, Msg>
-      switch (attr.kind) {
-        case "string": {
-          const initial = guardApply("attach", `attr "${attr.name}"`, attr.value, initialModel, "")
-          const propName = ATTR_TO_PROP[attr.name]
-          if (propName) {
-            // Direct property assignment — 2–5× faster than setAttribute
-            attrUpdaters.push(new PropUpdater<Model>(el, propName, `attr "${attr.name}"`, attr.value, "", initial))
-          } else {
-            attrUpdaters.push(new StringAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
+      for (const rawAttr of attrList) {
+        const attr = rawAttr as SDOMAttr<Model, Msg>
+        switch (attr.kind) {
+          case "string": {
+            const initial = guardApply("attach", `attr "${attr.name}"`, attr.value, initialModel, "")
+            const propName = ATTR_TO_PROP[attr.name]
+            if (propName) {
+              attrUpdaters.push(new PropUpdater<Model>(el, propName, `attr "${attr.name}"`, attr.value, "", initial))
+            } else {
+              attrUpdaters.push(new StringAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
+            }
+            break
           }
-          break
-        }
-        case "bool": {
-          const initial = guardApply("attach", `attr "${attr.name}"`, attr.value, initialModel, false)
-          attrUpdaters.push(new BoolAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
-          break
-        }
-        case "prop": {
-          const initial = guardApply("attach", `prop "${attr.name}"`, attr.value, initialModel, "")
-          attrUpdaters.push(new PropUpdater<Model>(el, attr.name, `prop "${attr.name}"`, attr.value, "", initial))
-          break
-        }
-        case "style": {
-          const initial = guardApply("attach", `style "${attr.property}"`, attr.value, initialModel, "")
-          attrUpdaters.push(new StyleUpdater<Model>(el as HTMLElement, attr.property, `style "${attr.property}"`, attr.value, initial))
-          break
-        }
-        case "classMap": {
-          const initial = guardApply("attach", "classMap", attr.map, initialModel, EMPTY_CLASS_MAP)
-          attrUpdaters.push(new ClassMapUpdater<Model>(el, attr.map, initial))
-          break
-        }
-        case "event": {
-          const ref = { current: initialModel }
-          const evtHandler = attr.handler
-          const name = attr.name
-          const handler = (event: Event) => {
-            const msg = __SDOM_GUARD__
-              ? guard("event", `on "${name}"`, () => evtHandler(event, ref.current), null)
-              : evtHandler(event, ref.current)
-            if (msg !== null) dispatch(msg)
+          case "bool": {
+            const initial = guardApply("attach", `attr "${attr.name}"`, attr.value, initialModel, false)
+            attrUpdaters.push(new BoolAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
+            break
           }
-          attrUpdaters.push(new EventRefUpdater<Model>(ref))
-          const cleanup = registerEvent(el, name, handler)
-          if (cleanup !== null) eventTeardowns.push(cleanup)
-          break
+          case "prop": {
+            const initial = guardApply("attach", `prop "${attr.name}"`, attr.value, initialModel, "")
+            attrUpdaters.push(new PropUpdater<Model>(el, attr.name, `prop "${attr.name}"`, attr.value, "", initial))
+            break
+          }
+          case "style": {
+            const initial = guardApply("attach", `style "${attr.property}"`, attr.value, initialModel, "")
+            attrUpdaters.push(new StyleUpdater<Model>(el as HTMLElement, attr.property, `style "${attr.property}"`, attr.value, initial))
+            break
+          }
+          case "classMap": {
+            const initial = guardApply("attach", "classMap", attr.map, initialModel, EMPTY_CLASS_MAP)
+            attrUpdaters.push(new ClassMapUpdater<Model>(el, attr.map, initial))
+            break
+          }
+          case "event": {
+            const ref = { current: initialModel }
+            const evtHandler = attr.handler
+            const name = attr.name
+            const handler = (event: Event) => {
+              const msg = __SDOM_GUARD__
+                ? guard("event", `on "${name}"`, () => evtHandler(event, ref.current), null)
+                : evtHandler(event, ref.current)
+              if (msg !== null) dispatch(msg)
+            }
+            attrUpdaters.push(new EventRefUpdater<Model>(ref))
+            const cleanup = registerEvent(el, name, handler)
+            if (cleanup !== null) eventTeardowns.push(cleanup)
+            break
+          }
         }
       }
     }
-    } // end if (HAS_ATTRS)
 
-    // ── Single subscription for all attrs ──
-    // One observer callback runs all updaters in a tight loop.
-    let attrUnsub: (() => void) | null = null
-    if (attrUpdaters !== null) {
-      const updaters = attrUpdaters
-      const nUpdaters = updaters.length
-      if (nUpdaters > 0) {
-        attrUnsub = updates.subscribe(({ prev, next }) => {
-          if (__SDOM_DEV__) checkShape(next)
-          for (let i = 0; i < nUpdaters; i++) {
-            updaters[i]!.run(prev, next)
-          }
-        })
+    return { el, attrUpdaters, eventTeardowns, checkShape }
+  }
+
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const { el, attrUpdaters, eventTeardowns, checkShape } = buildElement(initialModel, dispatch)
+      let childTeardowns: Teardown[] | null = null
+
+      // ── Single subscription for all attrs ──
+      let attrUnsub: (() => void) | null = null
+      if (attrUpdaters !== null) {
+        const updaters = attrUpdaters
+        const nUpdaters = updaters.length
+        if (nUpdaters > 0) {
+          attrUnsub = updates.subscribe(({ prev, next }) => {
+            if (__SDOM_DEV__) checkShape(next)
+            for (let i = 0; i < nUpdaters; i++) {
+              updaters[i]!.run(prev, next)
+            }
+          })
+        }
       }
-    }
 
-    // ── Children ──
-    // Bitwise flag HAS_CHILDREN gates child mount — skip for leaf elements.
-    // Inline try/catch avoids closure allocation from guard() per child.
-    if (HAS_CHILDREN) {
-      childTeardowns = []
-      if (__SDOM_GUARD__) {
-        for (let i = 0; i < children.length; i++) {
-          try {
+      if (HAS_CHILDREN) {
+        childTeardowns = []
+        if (__SDOM_GUARD__) {
+          for (let i = 0; i < children.length; i++) {
+            try {
+              childTeardowns.push(children[i]!.attach(el, initialModel, updates, dispatch))
+            } catch (error) {
+              getErrorHandler()({ error, phase: "attach", context: `element<${tag}> child[${i}]` })
+              childTeardowns.push({ teardown() {} })
+            }
+          }
+        } else {
+          for (let i = 0; i < children.length; i++) {
             childTeardowns.push(children[i]!.attach(el, initialModel, updates, dispatch))
-          } catch (error) {
-            getErrorHandler()({ error, phase: "attach", context: `element<${tag}> child[${i}]` })
-            childTeardowns.push({ teardown() {} })
           }
         }
-      } else {
-        for (let i = 0; i < children.length; i++) {
-          childTeardowns.push(children[i]!.attach(el, initialModel, updates, dispatch))
+      }
+
+      parent.appendChild(el)
+
+      return {
+        teardown() {
+          attrUnsub?.()
+          if (eventTeardowns) eventTeardowns.forEach(fn => fn())
+          if (childTeardowns) childTeardowns.forEach(t => t.teardown())
+          el.remove()
+        },
+      }
+    },
+    // Cell-native fast path. Tracks `prev` locally so updaters keep their
+    // (prev, next) shape, but observes the cell directly — skipping the
+    // UpdateStream bridge for both this element's attrs and its children.
+    (parent, cell, dispatch) => {
+      const initialModel = cell.value
+      const { el, attrUpdaters, eventTeardowns, checkShape } = buildElement(initialModel, dispatch)
+      let childTeardowns: Teardown[] | null = null
+
+      let attrUnsub: (() => void) | null = null
+      if (attrUpdaters !== null) {
+        const updaters = attrUpdaters
+        const nUpdaters = updaters.length
+        if (nUpdaters > 0) {
+          let prev = initialModel
+          attrUnsub = cell.observe((next) => {
+            if (__SDOM_DEV__) checkShape(next)
+            for (let i = 0; i < nUpdaters; i++) {
+              updaters[i]!.run(prev, next)
+            }
+            prev = next
+          })
         }
       }
-    }
 
-    parent.appendChild(el)
+      if (HAS_CHILDREN) {
+        childTeardowns = []
+        if (__SDOM_GUARD__) {
+          for (let i = 0; i < children.length; i++) {
+            try {
+              childTeardowns.push(children[i]!.attachCell(el, cell, dispatch))
+            } catch (error) {
+              getErrorHandler()({ error, phase: "attach", context: `element<${tag}> child[${i}]` })
+              childTeardowns.push({ teardown() {} })
+            }
+          }
+        } else {
+          for (let i = 0; i < children.length; i++) {
+            childTeardowns.push(children[i]!.attachCell(el, cell, dispatch))
+          }
+        }
+      }
 
-    return {
-      teardown() {
-        attrUnsub?.()
-        if (eventTeardowns) eventTeardowns.forEach(fn => fn())
-        if (childTeardowns) childTeardowns.forEach(t => t.teardown())
-        el.remove()
-      },
-    }
-  })
+      parent.appendChild(el)
+
+      return {
+        teardown() {
+          attrUnsub?.()
+          if (eventTeardowns) eventTeardowns.forEach(fn => fn())
+          if (childTeardowns) childTeardowns.forEach(t => t.teardown())
+          el.remove()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------

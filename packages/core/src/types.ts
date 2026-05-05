@@ -49,6 +49,8 @@
  */
 
 import type { UpdateStream, Dispatcher } from "./observable"
+import type { Cell } from "./incremental-graph"
+import { cellToUpdateStream, mapCell } from "./incremental-graph"
 import type { Lens, Prism } from "./optics"
 
 // ---------------------------------------------------------------------------
@@ -257,6 +259,22 @@ export interface SDOM<Model, out Msg> {
     dispatch: Dispatcher<Msg>
   ): Teardown
 
+  /**
+   * Cell-native mount. Equivalent to `attach`, but consumes a `Cell<Model>`
+   * directly — the cell is the single source of truth for both the
+   * initial value and the update stream. Constructors that implement
+   * this natively skip the `UpdateStream` bridge.
+   *
+   * The default implementation provided by `makeSDOM` falls back to
+   * `attach` via `cellToUpdateStream`, so every SDOM has a usable
+   * `attachCell` whether or not its constructor has been migrated.
+   */
+  attachCell(
+    parent: Element | DocumentFragment,
+    cell: Cell<Model>,
+    dispatch: Dispatcher<Msg>
+  ): Teardown
+
   // ─────────────────────────────────────────────────
   // Combinator methods — these are just shorthand for
   // the free functions in combinators.ts, added here
@@ -318,17 +336,28 @@ interface FocusFusionBrand {
 }
 
 /**
- * Internal helper: given an `attach` function, produce a full SDOM<M, Msg>
- * with all the combinator methods wired up.
+ * Internal helper: given an `attach` function (and optionally a native
+ * `attachCell`), produce a full SDOM<M, Msg> with all the combinator
+ * methods wired up.
+ *
+ * If `attachCellFn` is omitted, the returned SDOM gets a default
+ * `attachCell` that bridges to `attach` via `cellToUpdateStream`.
+ * Constructors that have a Cell-native fast path pass `attachCellFn`
+ * explicitly and skip the bridge.
  *
  * This is the only place where the combinator methods are implemented;
  * all constructors call `makeSDOM` to get the full interface.
  */
 export function makeSDOM<Model, Msg>(
-  attachFn: SDOM<Model, Msg>["attach"]
+  attachFn: SDOM<Model, Msg>["attach"],
+  attachCellFn?: SDOM<Model, Msg>["attachCell"],
 ): SDOM<Model, Msg> {
   const sdom: SDOM<Model, Msg> = {
     attach: attachFn,
+    attachCell:
+      attachCellFn ??
+      ((parent, cell, dispatch) =>
+        attachFn(parent, cell.value, cellToUpdateStream(cell), dispatch)),
 
     focus<Outer>(lensOuter: Focusable<Outer, Model>): SDOM<Outer, Msg> {
       // Focus fusion: if this SDOM was itself created by .focus() and the
@@ -344,40 +373,49 @@ export function makeSDOM<Model, Msg>(
         }
       }
 
-      const result = makeSDOM<Outer, Msg>((parent, initialOuter, outerUpdates, dispatch) => {
-        // Project updates to only fire when the focused slice changes.
-        // When a structured delta is available and the optic has getDelta,
-        // we can check whether this field changed without calling get().
-        const innerUpdates: UpdateStream<Model> = {
-          subscribe(observer) {
-            return outerUpdates.subscribe(({ prev, next, delta }) => {
-              // Fast path: if we have a delta and the optic can inspect it,
-              // check whether this slice was touched at all.
-              if (delta !== undefined && lensOuter.getDelta) {
-                const innerDelta = lensOuter.getDelta(delta)
-                if (innerDelta === undefined) {
-                  // Delta says this field didn't change — skip entirely
+      const result = makeSDOM<Outer, Msg>(
+        (parent, initialOuter, outerUpdates, dispatch) => {
+          // Project updates to only fire when the focused slice changes.
+          // When a structured delta is available and the optic has getDelta,
+          // we can check whether this field changed without calling get().
+          const innerUpdates: UpdateStream<Model> = {
+            subscribe(observer) {
+              return outerUpdates.subscribe(({ prev, next, delta }) => {
+                // Fast path: if we have a delta and the optic can inspect it,
+                // check whether this slice was touched at all.
+                if (delta !== undefined && lensOuter.getDelta) {
+                  const innerDelta = lensOuter.getDelta(delta)
+                  if (innerDelta === undefined) {
+                    // Delta says this field didn't change — skip entirely
+                    return
+                  }
+                  // Field changed — propagate with the sub-delta
+                  observer({
+                    prev: lensOuter.get(prev),
+                    next: lensOuter.get(next),
+                    delta: innerDelta,
+                  })
                   return
                 }
-                // Field changed — propagate with the sub-delta
-                observer({
-                  prev: lensOuter.get(prev),
-                  next: lensOuter.get(next),
-                  delta: innerDelta,
-                })
-                return
-              }
-              // Slow path: reference equality check
-              const prevInner = lensOuter.get(prev)
-              const nextInner = lensOuter.get(next)
-              if (prevInner !== nextInner) {
-                observer({ prev: prevInner, next: nextInner })
-              }
-            })
-          },
-        }
-        return sdom.attach(parent, lensOuter.get(initialOuter), innerUpdates, dispatch)
-      })
+                // Slow path: reference equality check
+                const prevInner = lensOuter.get(prev)
+                const nextInner = lensOuter.get(next)
+                if (prevInner !== nextInner) {
+                  observer({ prev: prevInner, next: nextInner })
+                }
+              })
+            },
+          }
+          return sdom.attach(parent, lensOuter.get(initialOuter), innerUpdates, dispatch)
+        },
+        // Cell-native: project the outer Cell through the optic with mapCell.
+        // The map's ref-equality cutoff plays the same role the UpdateStream
+        // path played: skip propagation when the focused slice is unchanged.
+        (parent, outerCell, dispatch) => {
+          const innerCell = mapCell(outerCell, (s) => lensOuter.get(s))
+          return sdom.attachCell(parent, innerCell, dispatch)
+        },
+      )
 
       // Tag the result for future fusion (only if compose is available)
       if (lensOuter.compose) {
@@ -389,46 +427,70 @@ export function makeSDOM<Model, Msg>(
     },
 
     mapMsg<Msg2>(f: (msg: Msg) => Msg2): SDOM<Model, Msg2> {
-      return makeSDOM<Model, Msg2>((parent, initialModel, updates, dispatch2) =>
-        sdom.attach(parent, initialModel, updates, msg => dispatch2(f(msg)))
+      return makeSDOM<Model, Msg2>(
+        (parent, initialModel, updates, dispatch2) =>
+          sdom.attach(parent, initialModel, updates, msg => dispatch2(f(msg))),
+        (parent, cell, dispatch2) =>
+          sdom.attachCell(parent, cell, msg => dispatch2(f(msg))),
       )
     },
 
     contramap<Outer>(f: (outer: Outer) => Model): SDOM<Outer, Msg> {
-      return makeSDOM<Outer, Msg>((parent, initialOuter, outerUpdates, dispatch) => {
-        const innerUpdates: UpdateStream<Model> = {
-          subscribe(observer) {
-            return outerUpdates.subscribe(({ prev, next }) => {
-              const prevM = f(prev)
-              const nextM = f(next)
-              if (prevM !== nextM) observer({ prev: prevM, next: nextM })
-            })
-          },
-        }
-        return sdom.attach(parent, f(initialOuter), innerUpdates, dispatch)
-      })
+      return makeSDOM<Outer, Msg>(
+        (parent, initialOuter, outerUpdates, dispatch) => {
+          const innerUpdates: UpdateStream<Model> = {
+            subscribe(observer) {
+              return outerUpdates.subscribe(({ prev, next }) => {
+                const prevM = f(prev)
+                const nextM = f(next)
+                if (prevM !== nextM) observer({ prev: prevM, next: nextM })
+              })
+            },
+          }
+          return sdom.attach(parent, f(initialOuter), innerUpdates, dispatch)
+        },
+        (parent, outerCell, dispatch) =>
+          sdom.attachCell(parent, mapCell(outerCell, f), dispatch),
+      )
     },
 
     showIf(predicate: (model: Model) => boolean): SDOM<Model, Msg> {
-      return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-        // We wrap the subtree in a span so we have a single DOM node to toggle.
-        const wrapper = document.createElement("span")
-        wrapper.style.display = predicate(initialModel) ? "" : "none"
-        parent.appendChild(wrapper)
+      return makeSDOM<Model, Msg>(
+        (parent, initialModel, updates, dispatch) => {
+          // We wrap the subtree in a span so we have a single DOM node to toggle.
+          const wrapper = document.createElement("span")
+          wrapper.style.display = predicate(initialModel) ? "" : "none"
+          parent.appendChild(wrapper)
 
-        const inner = sdom.attach(wrapper, initialModel, updates, dispatch)
+          const inner = sdom.attach(wrapper, initialModel, updates, dispatch)
 
-        const unsub = updates.subscribe(({ next }) => {
-          wrapper.style.display = predicate(next) ? "" : "none"
-        })
+          const unsub = updates.subscribe(({ next }) => {
+            wrapper.style.display = predicate(next) ? "" : "none"
+          })
 
-        return {
-          teardown() {
-            unsub()
-            inner.teardown()
-          },
-        }
-      })
+          return {
+            teardown() {
+              unsub()
+              inner.teardown()
+            },
+          }
+        },
+        (parent, cell, dispatch) => {
+          const wrapper = document.createElement("span")
+          wrapper.style.display = predicate(cell.value) ? "" : "none"
+          parent.appendChild(wrapper)
+          const inner = sdom.attachCell(wrapper, cell, dispatch)
+          const unsub = cell.observe((value) => {
+            wrapper.style.display = predicate(value) ? "" : "none"
+          })
+          return {
+            teardown() {
+              unsub()
+              inner.teardown()
+            },
+          }
+        },
+      )
     },
   }
 

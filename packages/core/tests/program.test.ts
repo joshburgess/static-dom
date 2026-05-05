@@ -186,6 +186,21 @@ describe("attachToCell", () => {
     expect(c.querySelector("div")!.textContent).toBe("20")
   })
 
+  it("propagates updates through .focus() and re-renders the focused slice", () => {
+    interface Form { name: string; email: string }
+    const c = freshContainer()
+    const stringInput = element<"div", string, never>("div", {}, [text(m => m)])
+    const focused = stringInput.focus(prop<Form>()("name"))
+    const v = makeVar<Form>({ name: "alice", email: "a@x" })
+    teardown = attachToCell(c, focused, v, () => {})
+    expect(c.querySelector("div")!.textContent).toBe("alice")
+    v.set({ name: "bob", email: "a@x" })
+    expect(c.querySelector("div")!.textContent).toBe("bob")
+    // Touching only `email` shouldn't re-render the focused slice.
+    v.set({ name: "bob", email: "a@y" })
+    expect(c.querySelector("div")!.textContent).toBe("bob")
+  })
+
   it("dispatch is wired to the caller-provided handler", () => {
     const c = freshContainer()
     const v = makeVar({ count: 0 })

@@ -22,7 +22,7 @@ import type { SDOM, Teardown } from "./types"
 import { _tryFastPatch } from "./incremental"
 import { diffSubs, type Sub } from "./subscription"
 import { createDelegator, withDelegator } from "./delegation"
-import { type Cell, type Var, makeVar, cellToUpdateStream } from "./incremental-graph"
+import { type Cell, type Var, makeVar } from "./incremental-graph"
 
 // ---------------------------------------------------------------------------
 // Program types
@@ -91,10 +91,9 @@ export function attachToCell<Model, Msg>(
   cell: Cell<Model>,
   dispatch: Dispatcher<Msg>,
 ): Teardown {
-  const updates = cellToUpdateStream(cell)
   const delegator = createDelegator(container)
   const viewTeardown = withDelegator(delegator, () =>
-    view.attach(container, cell.value, updates, dispatch))
+    view.attachCell(container, cell, dispatch))
   return {
     teardown() {
       viewTeardown.teardown()
