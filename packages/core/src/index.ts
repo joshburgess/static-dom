@@ -148,8 +148,9 @@ export { createSignal, toUpdateStream, mapUpdate, contramapDispatcher } from "./
 // Incremental computation graph (OCaml-Incremental flavor).
 // `Var` is a writable leaf cell; `Cell` is a read-only derived cell.
 // `mapCell` / `mapCell2` build derivations with diamond-correct cutoff;
-// `batch` collapses multiple sets into one stabilize sweep;
-// `cellToUpdateStream` bridges into the existing UpdateStream surface.
+// `batch` collapses multiple sets into one stabilize sweep.
+// `attachToCell` (in ./program) mounts a view directly against any Cell;
+// `cellToUpdateStream` is the lower-level bridge into the UpdateStream surface.
 export type { Cell, Var } from "./incremental-graph"
 export {
   makeVar,
@@ -173,8 +174,8 @@ export { liftGetter, liftLens, liftPrism, liftAffine, liftFold, focusVar, bindPr
 export { text, staticText, element, array, arrayBy, indexedArray, optional, match, dynamic, component, compiled, compiledState, fragment, wrapChannel, lis } from "./constructors"
 
 // Program runners
-export type { ProgramConfig, ProgramHandle, EffectProgramConfig, DeltaProgramConfig, SubProgramConfig, ElmProgramConfig, Cmd } from "./program"
-export { program, programWithEffects, programWithDelta, programWithSub, elmProgram, noCmd, batchCmd } from "./program"
+export type { ProgramConfig, ProgramHandle, EffectProgramConfig, DeltaProgramConfig, SubProgramConfig, ElmProgramConfig, VarProgramConfig, Cmd } from "./program"
+export { program, programWithEffects, programWithDelta, programWithSub, elmProgram, programFromVar, attachToCell, noCmd, batchCmd } from "./program"
 
 // Subscriptions (Elm-style)
 export type { Sub } from "./subscription"

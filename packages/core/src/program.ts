@@ -22,7 +22,7 @@ import type { SDOM, Teardown } from "./types"
 import { _tryFastPatch } from "./incremental"
 import { diffSubs, type Sub } from "./subscription"
 import { createDelegator, withDelegator } from "./delegation"
-import { makeVar, cellToUpdateStream } from "./incremental-graph"
+import { type Cell, type Var, makeVar, cellToUpdateStream } from "./incremental-graph"
 
 // ---------------------------------------------------------------------------
 // Program types
@@ -66,6 +66,44 @@ export interface ProgramHandle<Model, Msg> {
 }
 
 // ---------------------------------------------------------------------------
+// attachToCell — Cell-first mount primitive
+// ---------------------------------------------------------------------------
+
+/**
+ * Mount a view against a `Cell<Model>`. The cell is the single source of
+ * truth: the view sees the cell's current value at mount and re-renders
+ * whenever the cell's observers fire (i.e. its cutoff lets a new value
+ * through). `dispatch` handles outgoing messages — typically by writing
+ * back to a `Var` somewhere upstream of `cell`.
+ *
+ * This is the Cell-first counterpart to `program`. It lets callers build
+ * a model graph however they like — `mapCell`, `bindCell`, `focusVar` of
+ * a parent var, etc. — and mount views against any node in that graph,
+ * without going through the `program` runner.
+ *
+ * Internally the cell is bridged to an `UpdateStream` so existing
+ * constructors keep working unchanged. Each subscriber's bridge
+ * allocates one reusable `{prev, next, delta}` object.
+ */
+export function attachToCell<Model, Msg>(
+  container: Element,
+  view: SDOM<Model, Msg>,
+  cell: Cell<Model>,
+  dispatch: Dispatcher<Msg>,
+): Teardown {
+  const updates = cellToUpdateStream(cell)
+  const delegator = createDelegator(container)
+  const viewTeardown = withDelegator(delegator, () =>
+    view.attach(container, cell.value, updates, dispatch))
+  return {
+    teardown() {
+      viewTeardown.teardown()
+      delegator.teardown()
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // program
 // ---------------------------------------------------------------------------
 
@@ -73,10 +111,9 @@ export interface ProgramHandle<Model, Msg> {
  * Mount an SDOM program.
  *
  * This is the function that "ties the knot":
- *   1. Creates a mutable Signal for the model.
- *   2. Derives an UpdateStream from it.
- *   3. Creates a Dispatcher that runs `update` and pushes to the signal.
- *   4. Calls `view.attach` once to create the initial DOM and wire subscriptions.
+ *   1. Creates a mutable Var for the model.
+ *   2. Wires `dispatch` to run `update` and write back through the Var.
+ *   3. Calls `attachToCell` to mount the view against the Var.
  *
  * After this call, the DOM is live: dispatching messages will synchronously
  * update the model signal, which fires the update stream, which directly
@@ -87,14 +124,7 @@ export function program<Model, Msg>(
 ): ProgramHandle<Model, Msg> {
   const { container, init, update, view, onUpdate } = config
 
-  // The model is a single Var in the incremental graph. Views consume it
-  // through the UpdateStream bridge so existing constructors (and the
-  // codegen's compiled rows) see the same {prev, next} surface they did
-  // when the model lived in a Signal.
   const modelVar = makeVar(init)
-  const updates = cellToUpdateStream(modelVar)
-
-  let viewTeardown: Teardown | null = null
 
   const dispatch: Dispatcher<Msg> = (msg: Msg) => {
     const prev = modelVar.value
@@ -103,23 +133,57 @@ export function program<Model, Msg>(
     modelVar.set(next)
   }
 
-  // One root delegator per program. Per-element addEventListener calls
-  // collapse to a single root listener per event type, so mount/teardown
-  // for large keyed lists is no longer dominated by listener bookkeeping.
-  const delegator = createDelegator(container)
-
-  // Mount the view once. This is the ONLY time DOM structure is created.
-  viewTeardown = withDelegator(delegator, () =>
-    view.attach(container, init, updates, dispatch))
+  const teardown = attachToCell(container, view, modelVar, dispatch)
 
   return {
     dispatch,
     getModel: () => modelVar.value,
-    teardown() {
-      viewTeardown?.teardown()
-      viewTeardown = null
-      delegator.teardown()
-    },
+    teardown: () => teardown.teardown(),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// programFromVar — bring-your-own-Var program runner
+// ---------------------------------------------------------------------------
+
+/** Configuration for `programFromVar` — the model lives in a caller-supplied Var. */
+export interface VarProgramConfig<Model, Msg> {
+  container: Element
+  /**
+   * The root model Var. Built by the caller, which means it can be wired
+   * into other cells (e.g. shared with another mounted view, derived from
+   * a parent Var via `focusVar`) before mount.
+   */
+  modelVar: Var<Model>
+  update: (msg: Msg, model: Model) => Model
+  view: SDOM<Model, Msg>
+  onUpdate?: (msg: Msg, prev: Model, next: Model) => void
+}
+
+/**
+ * Like `program`, but the model lives in a Var the caller already built.
+ * Useful when the model graph is composed externally — for example, when
+ * one Var feeds two mounted views, or when a child view is mounted on a
+ * `focusVar` slice of a parent Var.
+ */
+export function programFromVar<Model, Msg>(
+  config: VarProgramConfig<Model, Msg>
+): ProgramHandle<Model, Msg> {
+  const { container, modelVar, update, view, onUpdate } = config
+
+  const dispatch: Dispatcher<Msg> = (msg: Msg) => {
+    const prev = modelVar.value
+    const next = update(msg, prev)
+    onUpdate?.(msg, prev, next)
+    modelVar.set(next)
+  }
+
+  const teardown = attachToCell(container, view, modelVar, dispatch)
+
+  return {
+    dispatch,
+    getModel: () => modelVar.value,
+    teardown: () => teardown.teardown(),
   }
 }
 
