@@ -650,4 +650,119 @@ describe("wrapChannel", () => {
     h.container.remove()
     h = undefined as any
   })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    it("forwards outer cell updates to the inner component", () => {
+      const receivedUpdates: Array<{ prev: number; next: number }> = []
+      const innerSdom: SDOMWithChannel<string, number> = {
+        attach(_parent, _initialModel, updates, _dispatch) {
+          const unsub = updates.subscribe(({ prev, next }) => {
+            receivedUpdates.push({ prev, next })
+          })
+          return { teardown: () => unsub() }
+        },
+      }
+      const wrapped = wrapChannel<string, number, never>(innerSdom, () => null)
+
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar(1)
+      td = attachToCell(container, wrapped, v, () => {})
+
+      v.set(2)
+      v.set(3)
+      expect(receivedUpdates).toEqual([
+        { prev: 1, next: 2 },
+        { prev: 2, next: 3 },
+      ])
+    })
+
+    it("applies parent-channel transforms locally without touching the outer cell", () => {
+      const receivedUpdates: Array<{ prev: number; next: number }> = []
+      let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
+      const innerSdom: SDOMWithChannel<string, number> = {
+        attach(_parent, _initialModel, updates, dispatch) {
+          capturedDispatch = dispatch
+          const unsub = updates.subscribe(({ prev, next }) => {
+            receivedUpdates.push({ prev, next })
+          })
+          return { teardown: () => unsub() }
+        },
+      }
+      const wrapped = wrapChannel<string, number, never>(innerSdom, (channel, _d) => {
+        if (channel === "increment") return (m: number) => m + 1
+        return null
+      })
+
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar(10)
+      td = attachToCell(container, wrapped, v, () => {})
+
+      capturedDispatch!({ kind: "parent", value: "increment" })
+      expect(receivedUpdates).toEqual([{ prev: 10, next: 11 }])
+      expect(v.value).toBe(10) // outer cell untouched
+
+      // A subsequent outer cell update is authoritative and resets local state.
+      v.set(20)
+      expect(receivedUpdates).toEqual([
+        { prev: 10, next: 11 },
+        { prev: 11, next: 20 },
+      ])
+    })
+
+    it("applies update-kind channel events as local transforms", () => {
+      const receivedUpdates: Array<{ prev: number; next: number }> = []
+      let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
+      const innerSdom: SDOMWithChannel<string, number> = {
+        attach(_parent, _initialModel, updates, dispatch) {
+          capturedDispatch = dispatch
+          const unsub = updates.subscribe(({ prev, next }) => {
+            receivedUpdates.push({ prev, next })
+          })
+          return { teardown: () => unsub() }
+        },
+      }
+      const wrapped = wrapChannel<string, number, never>(innerSdom, () => null)
+
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar(5)
+      td = attachToCell(container, wrapped, v, () => {})
+
+      capturedDispatch!({ kind: "update", fn: (m: number) => m * 2 })
+      expect(receivedUpdates).toEqual([{ prev: 5, next: 10 }])
+    })
+
+    it("dispatches msg to the outer dispatcher when interpret calls dispatch", () => {
+      const seen: string[] = []
+      let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
+      const innerSdom: SDOMWithChannel<string, number> = {
+        attach(_parent, _initialModel, _updates, dispatch) {
+          capturedDispatch = dispatch
+          return { teardown: () => {} }
+        },
+      }
+      const wrapped = wrapChannel<string, number, string>(innerSdom, (channel, dispatch) => {
+        dispatch(`got:${channel}`)
+        return null
+      })
+
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar(0)
+      td = attachToCell(container, wrapped, v, msg => seen.push(msg))
+
+      capturedDispatch!({ kind: "parent", value: "hello" })
+      expect(seen).toEqual(["got:hello"])
+    })
+  })
 })

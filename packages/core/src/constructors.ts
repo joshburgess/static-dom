@@ -1795,48 +1795,101 @@ export function wrapChannel<Channel, Model, Msg>(
     dispatch: Dispatcher<Msg>
   ) => ((model: Model) => Model) | null
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    // Local model state — tracks the latest model from either outer updates
-    // or local transforms. Outer updates are authoritative and reset this.
-    let currentModel = initialModel
-    const localObservers = new Set<Observer<Update<Model>>>()
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      // Local model state — tracks the latest model from either outer updates
+      // or local transforms. Outer updates are authoritative and reset this.
+      let currentModel = initialModel
+      const localObservers = new Set<Observer<Update<Model>>>()
 
-    // Merged update stream: inner component sees both outer updates and
-    // local transforms from channel events.
-    const mergedUpdates: UpdateStream<Model> = {
-      subscribe(observer) {
-        localObservers.add(observer)
-        const outerUnsub = updates.subscribe(update => {
-          currentModel = update.next
-          observer(update)
-        })
-        return () => {
-          localObservers.delete(observer)
-          outerUnsub()
+      // Merged update stream: inner component sees both outer updates and
+      // local transforms from channel events.
+      const mergedUpdates: UpdateStream<Model> = {
+        subscribe(observer) {
+          localObservers.add(observer)
+          const outerUnsub = updates.subscribe(update => {
+            currentModel = update.next
+            observer(update)
+          })
+          return () => {
+            localObservers.delete(observer)
+            outerUnsub()
+          }
+        },
+      }
+
+      function applyTransform(fn: (model: Model) => Model): void {
+        const prev = currentModel
+        const next = fn(prev)
+        if (prev !== next) {
+          currentModel = next
+          localObservers.forEach(obs => obs({ prev, next }))
         }
-      },
-    }
-
-    function applyTransform(fn: (model: Model) => Model): void {
-      const prev = currentModel
-      const next = fn(prev)
-      if (prev !== next) {
-        currentModel = next
-        localObservers.forEach(obs => obs({ prev, next }))
       }
-    }
 
-    const channelDispatch: Dispatcher<ChannelEvent<Channel, Model>> = event => {
-      if (event.kind === "parent") {
-        const transform = interpret(event.value, dispatch)
-        if (transform) applyTransform(transform)
-      } else {
-        applyTransform(event.fn)
+      const channelDispatch: Dispatcher<ChannelEvent<Channel, Model>> = event => {
+        if (event.kind === "parent") {
+          const transform = interpret(event.value, dispatch)
+          if (transform) applyTransform(transform)
+        } else {
+          applyTransform(event.fn)
+        }
       }
-    }
 
-    return inner.attach(parent, initialModel, mergedUpdates, channelDispatch)
-  })
+      return inner.attach(parent, initialModel, mergedUpdates, channelDispatch)
+    },
+    (parent, cell, dispatch) => {
+      // Cell-native path: observe the outer cell directly and feed the inner
+      // (still UpdateStream-based) component a merged stream of outer cell
+      // updates plus local channel-event transforms. Skips the
+      // cellToUpdateStream indirection.
+      const initialModel = cell.value
+      let currentModel = initialModel
+      const localObservers = new Set<Observer<Update<Model>>>()
+
+      const mergedUpdates: UpdateStream<Model> = {
+        subscribe(observer) {
+          localObservers.add(observer)
+          const update: { prev: Model; next: Model; delta: unknown | undefined } = {
+            prev: currentModel,
+            next: currentModel,
+            delta: undefined,
+          }
+          const outerUnsub = cell.observe(next => {
+            update.prev = currentModel
+            update.next = next
+            update.delta = undefined
+            currentModel = next
+            observer(update)
+          })
+          return () => {
+            localObservers.delete(observer)
+            outerUnsub()
+          }
+        },
+      }
+
+      function applyTransform(fn: (model: Model) => Model): void {
+        const prev = currentModel
+        const next = fn(prev)
+        if (prev !== next) {
+          currentModel = next
+          localObservers.forEach(obs => obs({ prev, next }))
+        }
+      }
+
+      const channelDispatch: Dispatcher<ChannelEvent<Channel, Model>> = event => {
+        if (event.kind === "parent") {
+          const transform = interpret(event.value, dispatch)
+          if (transform) applyTransform(transform)
+        } else {
+          applyTransform(event.fn)
+        }
+      }
+
+      return inner.attach(parent, initialModel, mergedUpdates, channelDispatch)
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
