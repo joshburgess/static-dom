@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
-import { makeVar } from "../src/incremental-graph"
+import { makeVar, mapCell } from "../src/incremental-graph"
 import {
+  bindPrism,
   focusVar,
   liftAffine,
   liftFold,
@@ -117,6 +118,61 @@ describe("incremental-optics", () => {
     expect(nickname.value).toBe("ada")
     v.set({ nickname: null })
     expect(nickname.value).toBeNull()
+  })
+
+  it("bindPrism swaps the inner cell when the prism's match status flips", () => {
+    type State =
+      | { tag: "loaded"; data: number }
+      | { tag: "loading" }
+    const loadedPrism = unionMember<State, { tag: "loaded"; data: number }>(
+      (s): s is { tag: "loaded"; data: number } => s.tag === "loaded",
+    )
+    const loadingLabel = makeVar("loading...")
+    const loadedPrefix = makeVar("data: ")
+    const v = makeVar<State>({ tag: "loading" })
+    const view = bindPrism(loadedPrism, v, (matched) =>
+      matched === null
+        ? loadingLabel
+        : mapCell(loadedPrefix, (p) => p + String(matched.data)),
+    )
+    expect(view.value).toBe("loading...")
+    loadingLabel.set("still loading")
+    expect(view.value).toBe("still loading")
+    v.set({ tag: "loaded", data: 7 })
+    expect(view.value).toBe("data: 7")
+    loadedPrefix.set("value: ")
+    expect(view.value).toBe("value: 7")
+    // Updates to the previous branch do not leak in.
+    loadingLabel.set("nope")
+    expect(view.value).toBe("value: 7")
+    v.set({ tag: "loading" })
+    expect(view.value).toBe("nope")
+  })
+
+  it("bindPrism cutoff suppresses observers across no-op state changes", () => {
+    type State =
+      | { tag: "loaded"; data: number }
+      | { tag: "loading" }
+    const loadedPrism = unionMember<State, { tag: "loaded"; data: number }>(
+      (s): s is { tag: "loaded"; data: number } => s.tag === "loaded",
+    )
+    const loading = makeVar("L")
+    const loaded = makeVar("X")
+    const v = makeVar<State>({ tag: "loading" })
+    const view = bindPrism(loadedPrism, v, (matched) =>
+      matched === null ? loading : loaded,
+    )
+    const obs = vi.fn()
+    view.observe(obs)
+    // Switch to loaded; loaded.value === "X" but loading.value === "L", so this fires.
+    v.set({ tag: "loaded", data: 1 })
+    expect(obs).toHaveBeenCalledTimes(1)
+    expect(obs).toHaveBeenLastCalledWith("X")
+    // Same constructor, different payload — prism's reference-equality cutoff
+    // would let the new "loaded" object through, but the inner cell's value
+    // hasn't changed, so the bind result's cutoff suppresses.
+    v.set({ tag: "loaded", data: 2 })
+    expect(obs).toHaveBeenCalledTimes(1)
   })
 
   it("liftFold uses structural cutoff so same elements do not propagate", () => {

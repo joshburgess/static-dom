@@ -17,7 +17,7 @@
  */
 
 import type { Cell, Var } from "./incremental-graph"
-import { mapCell } from "./incremental-graph"
+import { bindCell, mapCell } from "./incremental-graph"
 import type { Affine, Fold, Getter, Lens, Prism } from "./optics"
 
 function defaultArrayEq<A>(a: ReadonlyArray<A>, b: ReadonlyArray<A>): boolean {
@@ -72,8 +72,9 @@ export function liftFold<S, A>(
  * reference equality, so present-with-same-value or absent-staying-absent
  * transitions do not propagate.
  *
- * This is the flat read-side lift. The dynamic-reshaping `bind` variant
- * (mount when matched, dispose when not) waits on a `bindCell` primitive.
+ * This is the flat read-side lift. For dynamic graph reshaping (swap one
+ * subgraph for another when the prism's match status flips), see
+ * `bindPrism`.
  */
 export function liftPrism<S, A>(
   prism: Prism<S, A>,
@@ -81,6 +82,26 @@ export function liftPrism<S, A>(
   eq?: (a: A | null, b: A | null) => boolean,
 ): Cell<A | null> {
   return mapCell(cell, (s) => prism.preview(s), eq)
+}
+
+/**
+ * Bind-shaped lift of a Prism: choose a `Cell<B>` based on whether the
+ * prism matches. `f` receives `A` when the prism matches and `null` when
+ * it does not, and returns the cell to track from there. Switching
+ * branches rewires the graph and bumps heights as needed; the previous
+ * branch stops driving the result.
+ *
+ * Useful for "mount this view when the case applies, that view otherwise"
+ * shapes — e.g. a `Loaded | Loading | Error` union where each constructor
+ * gets its own derived cell.
+ */
+export function bindPrism<S, A, B>(
+  prism: Prism<S, A>,
+  cell: Cell<S>,
+  f: (a: A | null) => Cell<B>,
+  eq?: (a: B, b: B) => boolean,
+): Cell<B> {
+  return bindCell(liftPrism(prism, cell), f, eq)
 }
 
 /**
