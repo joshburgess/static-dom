@@ -2,7 +2,7 @@
 
 A TypeScript UI library that eliminates virtual DOM diffing by fixing DOM structure at mount time. Only leaf values (text content, attributes) update in place: no intermediate representation, no reconciliation.
 
-Based on Phil Freeman's [purescript-sdom](https://github.com/paf31/purescript-sdom) and [blog post](https://blog.functorial.com/posts/2018-03-12-You-Might-Not-Need-The-Virtual-DOM.html).
+Based on Phil Freeman's [purescript-sdom](https://github.com/paf31/purescript-sdom) and [blog post](https://blog.functorial.com/posts/2018-03-12-You-Might-Not-Need-The-Virtual-DOM.html), with a reactive substrate inspired by Jane Street's [Incremental](https://github.com/janestreet/incremental).
 
 - **No diffing**: updates go straight to the DOM node that changed
 - **Predictable performance**: cost is proportional to what changed, not tree size
