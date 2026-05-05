@@ -109,6 +109,40 @@ also moved beyond noise. The 03 / 04 / 05 increments are all under
 this verification, the constructor-level Cell migration is a perf-
 neutral-to-modestly-positive change end to end.
 
+#### Noise-floor follow-up on 02 and 04
+
+The +0.3 ms shifts on 02 and 04 vs. the post-graph row prompted a
+second look. Re-running each at 25 iterations on the same machine,
+and separately A/B-testing the obvious suspect — the per-row `Var`
+that `arrayBy`'s Cell-native row mount allocates — produced:
+
+| Benchmark | n=25 median | stddev | range | mountCell on (default) | mountCell off (A/B) |
+|---|---:|---:|---:|---:|---:|
+| 02_replace1k | 6.9 | 0.21 | 6.4–7.6 | 6.9 | 6.8 |
+| 04_select1k | 1.2 | 0.22 | 0.8–1.7 | 1.2 | 1.1 |
+
+Two takeaways:
+
+1. **The deltas sit inside the per-iter noise floor.** `04_select1k`
+   has a 1.2 ms median against stddev 0.22 — relative noise of
+   roughly 18%. The 0.8 ms post-graph row was the lucky bottom of
+   that distribution, not a stable baseline. `02_replace1k` lands at
+   6.8–6.9 ms, matching the 2026-05-04 Solid-comparison row of
+   6.9 ms; the 6.5 ms post-graph row was the lucky bottom there.
+2. **Removing the suspected source of overhead doesn't move the
+   numbers.** Flipping `mountCell` to `false` for `arrayBy` (so each
+   row mounts via the legacy `attach + sharedUpdateStream` path
+   instead of through a per-row `Var`) shifts both benchmarks by
+   0.1 ms or less — within a single per-iter step. The per-row `Var`
+   allocation and Cell-set are not measurably costly, since the
+   reconciler already filters per-row by identity before fanning
+   out updates.
+
+The post-constructor-migration build is statistically
+indistinguishable from the original 2026-05-04 baseline for these
+two benchmarks; the apparent regression is an artifact of comparing
+against an unusually-low sample.
+
 ### Reproducing
 
 Both frameworks need to be built into the local
