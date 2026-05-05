@@ -18,7 +18,7 @@
 
 import type { Cell, Var } from "./incremental-graph"
 import { mapCell } from "./incremental-graph"
-import type { Fold, Getter, Lens } from "./optics"
+import type { Affine, Fold, Getter, Lens, Prism } from "./optics"
 
 function defaultArrayEq<A>(a: ReadonlyArray<A>, b: ReadonlyArray<A>): boolean {
   if (a === b) return true
@@ -64,6 +64,35 @@ export function liftFold<S, A>(
   eq?: (a: ReadonlyArray<A>, b: ReadonlyArray<A>) => boolean,
 ): Cell<ReadonlyArray<A>> {
   return mapCell(cell, (s) => fold.getAll(s), eq ?? defaultArrayEq)
+}
+
+/**
+ * Project a Cell through a Prism's preview. Result is `Cell<A | null>`
+ * where `null` means the prism did not match. Cutoff defaults to
+ * reference equality, so present-with-same-value or absent-staying-absent
+ * transitions do not propagate.
+ *
+ * This is the flat read-side lift. The dynamic-reshaping `bind` variant
+ * (mount when matched, dispose when not) waits on a `bindCell` primitive.
+ */
+export function liftPrism<S, A>(
+  prism: Prism<S, A>,
+  cell: Cell<S>,
+  eq?: (a: A | null, b: A | null) => boolean,
+): Cell<A | null> {
+  return mapCell(cell, (s) => prism.preview(s), eq)
+}
+
+/**
+ * Project a Cell through an Affine's preview. Same shape as `liftPrism`:
+ * `Cell<A | null>` with reference-equality cutoff by default.
+ */
+export function liftAffine<S, A>(
+  affine: Affine<S, A>,
+  cell: Cell<S>,
+  eq?: (a: A | null, b: A | null) => boolean,
+): Cell<A | null> {
+  return mapCell(cell, (s) => affine.preview(s), eq)
 }
 
 /**

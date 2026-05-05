@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from "vitest"
 import { makeVar } from "../src/incremental-graph"
 import {
   focusVar,
+  liftAffine,
   liftFold,
   liftGetter,
   liftLens,
+  liftPrism,
 } from "../src/incremental-optics"
-import { foldOf, getterOf, prop } from "../src/optics"
+import { foldOf, getterOf, nullablePrism, prop, unionMember } from "../src/optics"
 
 interface User {
   id: number
@@ -71,6 +73,50 @@ describe("incremental-optics", () => {
     nameVar.observe(obs)
     nameVar.set("alice")
     expect(obs).not.toHaveBeenCalled()
+  })
+
+  it("liftPrism reads through preview and yields null when unmatched", () => {
+    type State =
+      | { tag: "loaded"; data: number }
+      | { tag: "loading" }
+    const loadedPrism = unionMember<State, { tag: "loaded"; data: number }>(
+      (s): s is { tag: "loaded"; data: number } => s.tag === "loaded",
+    )
+    const v = makeVar<State>({ tag: "loading" })
+    const loaded = liftPrism(loadedPrism, v)
+    expect(loaded.value).toBeNull()
+    v.set({ tag: "loaded", data: 42 })
+    expect(loaded.value).toEqual({ tag: "loaded", data: 42 })
+  })
+
+  it("liftPrism cutoff suppresses propagation across same-state transitions", () => {
+    type State =
+      | { tag: "loaded"; data: number }
+      | { tag: "loading" }
+    const loadedPrism = unionMember<State, { tag: "loaded"; data: number }>(
+      (s): s is { tag: "loaded"; data: number } => s.tag === "loaded",
+    )
+    const v = makeVar<State>({ tag: "loading" })
+    const loaded = liftPrism(loadedPrism, v)
+    const obs = vi.fn()
+    loaded.observe(obs)
+    v.set({ tag: "loading" })
+    expect(obs).not.toHaveBeenCalled()
+    v.set({ tag: "loaded", data: 1 })
+    expect(obs).toHaveBeenCalledTimes(1)
+    expect(obs).toHaveBeenCalledWith({ tag: "loaded", data: 1 })
+  })
+
+  it("liftAffine reads a nullable field as Cell<A | null>", () => {
+    interface Profile { nickname: string | null }
+    const nicknameAff = nullablePrism<Profile>()("nickname")
+    const v = makeVar<Profile>({ nickname: null })
+    const nickname = liftAffine(nicknameAff, v)
+    expect(nickname.value).toBeNull()
+    v.set({ nickname: "ada" })
+    expect(nickname.value).toBe("ada")
+    v.set({ nickname: null })
+    expect(nickname.value).toBeNull()
   })
 
   it("liftFold uses structural cutoff so same elements do not propagate", () => {
