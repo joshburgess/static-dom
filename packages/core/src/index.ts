@@ -161,6 +161,12 @@ export {
   cellToUpdateStream,
 } from "./incremental-graph"
 
+// Optic lifts over the graph. The optic's equality becomes the derived
+// cell's cutoff: fields the optic does not read never propagate, fields
+// whose lens-equality says "unchanged" never fire observers. `focusVar`
+// turns a `Var<S>` plus a `Lens<S, A>` into a `Var<A>` with write-back.
+export { liftGetter, liftLens, liftFold, focusVar } from "./incremental-optics"
+
 // Constructors
 export { text, staticText, element, array, arrayBy, indexedArray, optional, match, dynamic, component, compiled, compiledState, fragment, wrapChannel, lis } from "./constructors"
 
