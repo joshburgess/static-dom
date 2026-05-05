@@ -53,6 +53,34 @@ keyed implementations.
 **Takeaway:** static-dom matches or beats Solid on every keyed benchmark in the
 suite. Faster on 02, 05, 08, and 09; within ±0.1 ms on the other five.
 
+### Post-graph-migration re-verification (2026-05-05)
+
+After the Incremental-graph migration (program runners now route through a
+`Var<Model>` instead of a bespoke `Signal<Model>`), static-dom was re-run on
+the same machine to check for regressions. **Solid was not re-run** so the
+delta column below is *not* a same-day comparison — it's just static-dom
+today vs. the 2026-05-04 baseline above.
+
+| Benchmark | static-dom 2026-05-04 | static-dom 2026-05-05 | Δ |
+|---|---:|---:|---:|
+| 01_run1k | 3.8 | 3.7 | -0.1 |
+| 02_replace1k | 6.9 | 6.5 | -0.4 |
+| 03_update10th1k_x16 | 1.8 | 1.5 | -0.3 |
+| 04_select1k | 1.1 | 0.8 | -0.3 |
+| 05_swap1k | 1.0 | 1.1 | +0.1 |
+| 06_remove-one-1k | 0.6 | 0.5 | -0.1 |
+| 07_create10k | 44.6 | 47.3 | +2.7 |
+| 08_create1k-after1k_x2 | 3.9 | 3.8 | -0.1 |
+| 09_clear1k_x8 | 12.7 | 12.3 | -0.4 |
+
+Most benchmarks moved ±0.4 ms, indistinguishable from run-to-run variance.
+The 07_create10k bump (+2.7 ms) is larger than typical drift; cross-checking
+against the pre-migration code on the same machine and same day produced
+46.5 ms (vs. today's 47.3 ms graph-build), suggesting the gap is mostly
+machine drift rather than migration cost. Either way, the post-migration
+build is still in the same neighborhood as the 2026-05-04 Solid number for
+07 (44.5 ms).
+
 ### Reproducing
 
 Both frameworks need to be built into the local
