@@ -177,6 +177,32 @@ Bridge a cell into a program-style view with `cellToUpdateStream(cell)`.
 The same primitives back the runners internally, so app model state and
 externally-derived state share one notification mechanism.
 
+#### Lifting optics over the graph
+
+Optics compose with the graph: a `Lens<S, A>` over a `Cell<S>` becomes a
+`Cell<A>` whose cutoff is the optic's domain equality. Fields the optic
+does not read never propagate; fields whose lens-equality says "unchanged"
+never fire observers.
+
+```typescript
+import { makeVar, focusVar, liftLens, prop } from "static-dom"
+
+interface User { id: number; name: string }
+const user = makeVar<User>({ id: 1, name: "alice" })
+
+// Read-only projection through a Lens.
+const name = liftLens(prop<User>()("name"), user)
+name.value // "alice"
+
+// Bidirectional: focusVar hands back a Var whose .set writes through the lens.
+const nameVar = focusVar(prop<User>()("name"), user)
+nameVar.set("bob")
+user.value // { id: 1, name: "bob" }
+```
+
+`liftGetter`, `liftPrism`, `liftAffine`, and `liftFold` cover the rest of
+the optic kinds. Prism / Affine lift to `Cell<A | null>` via `preview`.
+
 ## Lists
 
 Choose a list constructor based on your update pattern:
