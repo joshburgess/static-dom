@@ -81,6 +81,34 @@ machine drift rather than migration cost. Either way, the post-migration
 build is still in the same neighborhood as the 2026-05-04 Solid number for
 07 (44.5 ms).
 
+### Post-constructor-migration re-verification (2026-05-05)
+
+After the SDOM constructor migration finished (every constructor now
+provides a Cell-native `attachCell` instead of falling back through
+`cellToUpdateStream`), static-dom was re-run on the same machine to
+check for regressions. **Solid was not re-run**, so the delta column
+below is again static-dom today vs. the post-graph-migration row above.
+
+| Benchmark | static-dom 2026-05-05 (graph) | static-dom 2026-05-05 (constructors) | Δ |
+|---|---:|---:|---:|
+| 01_run1k | 3.7 | **3.0** | **-0.7** |
+| 02_replace1k | 6.5 | 6.8 | +0.3 |
+| 03_update10th1k_x16 | 1.5 | 1.6 | +0.1 |
+| 04_select1k | 0.8 | 1.1 | +0.3 |
+| 05_swap1k | 1.1 | 1.2 | +0.1 |
+| 06_remove-one-1k | 0.5 | 0.5 | 0.0 |
+| 07_create10k | 47.3 | **42.9** | **-4.4** |
+| 08_create1k-after1k_x2 | 3.8 | **3.3** | **-0.5** |
+| 09_clear1k_x8 | 12.3 | 11.9 | -0.4 |
+
+`07_create10k` recovered the prior bench-day's drift and then some
+(-4.4 ms vs. the post-graph row, putting it inside the 2026-05-04
+Solid neighborhood at 44.5 ms). `01_run1k` and `08_create1k-after1k_x2`
+also moved beyond noise. The 03 / 04 / 05 increments are all under
+0.3 ms and well within run-to-run variance for those benches. Net of
+this verification, the constructor-level Cell migration is a perf-
+neutral-to-modestly-positive change end to end.
+
 ### Reproducing
 
 Both frameworks need to be built into the local
