@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { dynamic, element, text } from "../src/constructors"
+import { attachToCell } from "../src/program"
+import { makeVar } from "../src/incremental-graph"
 import { mount, cleanup, type TestHarness } from "./helpers"
+import type { Teardown } from "../src/types"
 
 // ---------------------------------------------------------------------------
 // Test models
@@ -257,6 +260,76 @@ describe("dynamic", () => {
       hMsg.set({ layout: "b", label: "B" })
       hMsg.container.querySelector("button")!.click()
       expect(hMsg.dispatched).toEqual([{ type: "clicked", layout: "b" }])
+    })
+  })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    const view = dynamic<Model, never, string>(
+      m => m.layout,
+      m => {
+        switch (m.layout) {
+          case "grid": return gridView
+          case "list": return listView
+          case "custom": return customView
+        }
+      },
+    )
+
+    it("renders the initial branch and patches within the same key", () => {
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar<Model>({ layout: "grid", data: "x" })
+      td = attachToCell(container, view, v, () => {})
+      expect(container.textContent).toContain("Grid: x")
+      v.set({ layout: "grid", data: "y" })
+      expect(container.textContent).toContain("Grid: y")
+    })
+
+    it("swaps branches on key change", () => {
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar<Model>({ layout: "grid", data: "g" })
+      td = attachToCell(container, view, v, () => {})
+      expect(container.querySelector(".grid")).not.toBeNull()
+      v.set({ layout: "list", data: "l" })
+      expect(container.querySelector(".grid")).toBeNull()
+      expect(container.querySelector(".list")!.textContent).toBe("List: l")
+    })
+
+    it("with cache: true reattaches the same DOM and replays current model", () => {
+      const cached = dynamic<Model, never, string>(
+        m => m.layout,
+        m => {
+          switch (m.layout) {
+            case "grid": return gridView
+            case "list": return listView
+            case "custom": return customView
+          }
+        },
+        { cache: true },
+      )
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar<Model>({ layout: "grid", data: "g1" })
+      td = attachToCell(container, cached, v, () => {})
+      const firstGrid = container.querySelector(".grid")!
+      expect(firstGrid.textContent).toBe("Grid: g1")
+
+      v.set({ layout: "list", data: "l1" })
+      expect(container.querySelector(".grid")).toBeNull()
+
+      v.set({ layout: "grid", data: "g2" })
+      const secondGrid = container.querySelector(".grid")!
+      expect(secondGrid).toBe(firstGrid) // same DOM node reused
+      expect(secondGrid.textContent).toBe("Grid: g2") // caught up
     })
   })
 })
