@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from "vitest"
 import {
   makeVar,
-  map,
-  map2,
+  mapCell,
+  mapCell2,
   batch,
   stabilize,
-  disposeNode,
+  disposeCell,
 } from "../src/incremental-graph"
 
 describe("incremental-graph", () => {
@@ -38,17 +38,17 @@ describe("incremental-graph", () => {
     expect(obs).toHaveBeenCalledWith(2)
   })
 
-  it("map derives a new node and recomputes when the parent changes", () => {
+  it("mapCell derives a new cell and recomputes when the parent changes", () => {
     const v = makeVar(2)
-    const doubled = map(v, (x) => x * 2)
+    const doubled = mapCell(v, (x) => x * 2)
     expect(doubled.value).toBe(4)
     v.set(5)
     expect(doubled.value).toBe(10)
   })
 
-  it("map cutoff prevents downstream observers from firing", () => {
+  it("mapCell cutoff prevents downstream observers from firing", () => {
     const v = makeVar(1)
-    const isPositive = map(v, (x) => x > 0)
+    const isPositive = mapCell(v, (x) => x > 0)
     const obs = vi.fn()
     isPositive.observe(obs)
     v.set(2)
@@ -58,10 +58,10 @@ describe("incremental-graph", () => {
     expect(obs).toHaveBeenCalledWith(false)
   })
 
-  it("map2 combines two parents", () => {
+  it("mapCell2 combines two parents", () => {
     const a = makeVar(1)
     const b = makeVar(2)
-    const sum = map2(a, b, (x, y) => x + y)
+    const sum = mapCell2(a, b, (x, y) => x + y)
     expect(sum.value).toBe(3)
     a.set(10)
     expect(sum.value).toBe(12)
@@ -71,7 +71,7 @@ describe("incremental-graph", () => {
 
   it("batch collapses multiple sets into one stabilize sweep", () => {
     const v = makeVar(1)
-    const doubled = map(v, (x) => x * 2)
+    const doubled = mapCell(v, (x) => x * 2)
     const obs = vi.fn()
     doubled.observe(obs)
     batch(() => {
@@ -86,7 +86,7 @@ describe("incremental-graph", () => {
 
   it("nested batches only stabilize at the outermost exit", () => {
     const v = makeVar(1)
-    const doubled = map(v, (x) => x * 2)
+    const doubled = mapCell(v, (x) => x * 2)
     const obs = vi.fn()
     doubled.observe(obs)
     batch(() => {
@@ -102,10 +102,10 @@ describe("incremental-graph", () => {
 
   it("a diamond graph recomputes the join exactly once per change", () => {
     const root = makeVar(1)
-    const left = map(root, (x) => x + 1)
-    const right = map(root, (x) => x + 2)
+    const left = mapCell(root, (x) => x + 1)
+    const right = mapCell(root, (x) => x + 2)
     const joinFn = vi.fn((l: number, r: number) => l * r)
-    const join = map2(left, right, joinFn)
+    const join = mapCell2(left, right, joinFn)
     expect(join.value).toBe(2 * 3)
     expect(joinFn).toHaveBeenCalledTimes(1)
     root.set(10)
@@ -115,7 +115,7 @@ describe("incremental-graph", () => {
 
   it("explicit stabilize is a no-op when nothing is dirty", () => {
     const v = makeVar(1)
-    const doubled = map(v, (x) => x * 2)
+    const doubled = mapCell(v, (x) => x * 2)
     const obs = vi.fn()
     doubled.observe(obs)
     stabilize()
@@ -133,18 +133,18 @@ describe("incremental-graph", () => {
     expect(obs).toHaveBeenCalledTimes(1)
   })
 
-  it("disposeNode detaches a derived node so the parent stops driving it", () => {
+  it("disposeCell detaches a derived cell so the parent stops driving it", () => {
     const v = makeVar(1)
-    const doubled = map(v, (x) => x * 2)
-    disposeNode(doubled)
+    const doubled = mapCell(v, (x) => x * 2)
+    disposeCell(doubled)
     v.set(5)
     // doubled is detached — value frozen at last computed value
     expect(doubled.value).toBe(2)
   })
 
-  it("custom eq on map cuts off based on a domain notion of equality", () => {
+  it("custom eq on mapCell cuts off based on a domain notion of equality", () => {
     const v = makeVar({ x: 1, label: "a" })
-    const xOnly = map(v, (m) => m, (a, b) => a.x === b.x)
+    const xOnly = mapCell(v, (m) => m, (a, b) => a.x === b.x)
     const obs = vi.fn()
     xOnly.observe(obs)
     v.set({ x: 1, label: "b" })

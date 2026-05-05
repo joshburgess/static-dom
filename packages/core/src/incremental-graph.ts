@@ -32,18 +32,24 @@
 
 export type Unsubscribe = () => void
 
-/** A read-only handle into a node in the graph. */
-export interface Node<T> {
+/**
+ * A reactive cell — a read-only handle to a node in the dependency graph.
+ *
+ * Renamed from `Node` so it doesn't shadow the global DOM `Node` type.
+ * The internal storage is still called `InternalNode` since the data
+ * structure is genuinely a graph node.
+ */
+export interface Cell<T> {
   /** Force any pending stabilization, then read the current value. */
   readonly value: T
   /** Subscribe to value changes (fires after stabilize). */
   observe(observer: (value: T) => void): Unsubscribe
-  /** Internal — exposed for derived-node construction. Do not depend on. */
+  /** Internal — exposed for derived-cell construction. Do not depend on. */
   readonly _internal: InternalNode<T>
 }
 
-/** A writable leaf. */
-export interface Var<T> extends Node<T> {
+/** A writable leaf cell. */
+export interface Var<T> extends Cell<T> {
   set(value: T): void
 }
 
@@ -151,11 +157,11 @@ export function makeVar<T>(
   }
 }
 
-export function map<A, B>(
-  parent: Node<A>,
+export function mapCell<A, B>(
+  parent: Cell<A>,
   project: (a: A) => B,
   eq: (a: B, b: B) => boolean = defaultEq,
-): Node<B> {
+): Cell<B> {
   const p = parent._internal as InternalNode<unknown>
   const internal: InternalNode<B> = {
     id: nextId++,
@@ -175,16 +181,16 @@ export function map<A, B>(
   internal.value = (internal.recompute as () => B)()
   internal.dirty = false
   return makeHandle<B>(internal, () => {
-    throw new Error("map node is not writable")
-  }) as Node<B>
+    throw new Error("derived cell is not writable")
+  }) as Cell<B>
 }
 
-export function map2<A, B, C>(
-  a: Node<A>,
-  b: Node<B>,
+export function mapCell2<A, B, C>(
+  a: Cell<A>,
+  b: Cell<B>,
   project: (a: A, b: B) => C,
   eq: (a: C, b: C) => boolean = defaultEq,
-): Node<C> {
+): Cell<C> {
   const pa = a._internal as InternalNode<unknown>
   const pb = b._internal as InternalNode<unknown>
   const internal: InternalNode<C> = {
@@ -204,8 +210,8 @@ export function map2<A, B, C>(
   internal.value = (internal.recompute as () => C)()
   internal.dirty = false
   return makeHandle<C>(internal, () => {
-    throw new Error("map2 node is not writable")
-  }) as Node<C>
+    throw new Error("derived cell is not writable")
+  }) as Cell<C>
 }
 
 /**
@@ -294,7 +300,7 @@ function makeHandle<T>(
 import type { UpdateStream, Update, Observer, Unsubscribe as ObsUnsubscribe } from "./observable"
 
 /**
- * Expose a Node<T> as an UpdateStream<T>. Each subscriber gets a reusable
+ * Expose a Cell<T> as an UpdateStream<T>. Each subscriber gets a reusable
  * `{prev, next}` object whose fields are mutated on each emission. This
  * matches the existing toUpdateStream contract — observers must consume
  * the update synchronously and not retain references.
@@ -302,15 +308,15 @@ import type { UpdateStream, Update, Observer, Unsubscribe as ObsUnsubscribe } fr
  * Used by program runners to back the existing view surface with the
  * Incremental graph without churning every constructor's attach signature.
  */
-export function nodeToUpdateStream<T>(node: Node<T>): UpdateStream<T> {
+export function cellToUpdateStream<T>(cell: Cell<T>): UpdateStream<T> {
   return {
     subscribe(observer: Observer<Update<T>>): ObsUnsubscribe {
       const update: { prev: T; next: T; delta: unknown | undefined } = {
-        prev: node.value,
-        next: node.value,
+        prev: cell.value,
+        next: cell.value,
         delta: undefined,
       }
-      return node.observe((value) => {
+      return cell.observe((value) => {
         update.prev = update.next
         update.next = value
         update.delta = undefined
@@ -325,11 +331,11 @@ export function nodeToUpdateStream<T>(node: Node<T>): UpdateStream<T> {
 // ---------------------------------------------------------------------------
 
 /**
- * Unlink a derived node from its parents so it can be GC'd. Idempotent.
+ * Unlink a derived cell from its parents so it can be GC'd. Idempotent.
  * Vars do nothing — they have no parents to detach from.
  */
-export function disposeNode<T>(node: Node<T>): void {
-  const n = node._internal as InternalNode<unknown>
+export function disposeCell<T>(cell: Cell<T>): void {
+  const n = cell._internal as InternalNode<unknown>
   if (n.parents !== null) {
     for (const p of n.parents) p.dependents.delete(n)
     n.parents = null

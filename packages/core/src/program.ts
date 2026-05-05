@@ -22,7 +22,7 @@ import type { SDOM, Teardown } from "./types"
 import { _tryFastPatch } from "./incremental"
 import { diffSubs, type Sub } from "./subscription"
 import { createDelegator, withDelegator } from "./delegation"
-import { makeVar, nodeToUpdateStream } from "./incremental-graph"
+import { makeVar, cellToUpdateStream } from "./incremental-graph"
 
 // ---------------------------------------------------------------------------
 // Program types
@@ -92,7 +92,7 @@ export function program<Model, Msg>(
   // codegen's compiled rows) see the same {prev, next} surface they did
   // when the model lived in a Signal.
   const modelVar = makeVar(init)
-  const updates = nodeToUpdateStream(modelVar)
+  const updates = cellToUpdateStream(modelVar)
 
   let viewTeardown: Teardown | null = null
 
@@ -166,7 +166,7 @@ export function programWithEffects<Model, Msg>(
   const { container, init: [initModel, initCmd], update, view, onUpdate } = config
 
   const modelVar = makeVar(initModel)
-  const updates = nodeToUpdateStream(modelVar)
+  const updates = cellToUpdateStream(modelVar)
 
   let viewTeardown: Teardown | null = null
 
@@ -367,7 +367,7 @@ export function programWithSub<Model, Msg>(
   const { container, init, update, view, subscriptions, onUpdate } = config
 
   const modelVar = makeVar(init)
-  const updates = nodeToUpdateStream(modelVar)
+  const updates = cellToUpdateStream(modelVar)
   const activeSubs = new Map<string, Teardown>()
 
   let viewTeardown: Teardown | null = null
@@ -425,7 +425,7 @@ export function elmProgram<Model, Msg>(
   const { container, init: [initModel, initCmd], update, view, subscriptions, onUpdate } = config
 
   const modelVar = makeVar(initModel)
-  const updates = nodeToUpdateStream(modelVar)
+  const updates = cellToUpdateStream(modelVar)
   const activeSubs = new Map<string, Teardown>()
 
   let viewTeardown: Teardown | null = null

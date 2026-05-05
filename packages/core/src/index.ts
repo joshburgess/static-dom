@@ -145,6 +145,22 @@ export {
 export type { Observable, UpdateStream, Dispatcher, Update, Signal, Observer, Unsubscribe } from "./observable"
 export { createSignal, toUpdateStream, mapUpdate, contramapDispatcher } from "./observable"
 
+// Incremental computation graph (OCaml-Incremental flavor).
+// `Var` is a writable leaf cell; `Cell` is a read-only derived cell.
+// `mapCell` / `mapCell2` build derivations with diamond-correct cutoff;
+// `batch` collapses multiple sets into one stabilize sweep;
+// `cellToUpdateStream` bridges into the existing UpdateStream surface.
+export type { Cell, Var } from "./incremental-graph"
+export {
+  makeVar,
+  mapCell,
+  mapCell2,
+  batch,
+  stabilize,
+  disposeCell,
+  cellToUpdateStream,
+} from "./incremental-graph"
+
 // Constructors
 export { text, staticText, element, array, arrayBy, indexedArray, optional, match, dynamic, component, compiled, compiledState, fragment, wrapChannel, lis } from "./constructors"
 
