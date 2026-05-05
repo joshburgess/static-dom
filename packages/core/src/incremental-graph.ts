@@ -370,6 +370,52 @@ export function mapCell2<A, B, C>(
 }
 
 /**
+ * Three-parent derivation in one node. Equivalent to `mapCell2(mapCell2(a,
+ * b, ...), c, ...)` for the value, but with one strictly tighter cutoff:
+ * the intermediate two-input cell is gone, so a change to `a` or `b` that
+ * leaves the projected `D` unchanged stops at this node directly.
+ */
+export function mapCell3<A, B, C, D>(
+  a: Cell<A>,
+  b: Cell<B>,
+  c: Cell<C>,
+  project: (a: A, b: B, c: C) => D,
+  eq: (a: D, b: D) => boolean = defaultEq,
+): Cell<D> {
+  const pa = a._internal as InternalNode<unknown>
+  const pb = b._internal as InternalNode<unknown>
+  const pc = c._internal as InternalNode<unknown>
+  const internal: InternalNode<D> = {
+    id: nextId++,
+    value: undefined as unknown as D,
+    height: Math.max(pa.height, pb.height, pc.height) + 1,
+    dirty: false,
+    parents: [pa, pb, pc],
+    dependentsFirst: null,
+    dependentsRest: null,
+    observersFirst: null,
+    observersRest: null,
+    recompute: () =>
+      project(pa.value as A, pb.value as B, pc.value as C),
+    eq,
+  }
+  addDependent(pa, internal as InternalNode<unknown>)
+  addDependent(pb, internal as InternalNode<unknown>)
+  addDependent(pc, internal as InternalNode<unknown>)
+  internal.value = (internal.recompute as () => D)()
+  return {
+    get value() {
+      return internal.value
+    },
+    observe(observer: (value: D) => void): Unsubscribe {
+      addObserver(internal, observer)
+      return () => removeObserver(internal, observer)
+    },
+    _internal: internal,
+  } as Cell<D>
+}
+
+/**
  * Run a function with stabilize deferred until exit. Multiple `set` calls
  * inside collapse to a single stabilize sweep at the end.
  */

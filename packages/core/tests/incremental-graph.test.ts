@@ -3,6 +3,7 @@ import {
   makeVar,
   mapCell,
   mapCell2,
+  mapCell3,
   batch,
   stabilize,
   disposeCell,
@@ -67,6 +68,52 @@ describe("incremental-graph", () => {
     expect(sum.value).toBe(12)
     b.set(20)
     expect(sum.value).toBe(30)
+  })
+
+  it("mapCell3 combines three parents", () => {
+    const a = makeVar(1)
+    const b = makeVar(2)
+    const c = makeVar(3)
+    const sum = mapCell3(a, b, c, (x, y, z) => x + y + z)
+    expect(sum.value).toBe(6)
+    a.set(10)
+    expect(sum.value).toBe(15)
+    c.set(30)
+    expect(sum.value).toBe(42)
+  })
+
+  it("mapCell3 cutoff stops propagation when the projection is unchanged", () => {
+    const a = makeVar(1)
+    const b = makeVar(2)
+    const c = makeVar(3)
+    const anyTrue = mapCell3(a, b, c, (x, y, z) => x > 0 || y > 0 || z > 0)
+    const obs = vi.fn()
+    anyTrue.observe(obs)
+    a.set(5)
+    expect(obs).not.toHaveBeenCalled()
+    a.set(-1)
+    b.set(-2)
+    c.set(-3)
+    // anyTrue should now be false; only one fire across the three sets
+    expect(obs).toHaveBeenCalledTimes(1)
+    expect(obs).toHaveBeenLastCalledWith(false)
+  })
+
+  it("mapCell3 fires the projection once per change to any parent", () => {
+    const a = makeVar(1)
+    const b = makeVar(2)
+    const c = makeVar(3)
+    const fn = vi.fn((x: number, y: number, z: number) => x * y * z)
+    const product = mapCell3(a, b, c, fn)
+    expect(product.value).toBe(6)
+    expect(fn).toHaveBeenCalledTimes(1)
+    batch(() => {
+      a.set(2)
+      b.set(3)
+      c.set(4)
+    })
+    expect(product.value).toBe(24)
+    expect(fn).toHaveBeenCalledTimes(2)
   })
 
   it("batch collapses multiple sets into one stabilize sweep", () => {

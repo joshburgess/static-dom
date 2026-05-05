@@ -155,6 +155,7 @@ export {
   makeVar,
   mapCell,
   mapCell2,
+  mapCell3,
   batch,
   stabilize,
   disposeCell,
