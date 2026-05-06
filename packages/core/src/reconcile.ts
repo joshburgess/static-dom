@@ -18,6 +18,7 @@
 
 import type { SDOM, Teardown } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
+import { makeVar, type Var } from "./incremental-graph"
 import { guard, __SDOM_GUARD__, getErrorHandler } from "./errors"
 import { __SDOM_DEV__, validateUniqueKeys } from "./dev"
 import { getCurrentDelegator, withDelegator } from "./delegation"
@@ -110,6 +111,12 @@ interface ItemEntry<ItemModel> {
    * functions read/write through it.
    */
   state: object | null
+  /**
+   * Cell-native row mount: the per-row Var the inner SDOM observed via
+   * attachCell. `pushItemUpdate` advances it with `set(next)` instead of
+   * walking observers. Null in the legacy stream-based path.
+   */
+  itemVar: Var<ItemModel> | null
 }
 
 const NOOP_TEARDOWN: Teardown = { teardown() {} }
@@ -143,6 +150,13 @@ export function createArrayReconciler<ItemModel, Msg>(
   itemSdom: SDOM<ItemModel, Msg>,
   dispatch: Dispatcher<Msg>,
   label: string,
+  /**
+   * When true, non-compiled rows mount through `attachCell` against a
+   * per-row Var. The compiled fast paths are unaffected — they bypass the
+   * observer plumbing entirely and update through `directUpdate` /
+   * `compiledStateUpdate`.
+   */
+  mountCell: boolean = false,
 ): ArrayReconciler<ItemModel> {
   // Capture the ambient delegator at factory time so per-item mounts that
   // happen later (after program() returns) still register through the
@@ -224,6 +238,7 @@ export function createArrayReconciler<ItemModel, Msg>(
       firstNode: null,
       directUpdate: null,
       state: null,
+      itemVar: null,
     }
     liveItems.set(key, entry)
 
@@ -255,6 +270,15 @@ export function createArrayReconciler<ItemModel, Msg>(
         entry.teardown = instance
         entry.directUpdate = instance.update
       }
+    } else if (mountCell) {
+      // Cell-native row: child observes a per-row Var directly through
+      // attachCell, skipping the shared-stream observer fanout.
+      const v = makeVar(itemModel)
+      entry.itemVar = v
+      entry.teardown = guard("attach", `${label} item "${key}"`, () =>
+        itemSdom.attachCell(target, v, dispatch),
+        NOOP_TEARDOWN,
+      )
     } else {
       currentMountEntry = entry
       entry.teardown = guard("attach", `${label} item "${key}"`, () =>
@@ -280,6 +304,7 @@ export function createArrayReconciler<ItemModel, Msg>(
       firstNode: null,
       directUpdate: null,
       state: null,
+      itemVar: null,
     }
     liveItems.set(key, entry)
 
@@ -308,6 +333,15 @@ export function createArrayReconciler<ItemModel, Msg>(
         entry.teardown = instance
         entry.directUpdate = instance.update
       }
+    } else if (mountCell) {
+      const v = makeVar(itemModel)
+      entry.itemVar = v
+      entry.teardown = withDelegator(capturedDelegator, () =>
+        guard("attach", `${label} item "${key}"`, () =>
+          itemSdom.attachCell(container, v, dispatch),
+          NOOP_TEARDOWN,
+        )
+      )
     } else {
       currentMountEntry = entry
       entry.teardown = withDelegator(capturedDelegator, () =>
@@ -333,6 +367,10 @@ export function createArrayReconciler<ItemModel, Msg>(
     const directUpdate = entry.directUpdate
     if (directUpdate !== null) {
       directUpdate(prev, itemModel)
+      return
+    }
+    if (entry.itemVar !== null) {
+      entry.itemVar.set(itemModel)
       return
     }
     const update = entry as unknown as Update<ItemModel>

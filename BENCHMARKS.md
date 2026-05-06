@@ -53,6 +53,96 @@ keyed implementations.
 **Takeaway:** static-dom matches or beats Solid on every keyed benchmark in the
 suite. Faster on 02, 05, 08, and 09; within ±0.1 ms on the other five.
 
+### Post-graph-migration re-verification (2026-05-05)
+
+After the Incremental-graph migration (program runners now route through a
+`Var<Model>` instead of a bespoke `Signal<Model>`), static-dom was re-run on
+the same machine to check for regressions. **Solid was not re-run** so the
+delta column below is *not* a same-day comparison — it's just static-dom
+today vs. the 2026-05-04 baseline above.
+
+| Benchmark | static-dom 2026-05-04 | static-dom 2026-05-05 | Δ |
+|---|---:|---:|---:|
+| 01_run1k | 3.8 | 3.7 | -0.1 |
+| 02_replace1k | 6.9 | 6.5 | -0.4 |
+| 03_update10th1k_x16 | 1.8 | 1.5 | -0.3 |
+| 04_select1k | 1.1 | 0.8 | -0.3 |
+| 05_swap1k | 1.0 | 1.1 | +0.1 |
+| 06_remove-one-1k | 0.6 | 0.5 | -0.1 |
+| 07_create10k | 44.6 | 47.3 | +2.7 |
+| 08_create1k-after1k_x2 | 3.9 | 3.8 | -0.1 |
+| 09_clear1k_x8 | 12.7 | 12.3 | -0.4 |
+
+Most benchmarks moved ±0.4 ms, indistinguishable from run-to-run variance.
+The 07_create10k bump (+2.7 ms) is larger than typical drift; cross-checking
+against the pre-migration code on the same machine and same day produced
+46.5 ms (vs. today's 47.3 ms graph-build), suggesting the gap is mostly
+machine drift rather than migration cost. Either way, the post-migration
+build is still in the same neighborhood as the 2026-05-04 Solid number for
+07 (44.5 ms).
+
+### Post-constructor-migration re-verification (2026-05-05)
+
+After the SDOM constructor migration finished (every constructor now
+provides a Cell-native `attachCell` instead of falling back through
+`cellToUpdateStream`), static-dom was re-run on the same machine to
+check for regressions. **Solid was not re-run**, so the delta column
+below is again static-dom today vs. the post-graph-migration row above.
+
+| Benchmark | static-dom 2026-05-05 (graph) | static-dom 2026-05-05 (constructors) | Δ |
+|---|---:|---:|---:|
+| 01_run1k | 3.7 | **3.0** | **-0.7** |
+| 02_replace1k | 6.5 | 6.8 | +0.3 |
+| 03_update10th1k_x16 | 1.5 | 1.6 | +0.1 |
+| 04_select1k | 0.8 | 1.1 | +0.3 |
+| 05_swap1k | 1.1 | 1.2 | +0.1 |
+| 06_remove-one-1k | 0.5 | 0.5 | 0.0 |
+| 07_create10k | 47.3 | **42.9** | **-4.4** |
+| 08_create1k-after1k_x2 | 3.8 | **3.3** | **-0.5** |
+| 09_clear1k_x8 | 12.3 | 11.9 | -0.4 |
+
+`07_create10k` recovered the prior bench-day's drift and then some
+(-4.4 ms vs. the post-graph row, putting it inside the 2026-05-04
+Solid neighborhood at 44.5 ms). `01_run1k` and `08_create1k-after1k_x2`
+also moved beyond noise. The 03 / 04 / 05 increments are all under
+0.3 ms and well within run-to-run variance for those benches. Net of
+this verification, the constructor-level Cell migration is a perf-
+neutral-to-modestly-positive change end to end.
+
+#### Noise-floor follow-up on 02 and 04
+
+The +0.3 ms shifts on 02 and 04 vs. the post-graph row prompted a
+second look. Re-running each at 25 iterations on the same machine,
+and separately A/B-testing the obvious suspect — the per-row `Var`
+that `arrayBy`'s Cell-native row mount allocates — produced:
+
+| Benchmark | n=25 median | stddev | range | mountCell on (default) | mountCell off (A/B) |
+|---|---:|---:|---:|---:|---:|
+| 02_replace1k | 6.9 | 0.21 | 6.4–7.6 | 6.9 | 6.8 |
+| 04_select1k | 1.2 | 0.22 | 0.8–1.7 | 1.2 | 1.1 |
+
+Two takeaways:
+
+1. **The deltas sit inside the per-iter noise floor.** `04_select1k`
+   has a 1.2 ms median against stddev 0.22 — relative noise of
+   roughly 18%. The 0.8 ms post-graph row was the lucky bottom of
+   that distribution, not a stable baseline. `02_replace1k` lands at
+   6.8–6.9 ms, matching the 2026-05-04 Solid-comparison row of
+   6.9 ms; the 6.5 ms post-graph row was the lucky bottom there.
+2. **Removing the suspected source of overhead doesn't move the
+   numbers.** Flipping `mountCell` to `false` for `arrayBy` (so each
+   row mounts via the legacy `attach + sharedUpdateStream` path
+   instead of through a per-row `Var`) shifts both benchmarks by
+   0.1 ms or less — within a single per-iter step. The per-row `Var`
+   allocation and Cell-set are not measurably costly, since the
+   reconciler already filters per-row by identity before fanning
+   out updates.
+
+The post-constructor-migration build is statistically
+indistinguishable from the original 2026-05-04 baseline for these
+two benchmarks; the apparent regression is an artifact of comparing
+against an unusually-low sample.
+
 ### Reproducing
 
 Both frameworks need to be built into the local

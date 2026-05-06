@@ -145,12 +145,47 @@ export {
 export type { Observable, UpdateStream, Dispatcher, Update, Signal, Observer, Unsubscribe } from "./observable"
 export { createSignal, toUpdateStream, mapUpdate, contramapDispatcher } from "./observable"
 
+// Incremental computation graph (OCaml-Incremental flavor).
+// `Var` is a writable leaf cell; `Cell` is a read-only derived cell.
+// `mapCell` / `mapCell2` build derivations with diamond-correct cutoff;
+// `batch` collapses multiple sets into one stabilize sweep.
+// `attachToCell` (in ./program) mounts a view directly against any Cell;
+// `cellToUpdateStream` is the lower-level bridge into the UpdateStream surface.
+export type { Cell, Var } from "./incremental-graph"
+export {
+  makeVar,
+  mapCell,
+  mapCell2,
+  mapCell3,
+  bindCell,
+  batch,
+  stabilize,
+  disposeCell,
+  cellToUpdateStream,
+} from "./incremental-graph"
+
+// Optic lifts over the graph. The optic's equality becomes the derived
+// cell's cutoff: fields the optic does not read never propagate, fields
+// whose lens-equality says "unchanged" never fire observers. `focusVar`
+// turns a `Var<S>` plus a `Lens<S, A>` into a `Var<A>` with write-back.
+export { liftGetter, liftLens, liftPrism, liftAffine, liftFold, focusVar, bindPrism } from "./incremental-optics"
+
 // Constructors
-export { text, staticText, element, array, arrayBy, indexedArray, optional, match, dynamic, component, compiled, compiledState, fragment, wrapChannel, lis } from "./constructors"
+export { text, staticText, element, array, arrayBy, indexedArray, optional, match, dynamic, component, compiled, compiledState, fragment, lis } from "./constructors"
 
 // Program runners
-export type { ProgramConfig, ProgramHandle, EffectProgramConfig, DeltaProgramConfig, SubProgramConfig, ElmProgramConfig, Cmd } from "./program"
-export { program, programWithEffects, programWithDelta, programWithSub, elmProgram, noCmd, batchCmd } from "./program"
+export type {
+  ProgramConfig, ProgramHandle, Cmd,
+  EffectProgramConfig, DeltaProgramConfig, SubProgramConfig, ElmProgramConfig,
+  VarProgramConfig, VarEffectProgramConfig, VarDeltaProgramConfig,
+  VarSubProgramConfig, VarElmProgramConfig,
+} from "./program"
+export {
+  program, programWithEffects, programWithDelta, programWithSub, elmProgram,
+  programFromVar, programWithEffectsFromVar, programWithDeltaFromVar,
+  programWithSubFromVar, elmProgramFromVar,
+  attachToCell, noCmd, batchCmd,
+} from "./program"
 
 // Subscriptions (Elm-style)
 export type { Sub } from "./subscription"

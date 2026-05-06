@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
 import { match, element, text } from "../src/constructors"
+import { attachToCell } from "../src/program"
+import { makeVar } from "../src/incremental-graph"
 import { mount, cleanup, type TestHarness } from "./helpers"
+import type { Teardown } from "../src/types"
 
 // ---------------------------------------------------------------------------
 // Tagged union model
@@ -259,6 +262,51 @@ describe("match", () => {
       hMsg.set({ tag: "loaded", data: "x" })
       hMsg.container.querySelector("button")!.click()
       expect(hMsg.dispatched).toEqual([{ type: "clicked", from: "loaded" }])
+    })
+  })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    const view = match<State, "loading" | "error" | "loaded", never>(
+      m => m.tag,
+      {
+        loading: stateLoadingView,
+        error: stateErrorView,
+        loaded: stateLoadedView,
+      },
+    )
+
+    it("renders the initial branch and updates within the same branch", () => {
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar<State>({ tag: "error", message: "oops" })
+      td = attachToCell(container, view, v, () => {})
+      expect(container.textContent).toContain("Error: oops")
+      v.set({ tag: "error", message: "later" })
+      expect(container.textContent).toContain("Error: later")
+    })
+
+    it("swaps branches when the discriminant changes", () => {
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar<State>({ tag: "loading" })
+      td = attachToCell(container, view, v, () => {})
+      expect(container.textContent).toContain("Loading")
+
+      v.set({ tag: "loaded", data: "ok" })
+      expect(container.querySelector(".loading")).toBeNull()
+      expect(container.textContent).toContain("ok")
+
+      v.set({ tag: "error", message: "bad" })
+      expect(container.querySelector(".loaded")).toBeNull()
+      expect(container.textContent).toContain("Error: bad")
     })
   })
 })

@@ -17,11 +17,12 @@
  * separate from the UI description concern.
  */
 
-import { createSignal, toUpdateStream, type Dispatcher, type Observer, type Update, type Unsubscribe, type UpdateStream } from "./observable"
+import type { Dispatcher, Observer, Update, Unsubscribe, UpdateStream } from "./observable"
 import type { SDOM, Teardown } from "./types"
 import { _tryFastPatch } from "./incremental"
 import { diffSubs, type Sub } from "./subscription"
 import { createDelegator, withDelegator } from "./delegation"
+import { type Cell, type Var, makeVar } from "./incremental-graph"
 
 // ---------------------------------------------------------------------------
 // Program types
@@ -65,6 +66,43 @@ export interface ProgramHandle<Model, Msg> {
 }
 
 // ---------------------------------------------------------------------------
+// attachToCell — Cell-first mount primitive
+// ---------------------------------------------------------------------------
+
+/**
+ * Mount a view against a `Cell<Model>`. The cell is the single source of
+ * truth: the view sees the cell's current value at mount and re-renders
+ * whenever the cell's observers fire (i.e. its cutoff lets a new value
+ * through). `dispatch` handles outgoing messages — typically by writing
+ * back to a `Var` somewhere upstream of `cell`.
+ *
+ * This is the Cell-first counterpart to `program`. It lets callers build
+ * a model graph however they like — `mapCell`, `bindCell`, `focusVar` of
+ * a parent var, etc. — and mount views against any node in that graph,
+ * without going through the `program` runner.
+ *
+ * Internally the cell is bridged to an `UpdateStream` so existing
+ * constructors keep working unchanged. Each subscriber's bridge
+ * allocates one reusable `{prev, next, delta}` object.
+ */
+export function attachToCell<Model, Msg>(
+  container: Element,
+  view: SDOM<Model, Msg>,
+  cell: Cell<Model>,
+  dispatch: Dispatcher<Msg>,
+): Teardown {
+  const delegator = createDelegator(container)
+  const viewTeardown = withDelegator(delegator, () =>
+    view.attachCell(container, cell, dispatch))
+  return {
+    teardown() {
+      viewTeardown.teardown()
+      delegator.teardown()
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // program
 // ---------------------------------------------------------------------------
 
@@ -72,10 +110,9 @@ export interface ProgramHandle<Model, Msg> {
  * Mount an SDOM program.
  *
  * This is the function that "ties the knot":
- *   1. Creates a mutable Signal for the model.
- *   2. Derives an UpdateStream from it.
- *   3. Creates a Dispatcher that runs `update` and pushes to the signal.
- *   4. Calls `view.attach` once to create the initial DOM and wire subscriptions.
+ *   1. Creates a mutable Var for the model.
+ *   2. Wires `dispatch` to run `update` and write back through the Var.
+ *   3. Calls `attachToCell` to mount the view against the Var.
  *
  * After this call, the DOM is live: dispatching messages will synchronously
  * update the model signal, which fires the update stream, which directly
@@ -86,35 +123,66 @@ export function program<Model, Msg>(
 ): ProgramHandle<Model, Msg> {
   const { container, init, update, view, onUpdate } = config
 
-  const modelSignal = createSignal(init)
-  const updates = toUpdateStream(modelSignal)
-
-  let viewTeardown: Teardown | null = null
+  const modelVar = makeVar(init)
 
   const dispatch: Dispatcher<Msg> = (msg: Msg) => {
-    const prev = modelSignal.value
+    const prev = modelVar.value
     const next = update(msg, prev)
     onUpdate?.(msg, prev, next)
-    modelSignal.setValue(next)
+    modelVar.set(next)
   }
 
-  // One root delegator per program. Per-element addEventListener calls
-  // collapse to a single root listener per event type, so mount/teardown
-  // for large keyed lists is no longer dominated by listener bookkeeping.
-  const delegator = createDelegator(container)
-
-  // Mount the view once. This is the ONLY time DOM structure is created.
-  viewTeardown = withDelegator(delegator, () =>
-    view.attach(container, init, updates, dispatch))
+  const teardown = attachToCell(container, view, modelVar, dispatch)
 
   return {
     dispatch,
-    getModel: () => modelSignal.value,
-    teardown() {
-      viewTeardown?.teardown()
-      viewTeardown = null
-      delegator.teardown()
-    },
+    getModel: () => modelVar.value,
+    teardown: () => teardown.teardown(),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// programFromVar — bring-your-own-Var program runner
+// ---------------------------------------------------------------------------
+
+/** Configuration for `programFromVar` — the model lives in a caller-supplied Var. */
+export interface VarProgramConfig<Model, Msg> {
+  container: Element
+  /**
+   * The root model Var. Built by the caller, which means it can be wired
+   * into other cells (e.g. shared with another mounted view, derived from
+   * a parent Var via `focusVar`) before mount.
+   */
+  modelVar: Var<Model>
+  update: (msg: Msg, model: Model) => Model
+  view: SDOM<Model, Msg>
+  onUpdate?: (msg: Msg, prev: Model, next: Model) => void
+}
+
+/**
+ * Like `program`, but the model lives in a Var the caller already built.
+ * Useful when the model graph is composed externally — for example, when
+ * one Var feeds two mounted views, or when a child view is mounted on a
+ * `focusVar` slice of a parent Var.
+ */
+export function programFromVar<Model, Msg>(
+  config: VarProgramConfig<Model, Msg>
+): ProgramHandle<Model, Msg> {
+  const { container, modelVar, update, view, onUpdate } = config
+
+  const dispatch: Dispatcher<Msg> = (msg: Msg) => {
+    const prev = modelVar.value
+    const next = update(msg, prev)
+    onUpdate?.(msg, prev, next)
+    modelVar.set(next)
+  }
+
+  const teardown = attachToCell(container, view, modelVar, dispatch)
+
+  return {
+    dispatch,
+    getModel: () => modelVar.value,
+    teardown: () => teardown.teardown(),
   }
 }
 
@@ -159,37 +227,50 @@ export function programWithEffects<Model, Msg>(
   config: EffectProgramConfig<Model, Msg>
 ): ProgramHandle<Model, Msg> {
   const { container, init: [initModel, initCmd], update, view, onUpdate } = config
+  return programWithEffectsFromVar({
+    container,
+    modelVar: makeVar(initModel),
+    initCmd,
+    update,
+    view,
+    ...(onUpdate ? { onUpdate } : {}),
+  })
+}
 
-  const modelSignal = createSignal(initModel)
-  const updates = toUpdateStream(modelSignal)
+/** Configuration for `programWithEffectsFromVar` — caller-supplied Var + initial Cmd. */
+export interface VarEffectProgramConfig<Model, Msg> {
+  container: Element
+  modelVar: Var<Model>
+  /** Run once at mount. Use `noCmd()` if no init effect is needed. */
+  initCmd: Cmd<Msg>
+  update: (msg: Msg, model: Model) => [Model, Cmd<Msg>]
+  view: SDOM<Model, Msg>
+  onUpdate?: (msg: Msg, prev: Model, next: Model) => void
+}
 
-  let viewTeardown: Teardown | null = null
+/**
+ * Like `programWithEffects`, but the model lives in a caller-supplied Var.
+ */
+export function programWithEffectsFromVar<Model, Msg>(
+  config: VarEffectProgramConfig<Model, Msg>
+): ProgramHandle<Model, Msg> {
+  const { container, modelVar, initCmd, update, view, onUpdate } = config
 
-  // dispatch is defined before mount because event handlers close over it
   const dispatch: Dispatcher<Msg> = (msg: Msg) => {
-    const prev = modelSignal.value
+    const prev = modelVar.value
     const [next, cmd] = update(msg, prev)
     onUpdate?.(msg, prev, next)
-    modelSignal.setValue(next)
-    // Execute the command — async, will dispatch more messages later
+    modelVar.set(next)
     cmd(dispatch)
   }
 
-  const delegator = createDelegator(container)
-  viewTeardown = withDelegator(delegator, () =>
-    view.attach(container, initModel, updates, dispatch))
-
-  // Run the init command
+  const teardown = attachToCell(container, view, modelVar, dispatch)
   initCmd(dispatch)
 
   return {
     dispatch,
-    getModel: () => modelSignal.value,
-    teardown() {
-      viewTeardown?.teardown()
-      viewTeardown = null
-      delegator.teardown()
-    },
+    getModel: () => modelVar.value,
+    teardown: () => teardown.teardown(),
   }
 }
 
@@ -240,31 +321,64 @@ export function programWithDelta<Model, Msg>(
   config: DeltaProgramConfig<Model, Msg>
 ): ProgramHandle<Model, Msg> {
   const { container, init, update, view, onUpdate, extractDelta } = config
+  return programWithDeltaFromVar({
+    container,
+    modelVar: makeVar(init),
+    update,
+    view,
+    ...(onUpdate ? { onUpdate } : {}),
+    ...(extractDelta ? { extractDelta } : {}),
+  })
+}
 
-  // Custom UpdateStream that carries deltas.
-  // Single-observer fast path + reusable mutable Update object.
-  let current = init
-  let observer: Observer<Update<Model>> | null = null
-  let observers: Set<Observer<Update<Model>>> | null = null
+/** Configuration for `programWithDeltaFromVar` — caller-supplied Var + delta-returning update. */
+export interface VarDeltaProgramConfig<Model, Msg> {
+  container: Element
+  modelVar: Var<Model>
+  update: (msg: Msg, model: Model) => [Model, unknown | undefined]
+  view: SDOM<Model, Msg>
+  onUpdate?: (msg: Msg, prev: Model, next: Model, delta: unknown | undefined) => void
+  extractDelta?: (msg: Msg, model: Model) => unknown | null
+}
 
-  // Reusable mutable update — safe because observers consume synchronously
-  const updateObj = { prev: init, next: init } as { prev: Model; next: Model; delta?: unknown }
+/**
+ * Like `programWithDelta`, but the model lives in a caller-supplied Var.
+ *
+ * Note: the delta-threaded UpdateStream is wired inline here rather than
+ * via `attachToCell`, because the bridge needs to read the in-flight
+ * delta from a closure variable on each emission.
+ */
+export function programWithDeltaFromVar<Model, Msg>(
+  config: VarDeltaProgramConfig<Model, Msg>
+): ProgramHandle<Model, Msg> {
+  const { container, modelVar, update, view, onUpdate, extractDelta } = config
 
+  // The fast-patch path bypasses the observer chain entirely (the
+  // incrementalArray fast-patch handler writes the DOM directly). When
+  // that runs, we don't want Var observers to fire, but we still need
+  // getModel() to return the new value and the next dispatch to read it
+  // as `prev`. So `current` is the source of truth for reads, and the
+  // Var is set only on the normal path — its observers are exactly the
+  // view subscriptions that need to re-render.
+  let current = modelVar.value
+
+  // Per-subscriber reusable update objects so the existing UpdateStream
+  // surface (which carries `delta` alongside `{prev, next}`) keeps working.
+  // `currentDelta` is the closed-over delta for the in-flight dispatch.
+  let currentDelta: unknown = undefined
   const deltaUpdates: UpdateStream<Model> = {
     subscribe(obs: Observer<Update<Model>>): Unsubscribe {
-      if (observer === null && observers === null) {
-        observer = obs
-      } else {
-        if (observers === null) {
-          observers = new Set()
-          if (observer) { observers.add(observer); observer = null }
-        }
-        observers.add(obs)
+      const update: { prev: Model; next: Model; delta: unknown | undefined } = {
+        prev: modelVar.value,
+        next: modelVar.value,
+        delta: undefined,
       }
-      return () => {
-        if (observer === obs) { observer = null }
-        else if (observers) { observers.delete(obs) }
-      }
+      return modelVar.observe((value) => {
+        update.prev = update.next
+        update.next = value
+        update.delta = currentDelta
+        obs(update as Update<Model>)
+      })
     },
   }
 
@@ -306,20 +420,16 @@ export function programWithDelta<Model, Msg>(
       return // Handled — skip normal subscription chain
     }
 
-    // Normal path: fire all observers
-    updateObj.prev = prev
-    updateObj.next = next
-    updateObj.delta = delta
-    if (observer) {
-      observer(updateObj as Update<Model>)
-    } else if (observers) {
-      observers.forEach(obs => obs(updateObj as Update<Model>))
-    }
+    // Normal path: publish through the Var so observers (the view) fire.
+    // Stash the delta for the bridge to read inside Var observers.
+    currentDelta = delta
+    modelVar.set(next)
+    currentDelta = undefined
   }
 
   const delegator = createDelegator(container)
   viewTeardown = withDelegator(delegator, () =>
-    view.attach(container, init, deltaUpdates, dispatch))
+    view.attach(container, modelVar.value, deltaUpdates, dispatch))
 
   return {
     dispatch,
@@ -361,37 +471,54 @@ export function programWithSub<Model, Msg>(
   config: SubProgramConfig<Model, Msg>
 ): ProgramHandle<Model, Msg> {
   const { container, init, update, view, subscriptions, onUpdate } = config
+  return programWithSubFromVar({
+    container,
+    modelVar: makeVar(init),
+    update,
+    view,
+    subscriptions,
+    ...(onUpdate ? { onUpdate } : {}),
+  })
+}
 
-  const modelSignal = createSignal(init)
-  const updates = toUpdateStream(modelSignal)
+/** Configuration for `programWithSubFromVar` — caller-supplied Var + subscriptions. */
+export interface VarSubProgramConfig<Model, Msg> {
+  container: Element
+  modelVar: Var<Model>
+  update: (msg: Msg, model: Model) => Model
+  view: SDOM<Model, Msg>
+  subscriptions: (model: Model) => Sub<Msg>[]
+  onUpdate?: (msg: Msg, prev: Model, next: Model) => void
+}
+
+/**
+ * Like `programWithSub`, but the model lives in a caller-supplied Var.
+ */
+export function programWithSubFromVar<Model, Msg>(
+  config: VarSubProgramConfig<Model, Msg>
+): ProgramHandle<Model, Msg> {
+  const { container, modelVar, update, view, subscriptions, onUpdate } = config
+
   const activeSubs = new Map<string, Teardown>()
 
-  let viewTeardown: Teardown | null = null
-
   const dispatch: Dispatcher<Msg> = (msg: Msg) => {
-    const prev = modelSignal.value
+    const prev = modelVar.value
     const next = update(msg, prev)
     onUpdate?.(msg, prev, next)
-    modelSignal.setValue(next)
+    modelVar.set(next)
     diffSubs(activeSubs, subscriptions(next), dispatch)
   }
 
-  const delegator = createDelegator(container)
-  viewTeardown = withDelegator(delegator, () =>
-    view.attach(container, init, updates, dispatch))
-
-  // Start initial subscriptions
-  diffSubs(activeSubs, subscriptions(init), dispatch)
+  const teardown = attachToCell(container, view, modelVar, dispatch)
+  diffSubs(activeSubs, subscriptions(modelVar.value), dispatch)
 
   return {
     dispatch,
-    getModel: () => modelSignal.value,
+    getModel: () => modelVar.value,
     teardown() {
       for (const td of activeSubs.values()) td.teardown()
       activeSubs.clear()
-      viewTeardown?.teardown()
-      viewTeardown = null
-      delegator.teardown()
+      teardown.teardown()
     },
   }
 }
@@ -419,37 +546,58 @@ export function elmProgram<Model, Msg>(
   config: ElmProgramConfig<Model, Msg>
 ): ProgramHandle<Model, Msg> {
   const { container, init: [initModel, initCmd], update, view, subscriptions, onUpdate } = config
+  return elmProgramFromVar({
+    container,
+    modelVar: makeVar(initModel),
+    initCmd,
+    update,
+    view,
+    subscriptions,
+    ...(onUpdate ? { onUpdate } : {}),
+  })
+}
 
-  const modelSignal = createSignal(initModel)
-  const updates = toUpdateStream(modelSignal)
+/** Configuration for `elmProgramFromVar` — caller-supplied Var + initial Cmd + subscriptions. */
+export interface VarElmProgramConfig<Model, Msg> {
+  container: Element
+  modelVar: Var<Model>
+  initCmd: Cmd<Msg>
+  update: (msg: Msg, model: Model) => [Model, Cmd<Msg>]
+  view: SDOM<Model, Msg>
+  subscriptions: (model: Model) => Sub<Msg>[]
+  onUpdate?: (msg: Msg, prev: Model, next: Model) => void
+}
+
+/**
+ * Like `elmProgram`, but the model lives in a caller-supplied Var.
+ */
+export function elmProgramFromVar<Model, Msg>(
+  config: VarElmProgramConfig<Model, Msg>
+): ProgramHandle<Model, Msg> {
+  const { container, modelVar, initCmd, update, view, subscriptions, onUpdate } = config
+
   const activeSubs = new Map<string, Teardown>()
 
-  let viewTeardown: Teardown | null = null
-
   const dispatch: Dispatcher<Msg> = (msg: Msg) => {
-    const prev = modelSignal.value
+    const prev = modelVar.value
     const [next, cmd] = update(msg, prev)
     onUpdate?.(msg, prev, next)
-    modelSignal.setValue(next)
+    modelVar.set(next)
     cmd(dispatch)
     diffSubs(activeSubs, subscriptions(next), dispatch)
   }
 
-  const delegator = createDelegator(container)
-  viewTeardown = withDelegator(delegator, () =>
-    view.attach(container, initModel, updates, dispatch))
+  const teardown = attachToCell(container, view, modelVar, dispatch)
   initCmd(dispatch)
-  diffSubs(activeSubs, subscriptions(initModel), dispatch)
+  diffSubs(activeSubs, subscriptions(modelVar.value), dispatch)
 
   return {
     dispatch,
-    getModel: () => modelSignal.value,
+    getModel: () => modelVar.value,
     teardown() {
       for (const td of activeSubs.values()) td.teardown()
       activeSubs.clear()
-      viewTeardown?.teardown()
-      viewTeardown = null
-      delegator.teardown()
+      teardown.teardown()
     },
   }
 }

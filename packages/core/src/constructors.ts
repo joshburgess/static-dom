@@ -13,14 +13,13 @@
  *   array(tag, getItems, item) — dynamic list with DOM reuse
  *   optional(prism, inner)     — conditionally present subtree
  *   component(fn)              — escape hatch / third-party integration
- *   wrapChannel(inner, interp) — lower a channeled SDOM to plain SDOM
  */
 
 import { makeSDOM, type SDOM, type Teardown, type AttrInput,
-         type SDOMAttr, type KeyedItem, type ArrayContext,
-         type ChannelEvent, type SDOMWithChannel } from "./types"
+         type SDOMAttr, type KeyedItem, type ArrayContext } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { Prism, Affine } from "./optics"
+import { makeVar, type Var } from "./incremental-graph"
 import { guard, guardApply, getErrorHandler, __SDOM_GUARD__ } from "./errors"
 import { __SDOM_DEV__, validateModelShape, validateUniqueKeys } from "./dev"
 import { registerEvent, getCurrentDelegator, withDelegator } from "./delegation"
@@ -165,41 +164,76 @@ interface IUpdater<M> { run(prev: M, next: M): void }
  * @param value  Function from model to text content.
  */
 export function text<Model>(value: (model: Model) => string): SDOM<Model, never> {
-  return makeSDOM<Model, never>((parent, initialModel, updates, _dispatch) => {
-    let lastText = guardApply("attach", "text derive", value, initialModel, "")
-    const node = document.createTextNode(lastText)
-    parent.appendChild(node)
+  return makeSDOM<Model, never>(
+    (parent, initialModel, updates, _dispatch) => {
+      let lastText = guardApply("attach", "text derive", value, initialModel, "")
+      const node = document.createTextNode(lastText)
+      parent.appendChild(node)
 
-    const checkShape = validateModelShape("text", initialModel)
-    const unsub = updates.subscribe(({ next }) => {
-      checkShape(next)
-      const nextText = __SDOM_GUARD__
-        ? guard("update", "text derive", () => value(next), "")
-        : value(next)
-      if (nextText !== lastText) {
-        lastText = nextText
-        node.textContent = nextText
+      const checkShape = validateModelShape("text", initialModel)
+      const unsub = updates.subscribe(({ next }) => {
+        checkShape(next)
+        const nextText = __SDOM_GUARD__
+          ? guard("update", "text derive", () => value(next), "")
+          : value(next)
+        if (nextText !== lastText) {
+          lastText = nextText
+          node.textContent = nextText
+        }
+      })
+
+      return {
+        teardown() {
+          unsub()
+          node.remove()
+        },
       }
-    })
+    },
+    // Cell-native fast path: skip the UpdateStream bridge.
+    (parent, cell, _dispatch) => {
+      const initialModel = cell.value
+      let lastText = guardApply("attach", "text derive", value, initialModel, "")
+      const node = document.createTextNode(lastText)
+      parent.appendChild(node)
 
-    return {
-      teardown() {
-        unsub()
-        node.remove()
-      },
-    }
-  })
+      const checkShape = validateModelShape("text", initialModel)
+      const unsub = cell.observe((next) => {
+        checkShape(next)
+        const nextText = __SDOM_GUARD__
+          ? guard("update", "text derive", () => value(next), "")
+          : value(next)
+        if (nextText !== lastText) {
+          lastText = nextText
+          node.textContent = nextText
+        }
+      })
+
+      return {
+        teardown() {
+          unsub()
+          node.remove()
+        },
+      }
+    },
+  )
 }
 
 /**
  * A static text node — no model dependency.
  */
 export function staticText(content: string): SDOM<unknown, never> {
-  return makeSDOM<unknown, never>((parent, _m, _u, _d) => {
-    const node = document.createTextNode(content)
-    parent.appendChild(node)
-    return { teardown: () => node.remove() }
-  })
+  return makeSDOM<unknown, never>(
+    (parent, _m, _u, _d) => {
+      const node = document.createTextNode(content)
+      parent.appendChild(node)
+      return { teardown: () => node.remove() }
+    },
+    (parent, _cell, _d) => {
+      const node = document.createTextNode(content)
+      parent.appendChild(node)
+      return { teardown: () => node.remove() }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -241,125 +275,177 @@ export function element<
   const HAS_ATTRS = attrList.length > 0
   const HAS_CHILDREN = children.length > 0
 
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
+  // Shared setup that's identical between the UpdateStream and Cell paths.
+  // Returns the element, its updaters, event teardowns, and shape check.
+  // The caller wires the appropriate observer source.
+  function buildElement(initialModel: Model, dispatch: Dispatcher<Msg>) {
     const el = document.createElement(tag) as HTMLElementTagNameMap[Tag] & Element
-
-    let childTeardowns: Teardown[] | null = null
     const checkShape = validateModelShape(`element<"${tag}">`, initialModel)
-
-    // ── Attr setup ──
-    // Prototype-based updater classes (from Most.js): each class has a stable
-    // hidden class and a prototype `run` method, giving V8 monomorphic dispatch
-    // within each updater type instead of megamorphic closure calls.
-    // Bitwise flag HAS_ATTRS gates the entire loop — skip for static elements.
     let attrUpdaters: IUpdater<Model>[] | null = null
     let eventTeardowns: Array<() => void> | null = null
 
     if (HAS_ATTRS) {
-    attrUpdaters = []
-    eventTeardowns = []
+      attrUpdaters = []
+      eventTeardowns = []
 
-    for (const rawAttr of attrList) {
-      const attr = rawAttr as SDOMAttr<Model, Msg>
-      switch (attr.kind) {
-        case "string": {
-          const initial = guardApply("attach", `attr "${attr.name}"`, attr.value, initialModel, "")
-          const propName = ATTR_TO_PROP[attr.name]
-          if (propName) {
-            // Direct property assignment — 2–5× faster than setAttribute
-            attrUpdaters.push(new PropUpdater<Model>(el, propName, `attr "${attr.name}"`, attr.value, "", initial))
-          } else {
-            attrUpdaters.push(new StringAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
+      for (const rawAttr of attrList) {
+        const attr = rawAttr as SDOMAttr<Model, Msg>
+        switch (attr.kind) {
+          case "string": {
+            const initial = guardApply("attach", `attr "${attr.name}"`, attr.value, initialModel, "")
+            const propName = ATTR_TO_PROP[attr.name]
+            if (propName) {
+              attrUpdaters.push(new PropUpdater<Model>(el, propName, `attr "${attr.name}"`, attr.value, "", initial))
+            } else {
+              attrUpdaters.push(new StringAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
+            }
+            break
           }
-          break
-        }
-        case "bool": {
-          const initial = guardApply("attach", `attr "${attr.name}"`, attr.value, initialModel, false)
-          attrUpdaters.push(new BoolAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
-          break
-        }
-        case "prop": {
-          const initial = guardApply("attach", `prop "${attr.name}"`, attr.value, initialModel, "")
-          attrUpdaters.push(new PropUpdater<Model>(el, attr.name, `prop "${attr.name}"`, attr.value, "", initial))
-          break
-        }
-        case "style": {
-          const initial = guardApply("attach", `style "${attr.property}"`, attr.value, initialModel, "")
-          attrUpdaters.push(new StyleUpdater<Model>(el as HTMLElement, attr.property, `style "${attr.property}"`, attr.value, initial))
-          break
-        }
-        case "classMap": {
-          const initial = guardApply("attach", "classMap", attr.map, initialModel, EMPTY_CLASS_MAP)
-          attrUpdaters.push(new ClassMapUpdater<Model>(el, attr.map, initial))
-          break
-        }
-        case "event": {
-          const ref = { current: initialModel }
-          const evtHandler = attr.handler
-          const name = attr.name
-          const handler = (event: Event) => {
-            const msg = __SDOM_GUARD__
-              ? guard("event", `on "${name}"`, () => evtHandler(event, ref.current), null)
-              : evtHandler(event, ref.current)
-            if (msg !== null) dispatch(msg)
+          case "bool": {
+            const initial = guardApply("attach", `attr "${attr.name}"`, attr.value, initialModel, false)
+            attrUpdaters.push(new BoolAttrUpdater<Model>(el, attr.name, `attr "${attr.name}"`, attr.value, initial))
+            break
           }
-          attrUpdaters.push(new EventRefUpdater<Model>(ref))
-          const cleanup = registerEvent(el, name, handler)
-          if (cleanup !== null) eventTeardowns.push(cleanup)
-          break
+          case "prop": {
+            const initial = guardApply("attach", `prop "${attr.name}"`, attr.value, initialModel, "")
+            attrUpdaters.push(new PropUpdater<Model>(el, attr.name, `prop "${attr.name}"`, attr.value, "", initial))
+            break
+          }
+          case "style": {
+            const initial = guardApply("attach", `style "${attr.property}"`, attr.value, initialModel, "")
+            attrUpdaters.push(new StyleUpdater<Model>(el as HTMLElement, attr.property, `style "${attr.property}"`, attr.value, initial))
+            break
+          }
+          case "classMap": {
+            const initial = guardApply("attach", "classMap", attr.map, initialModel, EMPTY_CLASS_MAP)
+            attrUpdaters.push(new ClassMapUpdater<Model>(el, attr.map, initial))
+            break
+          }
+          case "event": {
+            const ref = { current: initialModel }
+            const evtHandler = attr.handler
+            const name = attr.name
+            const handler = (event: Event) => {
+              const msg = __SDOM_GUARD__
+                ? guard("event", `on "${name}"`, () => evtHandler(event, ref.current), null)
+                : evtHandler(event, ref.current)
+              if (msg !== null) dispatch(msg)
+            }
+            attrUpdaters.push(new EventRefUpdater<Model>(ref))
+            const cleanup = registerEvent(el, name, handler)
+            if (cleanup !== null) eventTeardowns.push(cleanup)
+            break
+          }
         }
       }
     }
-    } // end if (HAS_ATTRS)
 
-    // ── Single subscription for all attrs ──
-    // One observer callback runs all updaters in a tight loop.
-    let attrUnsub: (() => void) | null = null
-    if (attrUpdaters !== null) {
-      const updaters = attrUpdaters
-      const nUpdaters = updaters.length
-      if (nUpdaters > 0) {
-        attrUnsub = updates.subscribe(({ prev, next }) => {
-          if (__SDOM_DEV__) checkShape(next)
-          for (let i = 0; i < nUpdaters; i++) {
-            updaters[i]!.run(prev, next)
-          }
-        })
+    return { el, attrUpdaters, eventTeardowns, checkShape }
+  }
+
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const { el, attrUpdaters, eventTeardowns, checkShape } = buildElement(initialModel, dispatch)
+      let childTeardowns: Teardown[] | null = null
+
+      // ── Single subscription for all attrs ──
+      let attrUnsub: (() => void) | null = null
+      if (attrUpdaters !== null) {
+        const updaters = attrUpdaters
+        const nUpdaters = updaters.length
+        if (nUpdaters > 0) {
+          attrUnsub = updates.subscribe(({ prev, next }) => {
+            if (__SDOM_DEV__) checkShape(next)
+            for (let i = 0; i < nUpdaters; i++) {
+              updaters[i]!.run(prev, next)
+            }
+          })
+        }
       }
-    }
 
-    // ── Children ──
-    // Bitwise flag HAS_CHILDREN gates child mount — skip for leaf elements.
-    // Inline try/catch avoids closure allocation from guard() per child.
-    if (HAS_CHILDREN) {
-      childTeardowns = []
-      if (__SDOM_GUARD__) {
-        for (let i = 0; i < children.length; i++) {
-          try {
+      if (HAS_CHILDREN) {
+        childTeardowns = []
+        if (__SDOM_GUARD__) {
+          for (let i = 0; i < children.length; i++) {
+            try {
+              childTeardowns.push(children[i]!.attach(el, initialModel, updates, dispatch))
+            } catch (error) {
+              getErrorHandler()({ error, phase: "attach", context: `element<${tag}> child[${i}]` })
+              childTeardowns.push({ teardown() {} })
+            }
+          }
+        } else {
+          for (let i = 0; i < children.length; i++) {
             childTeardowns.push(children[i]!.attach(el, initialModel, updates, dispatch))
-          } catch (error) {
-            getErrorHandler()({ error, phase: "attach", context: `element<${tag}> child[${i}]` })
-            childTeardowns.push({ teardown() {} })
           }
         }
-      } else {
-        for (let i = 0; i < children.length; i++) {
-          childTeardowns.push(children[i]!.attach(el, initialModel, updates, dispatch))
+      }
+
+      parent.appendChild(el)
+
+      return {
+        teardown() {
+          attrUnsub?.()
+          if (eventTeardowns) eventTeardowns.forEach(fn => fn())
+          if (childTeardowns) childTeardowns.forEach(t => t.teardown())
+          el.remove()
+        },
+      }
+    },
+    // Cell-native fast path. Tracks `prev` locally so updaters keep their
+    // (prev, next) shape, but observes the cell directly — skipping the
+    // UpdateStream bridge for both this element's attrs and its children.
+    (parent, cell, dispatch) => {
+      const initialModel = cell.value
+      const { el, attrUpdaters, eventTeardowns, checkShape } = buildElement(initialModel, dispatch)
+      let childTeardowns: Teardown[] | null = null
+
+      let attrUnsub: (() => void) | null = null
+      if (attrUpdaters !== null) {
+        const updaters = attrUpdaters
+        const nUpdaters = updaters.length
+        if (nUpdaters > 0) {
+          let prev = initialModel
+          attrUnsub = cell.observe((next) => {
+            if (__SDOM_DEV__) checkShape(next)
+            for (let i = 0; i < nUpdaters; i++) {
+              updaters[i]!.run(prev, next)
+            }
+            prev = next
+          })
         }
       }
-    }
 
-    parent.appendChild(el)
+      if (HAS_CHILDREN) {
+        childTeardowns = []
+        if (__SDOM_GUARD__) {
+          for (let i = 0; i < children.length; i++) {
+            try {
+              childTeardowns.push(children[i]!.attachCell(el, cell, dispatch))
+            } catch (error) {
+              getErrorHandler()({ error, phase: "attach", context: `element<${tag}> child[${i}]` })
+              childTeardowns.push({ teardown() {} })
+            }
+          }
+        } else {
+          for (let i = 0; i < children.length; i++) {
+            childTeardowns.push(children[i]!.attachCell(el, cell, dispatch))
+          }
+        }
+      }
 
-    return {
-      teardown() {
-        attrUnsub?.()
-        if (eventTeardowns) eventTeardowns.forEach(fn => fn())
-        if (childTeardowns) childTeardowns.forEach(t => t.teardown())
-        el.remove()
-      },
-    }
-  })
+      parent.appendChild(el)
+
+      return {
+        teardown() {
+          attrUnsub?.()
+          if (eventTeardowns) eventTeardowns.forEach(fn => fn())
+          if (childTeardowns) childTeardowns.forEach(t => t.teardown())
+          el.remove()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -398,45 +484,84 @@ export function array<
   getItems: (model: Model) => KeyedItem<ItemModel>[],
   itemSdom: SDOM<ItemModel, Msg>
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const container = document.createElement(containerTag)
-    parent.appendChild(container)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
 
-    const reconciler = createArrayReconciler<ItemModel, Msg>(
-      container, itemSdom, dispatch, "array",
-    )
-
-    // Cache the previous items for array-identity fast path.
-    let prevItems: KeyedItem<ItemModel>[] | null = null
-
-    // Initial mount
-    const initialItems = getItems(initialModel)
-    reconciler.sync(
-      initialItems.length,
-      i => initialItems[i]!.key,
-      i => initialItems[i]!.model,
-    )
-    prevItems = initialItems
-
-    const unsub = updates.subscribe(({ next }) => {
-      const nextItems = getItems(next)
-      // Array-identity fast path: skip when same reference
-      if (nextItems === prevItems) return
-      reconciler.sync(
-        nextItems.length,
-        i => nextItems[i]!.key,
-        i => nextItems[i]!.model,
+      const reconciler = createArrayReconciler<ItemModel, Msg>(
+        container, itemSdom, dispatch, "array",
       )
-      prevItems = nextItems
-    })
 
-    return {
-      teardown() {
-        unsub()
-        reconciler.teardown()
-      },
-    }
-  })
+      // Cache the previous items for array-identity fast path.
+      let prevItems: KeyedItem<ItemModel>[] | null = null
+
+      // Initial mount
+      const initialItems = getItems(initialModel)
+      reconciler.sync(
+        initialItems.length,
+        i => initialItems[i]!.key,
+        i => initialItems[i]!.model,
+      )
+      prevItems = initialItems
+
+      const unsub = updates.subscribe(({ next }) => {
+        const nextItems = getItems(next)
+        // Array-identity fast path: skip when same reference
+        if (nextItems === prevItems) return
+        reconciler.sync(
+          nextItems.length,
+          i => nextItems[i]!.key,
+          i => nextItems[i]!.model,
+        )
+        prevItems = nextItems
+      })
+
+      return {
+        teardown() {
+          unsub()
+          reconciler.teardown()
+        },
+      }
+    },
+    // Cell-native path: each non-compiled row mounts through attachCell
+    // against a per-row Var that the reconciler advances on update.
+    (parent, cell, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
+
+      const reconciler = createArrayReconciler<ItemModel, Msg>(
+        container, itemSdom, dispatch, "array", true,
+      )
+
+      let prevItems: KeyedItem<ItemModel>[] | null = null
+      const initialItems = getItems(cell.value)
+      reconciler.sync(
+        initialItems.length,
+        i => initialItems[i]!.key,
+        i => initialItems[i]!.model,
+      )
+      prevItems = initialItems
+
+      const unsub = cell.observe((next) => {
+        const nextItems = getItems(next)
+        if (nextItems === prevItems) return
+        reconciler.sync(
+          nextItems.length,
+          i => nextItems[i]!.key,
+          i => nextItems[i]!.model,
+        )
+        prevItems = nextItems
+      })
+
+      return {
+        teardown() {
+          unsub()
+          reconciler.teardown()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -470,45 +595,82 @@ export function arrayBy<
   getKey: (item: ItemModel) => string,
   itemSdom: SDOM<ItemModel, Msg>,
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const container = document.createElement(containerTag)
-    parent.appendChild(container)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
 
-    const reconciler = createArrayReconciler<ItemModel, Msg>(
-      container, itemSdom, dispatch, "arrayBy",
-    )
-
-    // Array reference cache — enables O(1) identity check.
-    let prevItemsRef: readonly ItemModel[] | null = null
-
-    // Initial mount
-    const initialItems = getItems(initialModel)
-    reconciler.sync(
-      initialItems.length,
-      i => getKey(initialItems[i]!),
-      i => initialItems[i]!,
-    )
-    prevItemsRef = initialItems
-
-    const unsub = updates.subscribe(({ next }) => {
-      const nextItems = getItems(next)
-      // Array-identity fast path: skip when same reference
-      if (nextItems === prevItemsRef) return
-      reconciler.sync(
-        nextItems.length,
-        i => getKey(nextItems[i]!),
-        i => nextItems[i]!,
+      const reconciler = createArrayReconciler<ItemModel, Msg>(
+        container, itemSdom, dispatch, "arrayBy",
       )
-      prevItemsRef = nextItems
-    })
 
-    return {
-      teardown() {
-        unsub()
-        reconciler.teardown()
-      },
-    }
-  })
+      // Array reference cache — enables O(1) identity check.
+      let prevItemsRef: readonly ItemModel[] | null = null
+
+      // Initial mount
+      const initialItems = getItems(initialModel)
+      reconciler.sync(
+        initialItems.length,
+        i => getKey(initialItems[i]!),
+        i => initialItems[i]!,
+      )
+      prevItemsRef = initialItems
+
+      const unsub = updates.subscribe(({ next }) => {
+        const nextItems = getItems(next)
+        // Array-identity fast path: skip when same reference
+        if (nextItems === prevItemsRef) return
+        reconciler.sync(
+          nextItems.length,
+          i => getKey(nextItems[i]!),
+          i => nextItems[i]!,
+        )
+        prevItemsRef = nextItems
+      })
+
+      return {
+        teardown() {
+          unsub()
+          reconciler.teardown()
+        },
+      }
+    },
+    (parent, cell, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
+
+      const reconciler = createArrayReconciler<ItemModel, Msg>(
+        container, itemSdom, dispatch, "arrayBy", true,
+      )
+
+      let prevItemsRef: readonly ItemModel[] | null = null
+      const initialItems = getItems(cell.value)
+      reconciler.sync(
+        initialItems.length,
+        i => getKey(initialItems[i]!),
+        i => initialItems[i]!,
+      )
+      prevItemsRef = initialItems
+
+      const unsub = cell.observe((next) => {
+        const nextItems = getItems(next)
+        if (nextItems === prevItemsRef) return
+        reconciler.sync(
+          nextItems.length,
+          i => getKey(nextItems[i]!),
+          i => nextItems[i]!,
+        )
+        prevItemsRef = nextItems
+      })
+
+      return {
+        teardown() {
+          unsub()
+          reconciler.teardown()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -539,83 +701,138 @@ export function indexedArray<Model, ItemModel, Msg>(
   getItems: (model: Model) => ItemModel[],
   itemSdom: SDOM<ItemModel, Msg>
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const container = document.createElement(containerTag)
-    parent.appendChild(container)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
 
-    // Capture the ambient delegator so deferred per-item mounts still
-    // register through the program's root listener.
-    const capturedDelegator = getCurrentDelegator()
+      // Capture the ambient delegator so deferred per-item mounts still
+      // register through the program's root listener.
+      const capturedDelegator = getCurrentDelegator()
 
-    type Slot = {
-      teardown: Teardown
-      modelRef: { current: ItemModel }
-      observer: Observer<Update<ItemModel>> | null
-      update: { prev: ItemModel; next: ItemModel }
-    }
+      type Slot = {
+        teardown: Teardown
+        modelRef: { current: ItemModel }
+        observer: Observer<Update<ItemModel>> | null
+        update: { prev: ItemModel; next: ItemModel }
+      }
 
-    const slots: Slot[] = []
+      const slots: Slot[] = []
 
-    function mountSlot(itemModel: ItemModel): void {
-      const modelRef = { current: itemModel }
-      const update = { prev: itemModel, next: itemModel }
-      const slot: Slot = { teardown: { teardown() {} }, modelRef, observer: null, update }
+      function mountSlot(itemModel: ItemModel): void {
+        const modelRef = { current: itemModel }
+        const update = { prev: itemModel, next: itemModel }
+        const slot: Slot = { teardown: { teardown() {} }, modelRef, observer: null, update }
 
-      const itemUpdates: UpdateStream<ItemModel> = {
-        subscribe(obs) {
-          slot.observer = obs
-          return () => { slot.observer = null }
+        const itemUpdates: UpdateStream<ItemModel> = {
+          subscribe(obs) {
+            slot.observer = obs
+            return () => { slot.observer = null }
+          },
+        }
+
+        slot.teardown = withDelegator(capturedDelegator, () =>
+          itemSdom.attach(container, itemModel, itemUpdates, dispatch))
+        slots.push(slot)
+      }
+
+      function unmountLast(): void {
+        const slot = slots.pop()!
+        slot.teardown.teardown()
+      }
+
+      // Initial mount
+      const initialItems = getItems(initialModel)
+      for (const item of initialItems) mountSlot(item)
+
+      const unsub = updates.subscribe(({ next }) => {
+        const nextItems = getItems(next)
+        const prevLen = slots.length
+        const nextLen = nextItems.length
+
+        // Patch existing slots (up to min of old/new length)
+        const patchLen = prevLen < nextLen ? prevLen : nextLen
+        for (let i = 0; i < patchLen; i++) {
+          const slot = slots[i]!
+          const newModel = nextItems[i]!
+          if (slot.modelRef.current !== newModel) {
+            const prev = slot.modelRef.current
+            slot.modelRef.current = newModel
+            slot.update.prev = prev
+            slot.update.next = newModel
+            slot.observer?.(slot.update as Update<ItemModel>)
+          }
+        }
+
+        // Shrink: unmount excess from end
+        for (let i = prevLen - 1; i >= nextLen; i--) unmountLast()
+
+        // Grow: mount new at end
+        for (let i = prevLen; i < nextLen; i++) mountSlot(nextItems[i]!)
+      })
+
+      return {
+        teardown() {
+          unsub()
+          for (const slot of slots) slot.teardown.teardown()
+          container.remove()
         },
       }
+    },
+    // Cell-native path: each slot mounts through attachCell against its
+    // own Var, which the patch loop advances with `set(model)` instead
+    // of pushing through a per-slot UpdateStream.
+    (parent, cell, dispatch) => {
+      const container = document.createElement(containerTag)
+      parent.appendChild(container)
 
-      slot.teardown = withDelegator(capturedDelegator, () =>
-        itemSdom.attach(container, itemModel, itemUpdates, dispatch))
-      slots.push(slot)
-    }
+      const capturedDelegator = getCurrentDelegator()
 
-    function unmountLast(): void {
-      const slot = slots.pop()!
-      slot.teardown.teardown()
-    }
+      type Slot = { teardown: Teardown; itemVar: Var<ItemModel> }
+      const slots: Slot[] = []
 
-    // Initial mount
-    const initialItems = getItems(initialModel)
-    for (const item of initialItems) mountSlot(item)
-
-    const unsub = updates.subscribe(({ next }) => {
-      const nextItems = getItems(next)
-      const prevLen = slots.length
-      const nextLen = nextItems.length
-
-      // Patch existing slots (up to min of old/new length)
-      const patchLen = prevLen < nextLen ? prevLen : nextLen
-      for (let i = 0; i < patchLen; i++) {
-        const slot = slots[i]!
-        const newModel = nextItems[i]!
-        if (slot.modelRef.current !== newModel) {
-          const prev = slot.modelRef.current
-          slot.modelRef.current = newModel
-          slot.update.prev = prev
-          slot.update.next = newModel
-          slot.observer?.(slot.update as Update<ItemModel>)
-        }
+      function mountSlot(itemModel: ItemModel): void {
+        const itemVar = makeVar(itemModel)
+        const teardown = withDelegator(capturedDelegator, () =>
+          itemSdom.attachCell(container, itemVar, dispatch))
+        slots.push({ teardown, itemVar })
       }
 
-      // Shrink: unmount excess from end
-      for (let i = prevLen - 1; i >= nextLen; i--) unmountLast()
+      function unmountLast(): void {
+        const slot = slots.pop()!
+        slot.teardown.teardown()
+      }
 
-      // Grow: mount new at end
-      for (let i = prevLen; i < nextLen; i++) mountSlot(nextItems[i]!)
-    })
+      const initialItems = getItems(cell.value)
+      for (const item of initialItems) mountSlot(item)
 
-    return {
-      teardown() {
-        unsub()
-        for (const slot of slots) slot.teardown.teardown()
-        container.remove()
-      },
-    }
-  })
+      const unsub = cell.observe((next) => {
+        const nextItems = getItems(next)
+        const prevLen = slots.length
+        const nextLen = nextItems.length
+
+        const patchLen = prevLen < nextLen ? prevLen : nextLen
+        for (let i = 0; i < patchLen; i++) {
+          const slot = slots[i]!
+          const newModel = nextItems[i]!
+          if (slot.itemVar.value !== newModel) {
+            slot.itemVar.set(newModel)
+          }
+        }
+
+        for (let i = prevLen - 1; i >= nextLen; i--) unmountLast()
+        for (let i = prevLen; i < nextLen; i++) mountSlot(nextItems[i]!)
+      })
+
+      return {
+        teardown() {
+          unsub()
+          for (const slot of slots) slot.teardown.teardown()
+          container.remove()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -638,90 +855,159 @@ export function optional<Model, SubModel, Msg>(
   prism: Prism<Model, SubModel> | Affine<Model, SubModel>,
   inner: SDOM<SubModel, Msg>
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    // A stable anchor so we know where to insert/remove the optional content
-    const anchor = document.createComment("optional")
-    parent.appendChild(anchor)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      // A stable anchor so we know where to insert/remove the optional content
+      const anchor = document.createComment("optional")
+      parent.appendChild(anchor)
 
-    // Capture for deferred re-mounts.
-    const capturedDelegator = getCurrentDelegator()
+      // Capture for deferred re-mounts.
+      const capturedDelegator = getCurrentDelegator()
 
-    let currentTeardown: Teardown | null = null
-    let currentSubModel: SubModel | null = prism.preview(initialModel)
+      let currentTeardown: Teardown | null = null
+      let currentSubModel: SubModel | null = prism.preview(initialModel)
 
-    function mount(subModel: SubModel): void {
-      const fragment = document.createDocumentFragment()
-      const subUpdates: UpdateStream<SubModel> = {
-        subscribe(observer) {
-          return updates.subscribe(({ prev, next, delta }) => {
-            // Delta fast path: skip if prism's target didn't change
-            if (delta !== undefined && prism.getDelta) {
-              const innerDelta = prism.getDelta(delta)
-              if (innerDelta === undefined) return
-              const nextSub = prism.preview(next)
-              if (nextSub !== null) {
-                observer({
-                  prev: prism.preview(prev) ?? subModel,
-                  next: nextSub,
-                  delta: innerDelta,
-                })
+      function mount(subModel: SubModel): void {
+        const fragment = document.createDocumentFragment()
+        const subUpdates: UpdateStream<SubModel> = {
+          subscribe(observer) {
+            return updates.subscribe(({ prev, next, delta }) => {
+              // Delta fast path: skip if prism's target didn't change
+              if (delta !== undefined && prism.getDelta) {
+                const innerDelta = prism.getDelta(delta)
+                if (innerDelta === undefined) return
+                const nextSub = prism.preview(next)
+                if (nextSub !== null) {
+                  observer({
+                    prev: prism.preview(prev) ?? subModel,
+                    next: nextSub,
+                    delta: innerDelta,
+                  })
+                }
+                return
               }
-              return
-            }
-            // Slow path: reference equality
-            const prevSub = prism.preview(prev)
-            const nextSub = prism.preview(next)
-            if (nextSub !== null && prevSub !== nextSub) {
-              observer({ prev: prevSub ?? subModel, next: nextSub })
-            }
-          })
+              // Slow path: reference equality
+              const prevSub = prism.preview(prev)
+              const nextSub = prism.preview(next)
+              if (nextSub !== null && prevSub !== nextSub) {
+                observer({ prev: prevSub ?? subModel, next: nextSub })
+              }
+            })
+          },
+        }
+        currentTeardown = withDelegator(capturedDelegator, () =>
+          guard("attach", "optional inner", () =>
+            inner.attach(fragment, subModel, subUpdates, dispatch),
+            { teardown() {} }
+          )
+        )
+        anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
+      }
+
+      function unmount(): void {
+        currentTeardown?.teardown()
+        currentTeardown = null
+      }
+
+      if (currentSubModel !== null) {
+        mount(currentSubModel)
+      }
+
+      const unsub = updates.subscribe(({ next, delta }) => {
+        // Delta fast path: skip mount/unmount check if field unchanged
+        if (delta !== undefined && prism.getDelta) {
+          const innerDelta = prism.getDelta(delta)
+          if (innerDelta === undefined) return
+        }
+
+        const nextSub = prism.preview(next)
+        const wasPresent = currentSubModel !== null
+        const isPresent = nextSub !== null
+
+        if (!wasPresent && isPresent) {
+          mount(nextSub!)
+        } else if (wasPresent && !isPresent) {
+          unmount()
+        }
+        currentSubModel = nextSub
+      })
+
+      return {
+        teardown() {
+          unsub()
+          unmount()
+          anchor.remove()
         },
       }
-      currentTeardown = withDelegator(capturedDelegator, () =>
-        guard("attach", "optional inner", () =>
-          inner.attach(fragment, subModel, subUpdates, dispatch),
-          { teardown() {} }
+    },
+    // Cell-native path. The inner subtree reads from a per-mount Var<SubModel>
+    // that the outer observer feeds whenever the prism preview is non-null.
+    // Mount/unmount toggles cleanly on null-↔-non-null transitions, and a
+    // sub-model that the prism doesn't read never reaches the inner branch.
+    (parent, cell, dispatch) => {
+      const initialModel = cell.value
+      const anchor = document.createComment("optional")
+      parent.appendChild(anchor)
+
+      const capturedDelegator = getCurrentDelegator()
+
+      let currentTeardown: Teardown | null = null
+      let currentSubVar: Var<SubModel> | null = null
+      let currentNodes: Node[] = []
+      let isPresent = prism.preview(initialModel) !== null
+
+      function mount(subModel: SubModel): void {
+        const subVar = makeVar(subModel)
+        currentSubVar = subVar
+        const fragment = document.createDocumentFragment()
+        currentTeardown = withDelegator(capturedDelegator, () =>
+          guard("attach", "optional inner", () =>
+            inner.attachCell(fragment, subVar, dispatch),
+            { teardown() {} }
+          )
         )
-      )
-      anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
-    }
-
-    function unmount(): void {
-      currentTeardown?.teardown()
-      currentTeardown = null
-    }
-
-    if (currentSubModel !== null) {
-      mount(currentSubModel)
-    }
-
-    const unsub = updates.subscribe(({ next, delta }) => {
-      // Delta fast path: skip mount/unmount check if field unchanged
-      if (delta !== undefined && prism.getDelta) {
-        const innerDelta = prism.getDelta(delta)
-        if (innerDelta === undefined) return
+        currentNodes = Array.from(fragment.childNodes)
+        anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
       }
 
-      const nextSub = prism.preview(next)
-      const wasPresent = currentSubModel !== null
-      const isPresent = nextSub !== null
-
-      if (!wasPresent && isPresent) {
-        mount(nextSub!)
-      } else if (wasPresent && !isPresent) {
-        unmount()
+      function unmount(): void {
+        currentTeardown?.teardown()
+        currentTeardown = null
+        currentSubVar = null
+        for (const node of currentNodes) {
+          node.parentNode?.removeChild(node)
+        }
+        currentNodes = []
       }
-      currentSubModel = nextSub
-    })
 
-    return {
-      teardown() {
-        unsub()
-        unmount()
-        anchor.remove()
-      },
-    }
-  })
+      const initialSub = prism.preview(initialModel)
+      if (initialSub !== null) {
+        mount(initialSub)
+      }
+
+      const unsub = cell.observe((next) => {
+        const nextSub = prism.preview(next)
+        const willBePresent = nextSub !== null
+
+        if (!isPresent && willBePresent) {
+          mount(nextSub!)
+        } else if (isPresent && !willBePresent) {
+          unmount()
+        } else if (willBePresent && currentSubVar !== null) {
+          currentSubVar.set(nextSub!)
+        }
+        isPresent = willBePresent
+      })
+
+      return {
+        teardown() {
+          unsub()
+          unmount()
+          anchor.remove()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -757,27 +1043,50 @@ export function component<Model, Msg = never>(
     teardown: () => void
   }
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const el = document.createElement("div")
-    parent.appendChild(el)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const el = document.createElement("div")
+      parent.appendChild(el)
 
-    const instance = guard("attach", "component setup", () =>
-      setup(el, initialModel, dispatch),
-      { update: () => {}, teardown: () => {} }
-    )
+      const instance = guard("attach", "component setup", () =>
+        setup(el, initialModel, dispatch),
+        { update: () => {}, teardown: () => {} }
+      )
 
-    const unsub = updates.subscribe(({ next }) => {
-      guard("update", "component update", () => { instance.update(next) }, undefined)
-    })
+      const unsub = updates.subscribe(({ next }) => {
+        guard("update", "component update", () => { instance.update(next) }, undefined)
+      })
 
-    return {
-      teardown() {
-        unsub()
-        instance.teardown()
-        el.remove()
-      },
-    }
-  })
+      return {
+        teardown() {
+          unsub()
+          instance.teardown()
+          el.remove()
+        },
+      }
+    },
+    (parent, cell, dispatch) => {
+      const el = document.createElement("div")
+      parent.appendChild(el)
+
+      const instance = guard("attach", "component setup", () =>
+        setup(el, cell.value, dispatch),
+        { update: () => {}, teardown: () => {} }
+      )
+
+      const unsub = cell.observe((next) => {
+        guard("update", "component update", () => { instance.update(next) }, undefined)
+      })
+
+      return {
+        teardown() {
+          unsub()
+          instance.teardown()
+          el.remove()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -849,18 +1158,35 @@ export type CompiledSetup<Model, Msg> = (
 export function compiled<Model, Msg>(
   setup: CompiledSetup<Model, Msg>,
 ): SDOM<Model, Msg> {
-  const sdom = makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const instance = setup(parent, initialModel, dispatch)
-    const unsub = updates.subscribe(({ prev, next }) => {
-      instance.update(prev, next)
-    })
-    return {
-      teardown() {
-        unsub()
-        instance.teardown()
-      },
-    }
-  })
+  const sdom = makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const instance = setup(parent, initialModel, dispatch)
+      const unsub = updates.subscribe(({ prev, next }) => {
+        instance.update(prev, next)
+      })
+      return {
+        teardown() {
+          unsub()
+          instance.teardown()
+        },
+      }
+    },
+    (parent, cell, dispatch) => {
+      const initialModel = cell.value
+      const instance = setup(parent, initialModel, dispatch)
+      let prev = initialModel
+      const unsub = cell.observe((next) => {
+        instance.update(prev, next)
+        prev = next
+      })
+      return {
+        teardown() {
+          unsub()
+          instance.teardown()
+        },
+      }
+    },
+  )
   ;(sdom as unknown as { [__SDOM_COMPILED_SETUP__]: CompiledSetup<Model, Msg> })[
     __SDOM_COMPILED_SETUP__
   ] = setup
@@ -898,18 +1224,35 @@ export interface CompiledStateSpec<Model, Msg, State> {
 export function compiledState<Model, Msg, State extends object>(
   spec: CompiledStateSpec<Model, Msg, State>,
 ): SDOM<Model, Msg> {
-  const sdom = makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const state = spec.setup(parent, initialModel, dispatch)
-    const unsub = updates.subscribe(({ prev, next }) => {
-      spec.update(state, prev, next)
-    })
-    return {
-      teardown() {
-        unsub()
-        spec.teardown(state)
-      },
-    }
-  })
+  const sdom = makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const state = spec.setup(parent, initialModel, dispatch)
+      const unsub = updates.subscribe(({ prev, next }) => {
+        spec.update(state, prev, next)
+      })
+      return {
+        teardown() {
+          unsub()
+          spec.teardown(state)
+        },
+      }
+    },
+    (parent, cell, dispatch) => {
+      const initialModel = cell.value
+      const state = spec.setup(parent, initialModel, dispatch)
+      let prev = initialModel
+      const unsub = cell.observe((next) => {
+        spec.update(state, prev, next)
+        prev = next
+      })
+      return {
+        teardown() {
+          unsub()
+          spec.teardown(state)
+        },
+      }
+    },
+  )
   ;(sdom as unknown as { [__SDOM_COMPILED_STATE__]: CompiledStateSpec<Model, Msg, State> })[
     __SDOM_COMPILED_STATE__
   ] = spec
@@ -981,78 +1324,149 @@ export function match<Model, Msg>(
       ? discriminant
       : (model: Model) => (model as Record<string, string>)[discriminant]!
 
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const anchor = document.createComment("match")
-    parent.appendChild(anchor)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const anchor = document.createComment("match")
+      parent.appendChild(anchor)
 
-    // Capture for deferred branch re-mounts.
-    const capturedDelegator = getCurrentDelegator()
+      // Capture for deferred branch re-mounts.
+      const capturedDelegator = getCurrentDelegator()
 
-    let currentKey = getKey(initialModel)
-    let currentTeardown: Teardown | null = null
-    // Track DOM nodes inserted by the current branch for removal on switch.
-    // Most branches produce a single root element, but fragment children
-    // can produce multiple — so we track the list.
-    let currentNodes: Node[] = []
+      let currentKey = getKey(initialModel)
+      let currentTeardown: Teardown | null = null
+      // Track DOM nodes inserted by the current branch for removal on switch.
+      // Most branches produce a single root element, but fragment children
+      // can produce multiple — so we track the list.
+      let currentNodes: Node[] = []
 
-    function mountBranch(key: string, model: Model): void {
-      const branch = branches[key]
-      if (!branch) return
+      function mountBranch(key: string, model: Model): void {
+        const branch = branches[key]
+        if (!branch) return
 
-      const fragment = document.createDocumentFragment()
-      // Branch update stream: forward updates only when the model's discriminant
-      // still matches this branch. We check the model directly (not `currentKey`)
-      // because inner subscriptions fire before the outer switch subscriber —
-      // without this, a branch would see one final update with the wrong variant
-      // shape before being torn down.
-      const branchUpdates: UpdateStream<Model> = {
-        subscribe(observer) {
-          return updates.subscribe(update => {
-            if (getKey(update.next) === key) {
-              observer(update)
-            }
-          })
+        const fragment = document.createDocumentFragment()
+        // Branch update stream: forward updates only when the model's discriminant
+        // still matches this branch. We check the model directly (not `currentKey`)
+        // because inner subscriptions fire before the outer switch subscriber —
+        // without this, a branch would see one final update with the wrong variant
+        // shape before being torn down.
+        const branchUpdates: UpdateStream<Model> = {
+          subscribe(observer) {
+            return updates.subscribe(update => {
+              if (getKey(update.next) === key) {
+                observer(update)
+              }
+            })
+          },
+        }
+        currentTeardown = withDelegator(capturedDelegator, () =>
+          guard("attach", `match branch "${key}"`, () =>
+            branch.attach(fragment, model, branchUpdates, dispatch),
+            { teardown() {} }
+          )
+        )
+
+        currentNodes = Array.from(fragment.childNodes)
+        anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
+      }
+
+      function unmountBranch(): void {
+        currentTeardown?.teardown()
+        currentTeardown = null
+        for (const node of currentNodes) {
+          node.parentNode?.removeChild(node)
+        }
+        currentNodes = []
+      }
+
+      mountBranch(currentKey, initialModel)
+
+      const unsub = updates.subscribe(({ next }) => {
+        const nextKey = getKey(next)
+        if (nextKey !== currentKey) {
+          unmountBranch()
+          currentKey = nextKey
+          mountBranch(nextKey, next)
+        }
+      })
+
+      return {
+        teardown() {
+          unsub()
+          unmountBranch()
+          anchor.remove()
         },
       }
-      currentTeardown = withDelegator(capturedDelegator, () =>
-        guard("attach", `match branch "${key}"`, () =>
-          branch.attach(fragment, model, branchUpdates, dispatch),
-          { teardown() {} }
+    },
+    // Cell-native path. Each mounted branch reads from a per-branch Var
+    // that the outer observer feeds — but only while the discriminant
+    // still matches. On a key change, the outer observer tears the old
+    // branch down and mounts the new one against a fresh Var.
+    (parent, cell, dispatch) => {
+      const initialModel = cell.value
+      const anchor = document.createComment("match")
+      parent.appendChild(anchor)
+
+      const capturedDelegator = getCurrentDelegator()
+
+      let currentKey = getKey(initialModel)
+      let currentTeardown: Teardown | null = null
+      let currentBranchVar: Var<Model> | null = null
+      let currentNodes: Node[] = []
+
+      function mountBranch(key: string, model: Model): void {
+        const branch = branches[key]
+        if (!branch) {
+          currentBranchVar = null
+          return
+        }
+
+        const branchVar = makeVar(model)
+        currentBranchVar = branchVar
+
+        const fragment = document.createDocumentFragment()
+        currentTeardown = withDelegator(capturedDelegator, () =>
+          guard("attach", `match branch "${key}"`, () =>
+            branch.attachCell(fragment, branchVar, dispatch),
+            { teardown() {} }
+          )
         )
-      )
 
-      currentNodes = Array.from(fragment.childNodes)
-      anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
-    }
-
-    function unmountBranch(): void {
-      currentTeardown?.teardown()
-      currentTeardown = null
-      for (const node of currentNodes) {
-        node.parentNode?.removeChild(node)
+        currentNodes = Array.from(fragment.childNodes)
+        anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
       }
-      currentNodes = []
-    }
 
-    mountBranch(currentKey, initialModel)
-
-    const unsub = updates.subscribe(({ next }) => {
-      const nextKey = getKey(next)
-      if (nextKey !== currentKey) {
-        unmountBranch()
-        currentKey = nextKey
-        mountBranch(nextKey, next)
+      function unmountBranch(): void {
+        currentTeardown?.teardown()
+        currentTeardown = null
+        currentBranchVar = null
+        for (const node of currentNodes) {
+          node.parentNode?.removeChild(node)
+        }
+        currentNodes = []
       }
-    })
 
-    return {
-      teardown() {
-        unsub()
-        unmountBranch()
-        anchor.remove()
-      },
-    }
-  })
+      mountBranch(currentKey, initialModel)
+
+      const unsub = cell.observe((next) => {
+        const nextKey = getKey(next)
+        if (nextKey !== currentKey) {
+          unmountBranch()
+          currentKey = nextKey
+          mountBranch(nextKey, next)
+        } else if (currentBranchVar !== null) {
+          currentBranchVar.set(next)
+        }
+      })
+
+      return {
+        teardown() {
+          unsub()
+          unmountBranch()
+          anchor.remove()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,218 +1512,256 @@ export function dynamic<Model, Msg, K>(
 ): SDOM<Model, Msg> {
   const useCache = options?.cache === true
 
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const anchor = document.createComment("dynamic")
-    parent.appendChild(anchor)
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const anchor = document.createComment("dynamic")
+      parent.appendChild(anchor)
 
-    // Capture for deferred branch re-mounts.
-    const capturedDelegator = getCurrentDelegator()
+      // Capture for deferred branch re-mounts.
+      const capturedDelegator = getCurrentDelegator()
 
-    let currentKeyValue = key(initialModel)
-    let currentModel = initialModel
-    let currentTeardown: Teardown | null = null
-    let currentNodes: Node[] = []
+      let currentKeyValue = key(initialModel)
+      let currentModel = initialModel
+      let currentTeardown: Teardown | null = null
+      let currentNodes: Node[] = []
 
-    // Cache: key → { nodes (detached), teardown, lastModel, notify }
-    // The `notify` function lets us push a synthetic update into a cached
-    // branch when it's re-entered so it catches up to the current model.
-    interface CachedBranch {
-      nodes: Node[]
-      teardown: Teardown
-      lastModel: Model
-      notify: (update: { prev: Model; next: Model }) => void
-    }
-    const cache = useCache ? new Map<K, CachedBranch>() : null
+      // Cache: key → { nodes (detached), teardown, lastModel, notify }
+      // The `notify` function lets us push a synthetic update into a cached
+      // branch when it's re-entered so it catches up to the current model.
+      interface CachedBranch {
+        nodes: Node[]
+        teardown: Teardown
+        lastModel: Model
+        notify: (update: { prev: Model; next: Model }) => void
+      }
+      const cache = useCache ? new Map<K, CachedBranch>() : null
 
-    function mountBranch(keyValue: K, model: Model): void {
-      // Check cache first — reinsert existing DOM without re-running factory
-      if (cache?.has(keyValue)) {
-        const cached = cache.get(keyValue)!
-        currentTeardown = cached.teardown
-        currentNodes = cached.nodes
-        const fragment = document.createDocumentFragment()
-        for (const node of currentNodes) {
-          fragment.appendChild(node)
+      function mountBranch(keyValue: K, model: Model): void {
+        // Check cache first — reinsert existing DOM without re-running factory
+        if (cache?.has(keyValue)) {
+          const cached = cache.get(keyValue)!
+          currentTeardown = cached.teardown
+          currentNodes = cached.nodes
+          const fragment = document.createDocumentFragment()
+          for (const node of currentNodes) {
+            fragment.appendChild(node)
+          }
+          anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
+
+          // Catch the branch up to the current model if it changed while detached
+          if (cached.lastModel !== model) {
+            cached.notify({ prev: cached.lastModel, next: model })
+            cached.lastModel = model
+          }
+          return
         }
+
+        const sdom = factory(model)
+        const fragment = document.createDocumentFragment()
+
+        // Observers registered by the inner branch — used for synthetic notify
+        const observers = new Set<Observer<Update<Model>>>()
+
+        // Branch update stream: filter against `currentKeyValue` (closed over)
+        // rather than re-calling key() — the outer subscriber already computes
+        // the key and updates `currentKeyValue` before switching branches.
+        const branchUpdates: UpdateStream<Model> = {
+          subscribe(observer) {
+            observers.add(observer)
+            const unsub = updates.subscribe(update => {
+              if (currentKeyValue === keyValue) {
+                observer(update)
+              }
+            })
+            return () => {
+              observers.delete(observer)
+              unsub()
+            }
+          },
+        }
+
+        currentTeardown = withDelegator(capturedDelegator, () =>
+          guard("attach", "dynamic branch", () =>
+            sdom.attach(fragment, model, branchUpdates, dispatch),
+            { teardown() {} }
+          )
+        )
+        currentNodes = Array.from(fragment.childNodes)
         anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
 
-        // Catch the branch up to the current model if it changed while detached
-        if (cached.lastModel !== model) {
-          cached.notify({ prev: cached.lastModel, next: model })
-          cached.lastModel = model
-        }
-        return
-      }
-
-      const sdom = factory(model)
-      const fragment = document.createDocumentFragment()
-
-      // Observers registered by the inner branch — used for synthetic notify
-      const observers = new Set<Observer<Update<Model>>>()
-
-      // Branch update stream: filter against `currentKeyValue` (closed over)
-      // rather than re-calling key() — the outer subscriber already computes
-      // the key and updates `currentKeyValue` before switching branches.
-      const branchUpdates: UpdateStream<Model> = {
-        subscribe(observer) {
-          observers.add(observer)
-          const unsub = updates.subscribe(update => {
-            if (currentKeyValue === keyValue) {
-              observer(update)
-            }
-          })
-          return () => {
-            observers.delete(observer)
-            unsub()
-          }
-        },
-      }
-
-      currentTeardown = withDelegator(capturedDelegator, () =>
-        guard("attach", "dynamic branch", () =>
-          sdom.attach(fragment, model, branchUpdates, dispatch),
-          { teardown() {} }
-        )
-      )
-      currentNodes = Array.from(fragment.childNodes)
-      anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
-
-      if (cache) {
-        cache.set(keyValue, {
-          nodes: currentNodes,
-          teardown: currentTeardown,
-          lastModel: model,
-          notify: (update) => {
-            for (const obs of observers) obs(update)
-          },
-        })
-      }
-    }
-
-    function unmountBranch(): void {
-      if (!useCache) {
-        // Non-cached: full teardown (unsubscribes inner observers)
-        currentTeardown?.teardown()
-        currentTeardown = null
-      }
-      // In both modes, detach DOM nodes
-      for (const node of currentNodes) {
-        node.parentNode?.removeChild(node)
-      }
-      currentNodes = []
-    }
-
-    mountBranch(currentKeyValue, initialModel)
-
-    const unsub = updates.subscribe(({ next }) => {
-      currentModel = next
-      const nextKeyValue = key(next)
-      if (nextKeyValue !== currentKeyValue) {
-        // Snapshot lastModel for the outgoing cached branch
-        if (cache?.has(currentKeyValue)) {
-          cache.get(currentKeyValue)!.lastModel = next
-        }
-        unmountBranch()
-        currentKeyValue = nextKeyValue
-        mountBranch(nextKeyValue, next)
-      }
-    })
-
-    return {
-      teardown() {
-        unsub()
         if (cache) {
-          // Tear down all cached branches (including the active one)
-          for (const [, cached] of cache) {
-            cached.teardown.teardown()
-            for (const node of cached.nodes) {
+          cache.set(keyValue, {
+            nodes: currentNodes,
+            teardown: currentTeardown,
+            lastModel: model,
+            notify: (update) => {
+              for (const obs of observers) obs(update)
+            },
+          })
+        }
+      }
+
+      function unmountBranch(): void {
+        if (!useCache) {
+          // Non-cached: full teardown (unsubscribes inner observers)
+          currentTeardown?.teardown()
+          currentTeardown = null
+        }
+        // In both modes, detach DOM nodes
+        for (const node of currentNodes) {
+          node.parentNode?.removeChild(node)
+        }
+        currentNodes = []
+      }
+
+      mountBranch(currentKeyValue, initialModel)
+
+      const unsub = updates.subscribe(({ next }) => {
+        currentModel = next
+        const nextKeyValue = key(next)
+        if (nextKeyValue !== currentKeyValue) {
+          // Snapshot lastModel for the outgoing cached branch
+          if (cache?.has(currentKeyValue)) {
+            cache.get(currentKeyValue)!.lastModel = next
+          }
+          unmountBranch()
+          currentKeyValue = nextKeyValue
+          mountBranch(nextKeyValue, next)
+        }
+      })
+
+      return {
+        teardown() {
+          unsub()
+          if (cache) {
+            // Tear down all cached branches (including the active one)
+            for (const [, cached] of cache) {
+              cached.teardown.teardown()
+              for (const node of cached.nodes) {
+                node.parentNode?.removeChild(node)
+              }
+            }
+            cache.clear()
+          } else {
+            currentTeardown?.teardown()
+            for (const node of currentNodes) {
               node.parentNode?.removeChild(node)
             }
           }
-          cache.clear()
-        } else {
-          currentTeardown?.teardown()
+          anchor.remove()
+        },
+      }
+    },
+    // Cell-native path. Each branch reads from its own Var; the outer
+    // observer either swaps branches on a key change or pushes the new
+    // model into the active branch's Var. With `cache: true`, cached
+    // branches' Vars are kept alive across detach/reattach cycles.
+    (parent, cell, dispatch) => {
+      const initialModel = cell.value
+      const anchor = document.createComment("dynamic")
+      parent.appendChild(anchor)
+
+      const capturedDelegator = getCurrentDelegator()
+
+      let currentKeyValue = key(initialModel)
+      let currentTeardown: Teardown | null = null
+      let currentBranchVar: Var<Model> | null = null
+      let currentNodes: Node[] = []
+
+      interface CachedBranch {
+        nodes: Node[]
+        teardown: Teardown
+        branchVar: Var<Model>
+      }
+      const cache = useCache ? new Map<K, CachedBranch>() : null
+
+      function mountBranch(keyValue: K, model: Model): void {
+        if (cache?.has(keyValue)) {
+          const cached = cache.get(keyValue)!
+          currentTeardown = cached.teardown
+          currentNodes = cached.nodes
+          currentBranchVar = cached.branchVar
+          const fragment = document.createDocumentFragment()
           for (const node of currentNodes) {
-            node.parentNode?.removeChild(node)
+            fragment.appendChild(node)
           }
+          anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
+
+          // Catch the branch up to the current model.
+          cached.branchVar.set(model)
+          return
         }
-        anchor.remove()
-      },
-    }
-  })
-}
 
-// ---------------------------------------------------------------------------
-// wrapChannel — lower SDOMWithChannel to SDOM
-// ---------------------------------------------------------------------------
+        const sdom = factory(model)
+        const branchVar = makeVar(model)
+        currentBranchVar = branchVar
+        const fragment = document.createDocumentFragment()
 
-/**
- * Interpret a channel-using component, converting channel events to Msg
- * and/or applying local model transforms.
- *
- * Matches PureScript's `interpretChannel`.
- *
- * The interpreter can:
- *   - Call `dispatch(msg)` for persistent state changes (goes through
- *     the program's update loop — the standard Elm architecture path).
- *   - Return a model transform for immediate local feedback (applied
- *     optimistically; overwritten on the next outer model update).
- *
- * "update" kind channel events carry a model transform directly and
- * are applied the same way.
- *
- * @param inner      A component that emits `ChannelEvent<Channel, Model>`.
- * @param interpret  Maps parent channel events to model transforms or Msg values.
- */
-export function wrapChannel<Channel, Model, Msg>(
-  inner: SDOMWithChannel<Channel, Model>,
-  interpret: (
-    channel: Channel,
-    dispatch: Dispatcher<Msg>
-  ) => ((model: Model) => Model) | null
-): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    // Local model state — tracks the latest model from either outer updates
-    // or local transforms. Outer updates are authoritative and reset this.
-    let currentModel = initialModel
-    const localObservers = new Set<Observer<Update<Model>>>()
+        currentTeardown = withDelegator(capturedDelegator, () =>
+          guard("attach", "dynamic branch", () =>
+            sdom.attachCell(fragment, branchVar, dispatch),
+            { teardown() {} }
+          )
+        )
+        currentNodes = Array.from(fragment.childNodes)
+        anchor.parentNode?.insertBefore(fragment, anchor.nextSibling)
 
-    // Merged update stream: inner component sees both outer updates and
-    // local transforms from channel events.
-    const mergedUpdates: UpdateStream<Model> = {
-      subscribe(observer) {
-        localObservers.add(observer)
-        const outerUnsub = updates.subscribe(update => {
-          currentModel = update.next
-          observer(update)
-        })
-        return () => {
-          localObservers.delete(observer)
-          outerUnsub()
+        if (cache) {
+          cache.set(keyValue, {
+            nodes: currentNodes,
+            teardown: currentTeardown,
+            branchVar,
+          })
         }
-      },
-    }
-
-    function applyTransform(fn: (model: Model) => Model): void {
-      const prev = currentModel
-      const next = fn(prev)
-      if (prev !== next) {
-        currentModel = next
-        localObservers.forEach(obs => obs({ prev, next }))
       }
-    }
 
-    const channelDispatch: Dispatcher<ChannelEvent<Channel, Model>> = event => {
-      if (event.kind === "parent") {
-        const transform = interpret(event.value, dispatch)
-        if (transform) applyTransform(transform)
-      } else {
-        applyTransform(event.fn)
+      function unmountBranch(): void {
+        if (!useCache) {
+          currentTeardown?.teardown()
+          currentTeardown = null
+        }
+        currentBranchVar = null
+        for (const node of currentNodes) {
+          node.parentNode?.removeChild(node)
+        }
+        currentNodes = []
       }
-    }
 
-    return inner.attach(parent, initialModel, mergedUpdates, channelDispatch)
-  })
+      mountBranch(currentKeyValue, initialModel)
+
+      const unsub = cell.observe((next) => {
+        const nextKeyValue = key(next)
+        if (nextKeyValue !== currentKeyValue) {
+          unmountBranch()
+          currentKeyValue = nextKeyValue
+          mountBranch(nextKeyValue, next)
+        } else if (currentBranchVar !== null) {
+          currentBranchVar.set(next)
+        }
+      })
+
+      return {
+        teardown() {
+          unsub()
+          if (cache) {
+            for (const [, cached] of cache) {
+              cached.teardown.teardown()
+              for (const node of cached.nodes) {
+                node.parentNode?.removeChild(node)
+              }
+            }
+            cache.clear()
+          } else {
+            currentTeardown?.teardown()
+            for (const node of currentNodes) {
+              node.parentNode?.removeChild(node)
+            }
+          }
+          anchor.remove()
+        },
+      }
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,19 +1777,30 @@ export function wrapChannel<Channel, Model, Msg>(
 export function fragment<Model, Msg>(
   children: NoInfer<SDOM<Model, Msg>>[]
 ): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>((parent, initialModel, updates, dispatch) => {
-    const frag = document.createDocumentFragment()
-    const teardowns = children.map(child =>
-      child.attach(frag, initialModel, updates, dispatch)
-    )
-    parent.appendChild(frag)
-
-    return {
-      teardown() {
-        teardowns.forEach(t => t.teardown())
-      },
-    }
-  })
+  return makeSDOM<Model, Msg>(
+    (parent, initialModel, updates, dispatch) => {
+      const frag = document.createDocumentFragment()
+      const teardowns = children.map(child =>
+        child.attach(frag, initialModel, updates, dispatch)
+      )
+      parent.appendChild(frag)
+      return {
+        teardown() {
+          teardowns.forEach(t => t.teardown())
+        },
+      }
+    },
+    (parent, cell, dispatch) => {
+      const frag = document.createDocumentFragment()
+      const teardowns = children.map(child => child.attachCell(frag, cell, dispatch))
+      parent.appendChild(frag)
+      return {
+        teardown() {
+          teardowns.forEach(t => t.teardown())
+        },
+      }
+    },
+  )
 }
 
 /** @deprecated Import from `./reconcile` instead. Re-exported for backward compatibility. */

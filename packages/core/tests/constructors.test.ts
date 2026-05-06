@@ -1,8 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { component, compiled, fragment, wrapChannel, text, element } from "../src/constructors"
-import { makeSDOM, type ChannelEvent, type SDOMWithChannel, type SDOM } from "../src/types"
+import { component, compiled, compiledState, fragment, text, element } from "../src/constructors"
+import { makeSDOM, type SDOM, type Teardown } from "../src/types"
+import { attachToCell } from "../src/program"
+import { makeVar } from "../src/incremental-graph"
 import { mount, cleanup, type TestHarness } from "./helpers"
-import type { Dispatcher, Observer, Update, UpdateStream } from "../src/observable"
+import type { UpdateStream } from "../src/observable"
 
 let h: TestHarness<any, any>
 afterEach(() => { if (h) cleanup(h) })
@@ -89,6 +91,46 @@ describe("component", () => {
     // Prevent double-teardown in afterEach
     h.container.remove()
     h = undefined as any
+  })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    it("invokes update with each new model and tears down cleanly", () => {
+      const updates: string[] = []
+      let tornDown = false
+      const sdom = component<string, never>((el, model, _dispatch) => {
+        el.textContent = model
+        return {
+          update: (next: string) => {
+            updates.push(next)
+            el.textContent = next
+          },
+          teardown: () => { tornDown = true },
+        }
+      })
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar("first")
+      td = attachToCell(container, sdom, v, () => {})
+      expect(container.querySelector("div")!.textContent).toBe("first")
+
+      v.set("second")
+      v.set("third")
+      expect(updates).toEqual(["second", "third"])
+      expect(container.querySelector("div")!.textContent).toBe("third")
+
+      td.teardown()
+      td = null
+      expect(tornDown).toBe(true)
+      expect(container.querySelector("div")).toBeNull()
+    })
   })
 })
 
@@ -182,6 +224,173 @@ describe("compiled", () => {
     h.container.remove()
     h = undefined as any
   })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    it("invokes update with (prev, next) across cell sets and tears down cleanly", () => {
+      const received: Array<{ prev: string; next: string }> = []
+      let tornDown = false
+      const sdom = compiled<string, never>((parent, model, _dispatch) => {
+        const span = document.createElement("span")
+        span.textContent = model
+        parent.appendChild(span)
+        return {
+          update: (prev, next) => {
+            received.push({ prev, next })
+            span.textContent = next
+          },
+          teardown: () => {
+            tornDown = true
+            span.remove()
+          },
+        }
+      })
+
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar("a")
+      td = attachToCell(container, sdom, v, () => {})
+      expect(container.querySelector("span")!.textContent).toBe("a")
+
+      v.set("b")
+      v.set("c")
+      expect(received).toEqual([
+        { prev: "a", next: "b" },
+        { prev: "b", next: "c" },
+      ])
+      expect(container.querySelector("span")!.textContent).toBe("c")
+
+      td.teardown()
+      td = null
+      expect(tornDown).toBe(true)
+      expect(container.querySelector("span")).toBeNull()
+    })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// compiledState
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("compiledState", () => {
+  it("calls setup with parent and initial model, calls update with (prev, next)", () => {
+    interface State { node: Text }
+    const received: Array<{ prev: string; next: string }> = []
+    const sdom = compiledState<string, never, State>({
+      setup: (parent, model, _dispatch) => {
+        const node = document.createTextNode(model)
+        parent.appendChild(node)
+        return { node }
+      },
+      update: (state, prev, next) => {
+        received.push({ prev, next })
+        state.node.textContent = next
+      },
+      teardown: (state) => {
+        state.node.remove()
+      },
+    })
+
+    h = mount(sdom, "a")
+    expect(h.container.textContent).toBe("a")
+
+    h.set("b")
+    h.set("c")
+    expect(received).toEqual([
+      { prev: "a", next: "b" },
+      { prev: "b", next: "c" },
+    ])
+    expect(h.container.textContent).toBe("c")
+  })
+
+  it("cleans up on teardown", () => {
+    interface State { node: Text; tornDown: boolean }
+    let tornDownState: State | null = null
+    const sdom = compiledState<string, never, State>({
+      setup: (parent, model, _dispatch) => {
+        const node = document.createTextNode(model)
+        parent.appendChild(node)
+        const s: State = { node, tornDown: false }
+        return s
+      },
+      update: (state, _prev, next) => {
+        state.node.textContent = next
+      },
+      teardown: (state) => {
+        state.tornDown = true
+        state.node.remove()
+        tornDownState = state
+      },
+    })
+
+    h = mount(sdom, "init")
+    expect(h.container.textContent).toBe("init")
+
+    h.teardown.teardown()
+    expect(tornDownState).not.toBeNull()
+    expect(tornDownState!.tornDown).toBe(true)
+    expect(h.container.textContent).toBe("")
+
+    h.container.remove()
+    h = undefined as any
+  })
+
+  describe("Cell-native path (attachToCell)", () => {
+    let container: HTMLElement
+    let td: Teardown | null = null
+    afterEach(() => {
+      td?.teardown()
+      td = null
+      container?.remove()
+    })
+
+    it("threads prev/next through update under a cell mount", () => {
+      interface State { node: Text }
+      const received: Array<{ prev: string; next: string }> = []
+      let tornDown = false
+      const sdom = compiledState<string, never, State>({
+        setup: (parent, model, _dispatch) => {
+          const node = document.createTextNode(model)
+          parent.appendChild(node)
+          return { node }
+        },
+        update: (state, prev, next) => {
+          received.push({ prev, next })
+          state.node.textContent = next
+        },
+        teardown: (state) => {
+          tornDown = true
+          state.node.remove()
+        },
+      })
+
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      const v = makeVar("a")
+      td = attachToCell(container, sdom, v, () => {})
+      expect(container.textContent).toBe("a")
+
+      v.set("b")
+      v.set("c")
+      expect(received).toEqual([
+        { prev: "a", next: "b" },
+        { prev: "b", next: "c" },
+      ])
+      expect(container.textContent).toBe("c")
+
+      td.teardown()
+      td = null
+      expect(tornDown).toBe(true)
+      expect(container.textContent).toBe("")
+    })
+  })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -258,187 +467,3 @@ describe("fragment", () => {
   })
 })
 
-// ─────────────────────────────────────────────────────────────────────────────
-// wrapChannel
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe("wrapChannel", () => {
-  /** Helper: create a fake SDOMWithChannel that captures its dispatch function. */
-  function fakeChannelSdom<Channel, Model>(
-    onAttach?: (ctx: {
-      parent: Element | DocumentFragment
-      model: Model
-      dispatch: Dispatcher<ChannelEvent<Channel, Model>>
-      pushUpdate: (model: Model) => void
-    }) => void
-  ): {
-    sdom: SDOMWithChannel<Channel, Model>
-    getDispatch: () => Dispatcher<ChannelEvent<Channel, Model>>
-    teardownCalled: () => boolean
-  } {
-    let capturedDispatch: Dispatcher<ChannelEvent<Channel, Model>> | undefined
-    let _teardownCalled = false
-
-    const sdom: SDOMWithChannel<Channel, Model> = {
-      attach(parent, initialModel, updates, dispatch) {
-        capturedDispatch = dispatch
-
-        // Collect local observers so tests can push updates into the inner component
-        const localPushes: Array<Observer<Update<Model>>> = []
-        const unsub = updates.subscribe(update => {
-          // Just consume outer+local updates
-        })
-
-        if (onAttach) {
-          onAttach({
-            parent,
-            model: initialModel,
-            dispatch,
-            pushUpdate: () => {},
-          })
-        }
-
-        return {
-          teardown() {
-            _teardownCalled = true
-            unsub()
-          },
-        }
-      },
-    }
-
-    return {
-      sdom,
-      getDispatch: () => capturedDispatch!,
-      teardownCalled: () => _teardownCalled,
-    }
-  }
-
-  it("passes through attach to inner component", () => {
-    let attached = false
-    const { sdom } = fakeChannelSdom<string, number>(() => { attached = true })
-    const wrapped = wrapChannel<string, number, string>(sdom, (_ch, _d) => null)
-    h = mount(wrapped, 42)
-    expect(attached).toBe(true)
-  })
-
-  it("interprets parent channel events and calls dispatch", () => {
-    const { sdom, getDispatch } = fakeChannelSdom<string, number>()
-    const wrapped = wrapChannel<string, number, string>(sdom, (channel, dispatch) => {
-      dispatch(`got:${channel}`)
-      return null
-    })
-    h = mount(wrapped, 0)
-
-    // Emit a parent channel event from the inner component
-    getDispatch()({ kind: "parent", value: "hello" })
-    expect(h.dispatched).toEqual(["got:hello"])
-  })
-
-  it("applies model transform from interpret on parent channel events", () => {
-    // Create a channeled SDOM that tracks model updates it receives
-    const receivedUpdates: Array<{ prev: number; next: number }> = []
-    let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
-
-    const innerSdom: SDOMWithChannel<string, number> = {
-      attach(parent, initialModel, updates, dispatch) {
-        capturedDispatch = dispatch
-        const unsub = updates.subscribe(({ prev, next }) => {
-          receivedUpdates.push({ prev, next })
-        })
-        return { teardown: () => unsub() }
-      },
-    }
-
-    const wrapped = wrapChannel<string, number, never>(innerSdom, (channel, _dispatch) => {
-      if (channel === "increment") return (m: number) => m + 1
-      return null
-    })
-
-    h = mount(wrapped, 10)
-
-    capturedDispatch!({ kind: "parent", value: "increment" })
-    // The local transform should have pushed an update to inner observers
-    expect(receivedUpdates.some(u => u.prev === 10 && u.next === 11)).toBe(true)
-  })
-
-  it("applies model transform from update channel events", () => {
-    const receivedUpdates: Array<{ prev: number; next: number }> = []
-    let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
-
-    const innerSdom: SDOMWithChannel<string, number> = {
-      attach(parent, initialModel, updates, dispatch) {
-        capturedDispatch = dispatch
-        const unsub = updates.subscribe(({ prev, next }) => {
-          receivedUpdates.push({ prev, next })
-        })
-        return { teardown: () => unsub() }
-      },
-    }
-
-    const wrapped = wrapChannel<string, number, never>(innerSdom, () => null)
-    h = mount(wrapped, 5)
-
-    capturedDispatch!({ kind: "update", fn: (m: number) => m * 2 })
-    expect(receivedUpdates.some(u => u.prev === 5 && u.next === 10)).toBe(true)
-  })
-
-  it("does not push local update when interpret returns null", () => {
-    const receivedUpdates: Array<{ prev: number; next: number }> = []
-    let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
-
-    const innerSdom: SDOMWithChannel<string, number> = {
-      attach(parent, initialModel, updates, dispatch) {
-        capturedDispatch = dispatch
-        const unsub = updates.subscribe(({ prev, next }) => {
-          receivedUpdates.push({ prev, next })
-        })
-        return { teardown: () => unsub() }
-      },
-    }
-
-    const wrapped = wrapChannel<string, number, string>(innerSdom, (_ch, _d) => null)
-    h = mount(wrapped, 100)
-
-    capturedDispatch!({ kind: "parent", value: "ignored" })
-    // No local updates should have been pushed (only outer updates count)
-    expect(receivedUpdates).toEqual([])
-  })
-
-  it("does not push local update when transform returns the same model", () => {
-    const receivedUpdates: Array<{ prev: number; next: number }> = []
-    let capturedDispatch: Dispatcher<ChannelEvent<string, number>> | undefined
-
-    const innerSdom: SDOMWithChannel<string, number> = {
-      attach(parent, initialModel, updates, dispatch) {
-        capturedDispatch = dispatch
-        const unsub = updates.subscribe(({ prev, next }) => {
-          receivedUpdates.push({ prev, next })
-        })
-        return { teardown: () => unsub() }
-      },
-    }
-
-    const wrapped = wrapChannel<string, number, never>(innerSdom, (ch, _d) => {
-      return (m: number) => m // identity — same reference
-    })
-    h = mount(wrapped, 42)
-
-    capturedDispatch!({ kind: "parent", value: "noop" })
-    // Transform returned same value, so no update should be pushed
-    expect(receivedUpdates).toEqual([])
-  })
-
-  it("tears down inner component on teardown", () => {
-    const { sdom, teardownCalled } = fakeChannelSdom<string, number>()
-    const wrapped = wrapChannel<string, number, never>(sdom, () => null)
-    h = mount(wrapped, 0)
-    expect(teardownCalled()).toBe(false)
-
-    h.teardown.teardown()
-    expect(teardownCalled()).toBe(true)
-
-    h.container.remove()
-    h = undefined as any
-  })
-})

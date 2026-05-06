@@ -2,7 +2,7 @@
 
 A TypeScript UI library that eliminates virtual DOM diffing by fixing DOM structure at mount time. Only leaf values (text content, attributes) update in place: no intermediate representation, no reconciliation.
 
-Based on Phil Freeman's [purescript-sdom](https://github.com/paf31/purescript-sdom) and [blog post](https://blog.functorial.com/posts/2018-03-12-You-Might-Not-Need-The-Virtual-DOM.html).
+Based on Phil Freeman's [purescript-sdom](https://github.com/paf31/purescript-sdom) and [blog post](https://blog.functorial.com/posts/2018-03-12-You-Might-Not-Need-The-Virtual-DOM.html), with a reactive substrate inspired by Jane Street's [Incremental](https://github.com/janestreet/incremental).
 
 - **No diffing**: updates go straight to the DOM node that changed
 - **Predictable performance**: cost is proportional to what changed, not tree size
@@ -148,6 +148,109 @@ elmProgram<Model, Msg>({
 **Navigation:** `pushUrl`, `replaceUrl`, `back`, `forward`, `onUrlChange`, `onHashChange`
 
 **Ports:** `createInPort`, `createOutPort`, `portSub`, `portCmd` (typed JS interop)
+
+### Reactive primitives
+
+Underneath the program runners is a small OCaml-Incremental-flavored
+dependency graph. You don't need to touch it for app-style code, but the
+primitives are exported for auxiliary state, computed combinations across
+independent sources, or interop with imperative code:
+
+```typescript
+import { makeVar, mapCell, mapCell2, mapCell3, batch } from "static-dom"
+
+const x = makeVar(2)
+const y = makeVar(3)
+const z = makeVar(4)
+const sum = mapCell2(x, y, (a, b) => a + b)
+const product = mapCell3(x, y, z, (a, b, c) => a * b * c)
+const doubled = mapCell(sum, (n) => n * 2)
+
+batch(() => { x.set(5); y.set(7) })  // single stabilize sweep
+doubled.value                         // 24
+```
+
+Cells are diamond-correct: in an `a -> b, a -> c, (b, c) -> d` shape, `d`
+recomputes once per change to `a`, not twice. Each cell has an equality
+cutoff (`===` by default) that stops propagation when a derivation produces
+an unchanged value.
+
+#### Mounting views directly against a cell
+
+The standard `program` runner builds a `Var` for you. If you already
+have one (or any `Cell<Model>`), two entry points let you mount against
+it:
+
+- **`attachToCell(container, view, cell, dispatch)`**. The minimal
+  form: any `Cell<Model>`, no update function. You write back to the
+  cell yourself in `dispatch`.
+- **`programFromVar({ container, modelVar, update, view })`**. Elm-style
+  update loop, but the caller owns the `Var`. Useful when one `Var`
+  feeds two mounted views, or when a child mounts on a `focusVar`
+  slice of a parent.
+
+```typescript
+import { attachToCell, makeVar } from "static-dom"
+
+const model = makeVar({ count: 0 })
+
+const teardown = attachToCell(
+  document.getElementById("app")!,
+  view,
+  model,
+  msg => model.set(reduce(msg, model.value)),
+)
+```
+
+`cellToUpdateStream(cell)` remains available for adapter code that
+wants the legacy update-stream view of a cell.
+
+#### Dynamic graph reshaping
+
+`bindCell` lets a cell's *structure* depend on another cell's value:
+the parent drives which sub-cell is active, and the bind reattaches
+when the parent changes. `bindPrism` is the same idea scoped to a
+prism's match, which is the typical use case for tagged-union models:
+
+```typescript
+import { makeVar, bindCell } from "static-dom"
+
+// The active doc is whichever cell the registry currently maps `id` to;
+// changing the id rewires bindCell to track that doc instead.
+const activeDoc = bindCell(activeId, id =>
+  registry.value.get(id) ?? defaultDoc
+)
+```
+
+`bindCell` and `bindPrism` are the graph counterparts to
+`dynamic` / `match` / `optional`. Most app code can use the SDOM
+constructors and never touch them.
+
+#### Lifting optics over the graph
+
+Optics compose with the graph: a `Lens<S, A>` over a `Cell<S>` becomes a
+`Cell<A>` whose cutoff is the optic's domain equality. Fields the optic
+does not read never propagate; fields whose lens-equality says "unchanged"
+never fire observers.
+
+```typescript
+import { makeVar, focusVar, liftLens, prop } from "static-dom"
+
+interface User { id: number; name: string }
+const user = makeVar<User>({ id: 1, name: "alice" })
+
+// Read-only projection through a Lens.
+const name = liftLens(prop<User>()("name"), user)
+name.value // "alice"
+
+// Bidirectional: focusVar hands back a Var whose .set writes through the lens.
+const nameVar = focusVar(prop<User>()("name"), user)
+nameVar.set("bob")
+user.value // { id: 1, name: "bob" }
+```
+
+`liftGetter`, `liftPrism`, `liftAffine`, and `liftFold` cover the rest of
+the optic kinds. Prism / Affine lift to `Cell<A | null>` via `preview`.
 
 ## Lists
 
@@ -340,7 +443,7 @@ function App({ model, onMsg }) {
 
 ## Performance
 
-On targeted updates (single row in a 1,000-row table), static-dom's incremental path reaches 88% of Solid.js throughput while using a simpler whole-model architecture: no signals, no dependency tracking. On bulk attribute updates, the basic `array()` path beats Solid by 17%.
+On targeted updates (single row in a 1,000-row table), static-dom's incremental path reaches 88% of Solid.js throughput while routing all state through a single whole-model `update(msg, model)` function rather than fine-grained per-leaf signals. On bulk attribute updates, the basic `array()` path beats Solid by 17%. On the krausest js-framework-benchmark suite, static-dom matches or beats Solid 1.9.3 across all nine keyed benchmarks.
 
 See [BENCHMARKS.md](./BENCHMARKS.md) for full results and [RECOMMENDATION.md](./RECOMMENDATION.md) for tuning guidance.
 
