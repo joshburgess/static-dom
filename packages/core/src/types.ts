@@ -513,8 +513,9 @@ export type ChannelEvent<Channel, Model> =
  * a component can either emit a message to the parent channel or apply
  * a local model update.
  *
- * `SDOMWithChannel<Channel, Model>` is the internal type used by `array`.
- * The public API wraps it with `wrapChannel` to get back to `SDOM<Model, Msg>`.
+ * Consumed by `wrapChannel`, which lowers it back to `SDOM<Model, Msg>`
+ * by interpreting parent-channel events into `Msg` and applying update
+ * events as local model transforms.
  */
 export interface SDOMWithChannel<Channel, Model> {
   attach(
