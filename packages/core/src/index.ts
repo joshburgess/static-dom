@@ -171,7 +171,7 @@ export {
 export { liftGetter, liftLens, liftPrism, liftAffine, liftFold, focusVar, bindPrism } from "./incremental-optics"
 
 // Constructors
-export { text, staticText, element, array, arrayBy, indexedArray, optional, match, dynamic, component, compiled, compiledState, fragment, wrapChannel, lis } from "./constructors"
+export { text, staticText, element, array, arrayBy, indexedArray, optional, match, dynamic, component, compiled, compiledState, fragment, lis } from "./constructors"
 
 // Program runners
 export type {

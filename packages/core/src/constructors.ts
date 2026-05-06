@@ -13,12 +13,10 @@
  *   array(tag, getItems, item) — dynamic list with DOM reuse
  *   optional(prism, inner)     — conditionally present subtree
  *   component(fn)              — escape hatch / third-party integration
- *   wrapChannel(inner, interp) — lower a channeled SDOM to plain SDOM
  */
 
 import { makeSDOM, type SDOM, type Teardown, type AttrInput,
-         type SDOMAttr, type KeyedItem, type ArrayContext,
-         type ChannelEvent, type SDOMWithChannel } from "./types"
+         type SDOMAttr, type KeyedItem, type ArrayContext } from "./types"
 import type { Observer, Update, UpdateStream, Dispatcher } from "./observable"
 import type { Prism, Affine } from "./optics"
 import { makeVar, type Var } from "./incremental-graph"
@@ -1762,132 +1760,6 @@ export function dynamic<Model, Msg, K>(
           anchor.remove()
         },
       }
-    },
-  )
-}
-
-// ---------------------------------------------------------------------------
-// wrapChannel — lower SDOMWithChannel to SDOM
-// ---------------------------------------------------------------------------
-
-/**
- * Interpret a channel-using component, converting channel events to Msg
- * and/or applying local model transforms.
- *
- * Matches PureScript's `interpretChannel`.
- *
- * The interpreter can:
- *   - Call `dispatch(msg)` for persistent state changes (goes through
- *     the program's update loop — the standard Elm architecture path).
- *   - Return a model transform for immediate local feedback (applied
- *     optimistically; overwritten on the next outer model update).
- *
- * "update" kind channel events carry a model transform directly and
- * are applied the same way.
- *
- * @param inner      A component that emits `ChannelEvent<Channel, Model>`.
- * @param interpret  Maps parent channel events to model transforms or Msg values.
- */
-export function wrapChannel<Channel, Model, Msg>(
-  inner: SDOMWithChannel<Channel, Model>,
-  interpret: (
-    channel: Channel,
-    dispatch: Dispatcher<Msg>
-  ) => ((model: Model) => Model) | null
-): SDOM<Model, Msg> {
-  return makeSDOM<Model, Msg>(
-    (parent, initialModel, updates, dispatch) => {
-      // Local model state — tracks the latest model from either outer updates
-      // or local transforms. Outer updates are authoritative and reset this.
-      let currentModel = initialModel
-      const localObservers = new Set<Observer<Update<Model>>>()
-
-      // Merged update stream: inner component sees both outer updates and
-      // local transforms from channel events.
-      const mergedUpdates: UpdateStream<Model> = {
-        subscribe(observer) {
-          localObservers.add(observer)
-          const outerUnsub = updates.subscribe(update => {
-            currentModel = update.next
-            observer(update)
-          })
-          return () => {
-            localObservers.delete(observer)
-            outerUnsub()
-          }
-        },
-      }
-
-      function applyTransform(fn: (model: Model) => Model): void {
-        const prev = currentModel
-        const next = fn(prev)
-        if (prev !== next) {
-          currentModel = next
-          localObservers.forEach(obs => obs({ prev, next }))
-        }
-      }
-
-      const channelDispatch: Dispatcher<ChannelEvent<Channel, Model>> = event => {
-        if (event.kind === "parent") {
-          const transform = interpret(event.value, dispatch)
-          if (transform) applyTransform(transform)
-        } else {
-          applyTransform(event.fn)
-        }
-      }
-
-      return inner.attach(parent, initialModel, mergedUpdates, channelDispatch)
-    },
-    (parent, cell, dispatch) => {
-      // Cell-native path: observe the outer cell directly and feed the inner
-      // (still UpdateStream-based) component a merged stream of outer cell
-      // updates plus local channel-event transforms. Skips the
-      // cellToUpdateStream indirection.
-      const initialModel = cell.value
-      let currentModel = initialModel
-      const localObservers = new Set<Observer<Update<Model>>>()
-
-      const mergedUpdates: UpdateStream<Model> = {
-        subscribe(observer) {
-          localObservers.add(observer)
-          const update: { prev: Model; next: Model; delta: unknown | undefined } = {
-            prev: currentModel,
-            next: currentModel,
-            delta: undefined,
-          }
-          const outerUnsub = cell.observe(next => {
-            update.prev = currentModel
-            update.next = next
-            update.delta = undefined
-            currentModel = next
-            observer(update)
-          })
-          return () => {
-            localObservers.delete(observer)
-            outerUnsub()
-          }
-        },
-      }
-
-      function applyTransform(fn: (model: Model) => Model): void {
-        const prev = currentModel
-        const next = fn(prev)
-        if (prev !== next) {
-          currentModel = next
-          localObservers.forEach(obs => obs({ prev, next }))
-        }
-      }
-
-      const channelDispatch: Dispatcher<ChannelEvent<Channel, Model>> = event => {
-        if (event.kind === "parent") {
-          const transform = interpret(event.value, dispatch)
-          if (transform) applyTransform(transform)
-        } else {
-          applyTransform(event.fn)
-        }
-      }
-
-      return inner.attach(parent, initialModel, mergedUpdates, channelDispatch)
     },
   )
 }

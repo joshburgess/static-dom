@@ -427,8 +427,8 @@ Direction 2 has landed. The branch carries:
    `makeSDOM` call site in `packages/core/src/constructors.ts`
    provides an `attachCell` implementation: `text`, `staticText`,
    `element`, `array`, `arrayBy`, `indexedArray`, `match`, `dynamic`,
-   `optional`, `fragment`, `component`, `compiled`, `compiledState`,
-   and `wrapChannel`. None of these fall back to the
+   `optional`, `fragment`, `component`, `compiled`, and
+   `compiledState`. None of these fall back to the
    `cellToUpdateStream` bridge anymore.
 5. **Per-branch / per-row Var pattern.** Sub-trees that need to see
    only a focused slice of the model (a `match` branch, an `optional`
@@ -438,24 +438,8 @@ Direction 2 has landed. The branch carries:
    the legacy UpdateStream path relied on without re-introducing a
    second bridge.
 
-What is intentionally still UpdateStream-based:
-
-- **`SDOMWithChannel.attach`.** The channel-flavored sibling of
-  `SDOM.attach` used internally by the keyed array reconciler and
-  by `wrapChannel`'s inner. It still consumes an `UpdateStream`
-  because the merged-stream semantics it requires (outer model
-  updates merged with locally-applied channel-event transforms)
-  do not have a clean Cell-native counterpart yet. `wrapChannel`
-  itself observes the outer cell directly; it just bridges to an
-  internal `UpdateStream` to feed the inner.
-
 What's deferred:
 
-- **`SDOMWithChannel.attachCell`.** Adding a Cell-native variant to
-  the channel-flavored interface would let `wrapChannel` and the
-  array reconciler stop allocating the inner merged-stream observer
-  set. Tractable but mechanically large; revisit if a profile points
-  here.
 - **Re-running krausest.** The per-row mount path is the same shape
   as before, so the create benchmarks should be unchanged. Point
   updates (`03_update`, `05_swap1k`) are the ones to re-measure

@@ -18,8 +18,8 @@
  *   SDOM<Channel, Context, ModelIn, ModelOut, Msg>
  * but we expose a simplified public API:
  *   SDOM<Model, Msg>
- * where Channel is handled via `wrapChannel`, Context via closures,
- * and the profunctor split (ModelIn/ModelOut) via `dimap`.
+ * where Context is handled via closures and the profunctor split
+ * (ModelIn/ModelOut) via `dimap`.
  *
  * ─────────────────────────────────────────────────────────────────────
  * THE STATIC DOM GUARANTEE
@@ -495,35 +495,6 @@ export function makeSDOM<Model, Msg>(
   }
 
   return sdom
-}
-
-// ---------------------------------------------------------------------------
-// Channel types
-//
-// Matching the PureScript `ArrayChannel` concept.
-// ---------------------------------------------------------------------------
-
-/** A channel event is either "send to parent" or "update this model". */
-export type ChannelEvent<Channel, Model> =
-  | { readonly kind: "parent"; readonly value: Channel }
-  | { readonly kind: "update"; readonly fn: (model: Model) => Model }
-
-/**
- * The channel variant of SDOM, where instead of emitting Msg directly,
- * a component can either emit a message to the parent channel or apply
- * a local model update.
- *
- * Consumed by `wrapChannel`, which lowers it back to `SDOM<Model, Msg>`
- * by interpreting parent-channel events into `Msg` and applying update
- * events as local model transforms.
- */
-export interface SDOMWithChannel<Channel, Model> {
-  attach(
-    parent: Element | DocumentFragment,
-    initialModel: Model,
-    updates: UpdateStream<Model>,
-    dispatch: Dispatcher<ChannelEvent<Channel, Model>>
-  ): Teardown
 }
 
 // ---------------------------------------------------------------------------
