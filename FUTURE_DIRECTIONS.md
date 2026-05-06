@@ -64,11 +64,15 @@ interpreted vs compiled at the per-template boundary.
 
 ## Direction 1: build-time codegen via Vite plugin
 
-This is the recommended primary path. It mirrors what Solid does, is
-CSP-clean (no `eval` / `new Function`), tree-shakable, and is the only
-structural change with a real chance of closing the 1.3-1.6x gap end
-to end. An earlier runtime-codegen prototype failed for reasons that
-do not apply at build time (see "Lessons" below).
+**Status: landed.** Ships in `@static-dom/vite` as the `sdomCodegen()`
+plugin (see `packages/vite/src/codegen/`). The rationale below is kept
+as the design record.
+
+The approach mirrors what Solid does, is CSP-clean (no `eval` /
+`new Function`), tree-shakable, and was the only structural change
+with a real chance of closing the 1.3-1.6x gap end to end. An earlier
+runtime-codegen prototype failed for reasons that do not apply at
+build time (see "Lessons" below).
 
 ### Output shape, per-template
 
@@ -284,6 +288,27 @@ The runtime prototype failed for two reasons (see "Lessons" below):
 
 Neither failure mode applies at build time.
 
+### Implementation status
+
+Direction 1 has landed. The plugin lives at
+`packages/vite/src/codegen/` and is wired into the krausest harness
+via `keyed/static-dom/vite.config.js`. End-to-end on the same machine
+the codegen path moved `07_create10k` from the 65.9 ms baseline of
+this document to **42.9 ms**, putting static-dom inside the Solid
+1.9.3 neighborhood (44.5 ms) on the create benchmark and matching or
+beating Solid across the rest of the keyed suite. See
+[BENCHMARKS.md](./BENCHMARKS.md) for the full table.
+
+What's not in scope for the plugin (intentional):
+
+- **Bound holes that depend on dispatched state** still update via
+  the SDOM observer mechanism. Codegen replaces the per-template
+  instantiation path; the per-leaf write is the same `nodeValue =`
+  / attribute set / class diff as before.
+- **Templates the plugin cannot statically resolve** (constructed
+  dynamically in user code) fall back to the runtime path. The two
+  paths coexist in the same bundle.
+
 ## Direction 2: Incremental-style updates
 
 Replace the diff-on-re-eval update model with a reified incremental
@@ -438,13 +463,6 @@ Direction 2 has landed. The branch carries:
    the legacy UpdateStream path relied on without re-introducing a
    second bridge.
 
-What's deferred:
-
-- **Re-running krausest.** The per-row mount path is the same shape
-  as before, so the create benchmarks should be unchanged. Point
-  updates (`03_update`, `05_swap1k`) are the ones to re-measure
-  once the dust settles.
-
 ## Layering
 
 The two directions are orthogonal and can be done independently:
@@ -459,11 +477,18 @@ updates. Both layers stay fully compatible with the sdom model.
 
 ## Recommendation
 
-Direction 2 has landed. The remaining ROI for benchmark numbers is
-Direction 1: build-time codegen via the Vite plugin. It targets the
-per-row template instantiation cost, which is the dominant remaining
-gap to the VDOM peers on the create benchmarks and which the graph
-rewrite, by design, does not move.
+Both directions have landed. Direction 1 ships in `@static-dom/vite`
+as `sdomCodegen()`, which moves the krausest create-path numbers into
+the Solid neighborhood (`07_create10k` 42.9 ms vs Solid 44.5 ms on
+the same machine). Direction 2 ships in `@static-dom/core` as the
+Cell / Var graph plus Cell-native `attachCell` paths through every
+SDOM constructor.
+
+Remaining benchmark ROI is incremental: shaving allocation in the
+per-row mount path (`mountCell` is already covered by a Var per
+row), and any future move toward emitting templates with their
+binding records inlined at the codegen boundary. Neither is a
+structural change.
 
 ## What we explicitly will not do
 

@@ -157,11 +157,13 @@ primitives are exported for auxiliary state, computed combinations across
 independent sources, or interop with imperative code:
 
 ```typescript
-import { makeVar, mapCell, mapCell2, batch, cellToUpdateStream } from "static-dom"
+import { makeVar, mapCell, mapCell2, mapCell3, batch } from "static-dom"
 
 const x = makeVar(2)
 const y = makeVar(3)
+const z = makeVar(4)
 const sum = mapCell2(x, y, (a, b) => a + b)
+const product = mapCell3(x, y, z, (a, b, c) => a * b * c)
 const doubled = mapCell(sum, (n) => n * 2)
 
 batch(() => { x.set(5); y.set(7) })  // single stabilize sweep
@@ -173,9 +175,56 @@ recomputes once per change to `a`, not twice. Each cell has an equality
 cutoff (`===` by default) that stops propagation when a derivation produces
 an unchanged value.
 
-Bridge a cell into a program-style view with `cellToUpdateStream(cell)`.
-The same primitives back the runners internally, so app model state and
-externally-derived state share one notification mechanism.
+#### Mounting views directly against a cell
+
+The standard `program` runner builds a `Var` for you. If you already
+have one (or any `Cell<Model>`), two entry points let you mount against
+it:
+
+- **`attachToCell(container, view, cell, dispatch)`**. The minimal
+  form: any `Cell<Model>`, no update function. You write back to the
+  cell yourself in `dispatch`.
+- **`programFromVar({ container, modelVar, update, view })`**. Elm-style
+  update loop, but the caller owns the `Var`. Useful when one `Var`
+  feeds two mounted views, or when a child mounts on a `focusVar`
+  slice of a parent.
+
+```typescript
+import { attachToCell, makeVar } from "static-dom"
+
+const model = makeVar({ count: 0 })
+
+const teardown = attachToCell(
+  document.getElementById("app")!,
+  view,
+  model,
+  msg => model.set(reduce(msg, model.value)),
+)
+```
+
+`cellToUpdateStream(cell)` remains available for adapter code that
+wants the legacy update-stream view of a cell.
+
+#### Dynamic graph reshaping
+
+`bindCell` lets a cell's *structure* depend on another cell's value:
+the parent drives which sub-cell is active, and the bind reattaches
+when the parent changes. `bindPrism` is the same idea scoped to a
+prism's match, which is the typical use case for tagged-union models:
+
+```typescript
+import { makeVar, bindCell } from "static-dom"
+
+// The active doc is whichever cell the registry currently maps `id` to;
+// changing the id rewires bindCell to track that doc instead.
+const activeDoc = bindCell(activeId, id =>
+  registry.value.get(id) ?? defaultDoc
+)
+```
+
+`bindCell` and `bindPrism` are the graph counterparts to
+`dynamic` / `match` / `optional`. Most app code can use the SDOM
+constructors and never touch them.
 
 #### Lifting optics over the graph
 
