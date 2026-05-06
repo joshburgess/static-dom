@@ -7,8 +7,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [0.1.0] - 2026-05-06
 
-Initial public release. The project ships as a pnpm monorepo of seven packages
-published to npm under the `@static-dom` organization (plus an unscoped facade).
+Initial public release. The project ships as a pnpm monorepo of six packages
+published to npm under the `@static-dom` organization.
 
 ### Packages
 
@@ -27,8 +27,6 @@ published to npm under the `@static-dom` organization (plus an unscoped facade).
   `sdomJsxOptions`, `sdomSwcConfig`).
 - **`@static-dom/eslint`** — ESLint plugin with `sdom/no-dynamic-children` rule
   for catching JSX patterns that violate the static-DOM invariant.
-- **`static-dom`** — unscoped facade that re-exports `@static-dom/core` and all
-  of its subpaths.
 
 ### Core features
 

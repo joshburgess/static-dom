@@ -19,8 +19,8 @@
  *
  * @example
  * ```typescript
- * import { element, text, array, program } from "@your-org/sdom"
- * import { prop } from "@your-org/sdom/optics"
+ * import { element, text, array, program } from "@static-dom/core"
+ * import { prop } from "@static-dom/core/optics"
  *
  * // ── Model ──────────────────────────────────────────────────────────
  * interface Todo { id: string; text: string; done: boolean }
@@ -95,7 +95,7 @@
  *
  * @example
  * ```typescript
- * import { prop } from "@your-org/sdom/optics"
+ * import { prop } from "@static-dom/core/optics"
  *
  * // A reusable input component that only knows about `string`:
  * const stringInput = element("input", {

@@ -117,19 +117,6 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@20.19.39)(@vitest/browser@3.2.4)(happy-dom@20.9.0)
 
-  packages/static-dom:
-    dependencies:
-      '@static-dom/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      '@types/node':
-        specifier: ^20.0.0
-        version: 20.19.39
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-
   packages/vdom:
     dependencies:
       '@static-dom/core':

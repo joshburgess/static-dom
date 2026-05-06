@@ -12,14 +12,14 @@ Based on Phil Freeman's [purescript-sdom](https://github.com/paf31/purescript-sd
 ## Install
 
 ```bash
-npm install static-dom
+npm install @static-dom/core
 ```
 
-`static-dom` is a thin re-export of `@static-dom/core`. Optional pieces live in their own packages so you only pull in peer deps you actually use:
+Optional pieces live in their own packages so you only pull in peer deps you actually use:
 
 | Package | What it adds | Peer deps |
 |---|---|---|
-| `static-dom` | Facade for `@static-dom/core` (or use `@static-dom/core` directly) | none |
+| `@static-dom/core` | The runtime, optics, JSX runtime, hyperscript / htm / html | none |
 | `@static-dom/react` | `<SDOMBoundary>` for embedding in React apps | `react` |
 | `@static-dom/vdom` | Per-update structural changes via Tachys | `tachys` |
 | `@static-dom/vite` | Vite plugin for the JSX runtime | `vite` |
@@ -43,8 +43,8 @@ export default defineConfig({ plugins: [sdomJsx()] })
 Then write views as JSX:
 
 ```tsx
-import { typed } from "static-dom/jsx-runtime"
-import { program } from "static-dom"
+import { typed } from "@static-dom/core/jsx-runtime"
+import { program } from "@static-dom/core"
 
 interface Model { count: number }
 type Msg = { type: "inc" } | { type: "dec" }
@@ -77,7 +77,7 @@ Dynamic values are functions from model to leaf values: `{m => m.label}` for tex
 No build step needed; same semantics as JSX, just function calls:
 
 ```typescript
-import { div, span, button } from "static-dom/hyperscript"
+import { div, span, button } from "@static-dom/core/hyperscript"
 
 const view = div({}, [
   span({}, [m => String(m.count)]),
@@ -91,8 +91,8 @@ const view = div({}, [
 Two flavors: `htm` parses at runtime (no build step), `html` uses the browser's native HTML parser with template cloning for faster initial renders:
 
 ```typescript
-import { html } from "static-dom/htm"
-// or: import { html } from "static-dom/html"
+import { html } from "@static-dom/core/htm"
+// or: import { html } from "@static-dom/core/html"
 
 const view = html`
   <div>
@@ -121,7 +121,7 @@ program({
 For apps that need side effects, use `elmProgram` with commands and subscriptions:
 
 ```typescript
-import { elmProgram, noCmd, httpGetJson, delay, onUrlChange } from "static-dom"
+import { elmProgram, noCmd, httpGetJson, delay, onUrlChange } from "@static-dom/core"
 
 elmProgram<Model, Msg>({
   container: document.getElementById("app")!,
@@ -157,7 +157,7 @@ primitives are exported for auxiliary state, computed combinations across
 independent sources, or interop with imperative code:
 
 ```typescript
-import { makeVar, mapCell, mapCell2, mapCell3, batch } from "static-dom"
+import { makeVar, mapCell, mapCell2, mapCell3, batch } from "@static-dom/core"
 
 const x = makeVar(2)
 const y = makeVar(3)
@@ -190,7 +190,7 @@ it:
   slice of a parent.
 
 ```typescript
-import { attachToCell, makeVar } from "static-dom"
+import { attachToCell, makeVar } from "@static-dom/core"
 
 const model = makeVar({ count: 0 })
 
@@ -213,7 +213,7 @@ when the parent changes. `bindPrism` is the same idea scoped to a
 prism's match, which is the typical use case for tagged-union models:
 
 ```typescript
-import { makeVar, bindCell } from "static-dom"
+import { makeVar, bindCell } from "@static-dom/core"
 
 // The active doc is whichever cell the registry currently maps `id` to;
 // changing the id rewires bindCell to track that doc instead.
@@ -234,7 +234,7 @@ does not read never propagate; fields whose lens-equality says "unchanged"
 never fire observers.
 
 ```typescript
-import { makeVar, focusVar, liftLens, prop } from "static-dom"
+import { makeVar, focusVar, liftLens, prop } from "@static-dom/core"
 
 interface User { id: number; name: string }
 const user = makeVar<User>({ id: 1, name: "alice" })
@@ -284,7 +284,7 @@ For binary show/hide (present vs. absent), use `optional` with a prism. For ever
 Switch between completely different DOM structures based on a discriminant:
 
 ```typescript
-import { match } from "static-dom"
+import { match } from "@static-dom/core"
 
 type State =
   | { tag: "loading" }
@@ -314,7 +314,7 @@ const view = match(m => m.loggedIn ? "auth" : "anon", {
 For cases where the set of possible views isn't known at compile time, like user-configured dashboards, plugin systems, or data-driven layouts:
 
 ```typescript
-import { dynamic } from "static-dom"
+import { dynamic } from "@static-dom/core"
 
 const view = dynamic(
   m => m.layout,           // cache key: determines when to remount
@@ -373,7 +373,7 @@ Tachys is an optional peer dependency of `@static-dom/vdom`.
 Components often operate on a slice of the app model. Use `.focus()` with a path to zoom in:
 
 ```typescript
-import { at } from "static-dom"
+import { at } from "@static-dom/core"
 
 // at() builds a type-safe path into your model
 const nameLens = at<AppModel>()("user", "profile", "name")
@@ -386,7 +386,7 @@ const nameInput = stringInput.focus(nameLens)
 Under the hood, `at()` and `prop()` build **lenses**: composable accessors from the optics tradition. You don't need to know optics to use them, but the full system is there if you want it: `Iso`, `Lens`, `Prism`, `Affine`, `Getter`, `Fold`, `Setter`, `Review`, and `Traversal` with type-safe composition.
 
 ```typescript
-import { prop, each } from "static-dom"
+import { prop, each } from "@static-dom/core"
 
 // Compose optics to traverse nested structures
 const allNames = prop<Model>()("users").compose(each<User>()).compose(prop<User>()("name"))

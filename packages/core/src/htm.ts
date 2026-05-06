@@ -8,7 +8,7 @@
  *
  * @example
  * ```typescript
- * import { html } from "static-dom/htm"
+ * import { html } from "@static-dom/core/htm"
  *
  * const view = html`
  *   <div class=${m => m.active ? "active" : ""}>
